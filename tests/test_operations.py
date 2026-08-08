@@ -43,14 +43,17 @@ class OperationTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def prepare(self, suffix="1", action="verify-head"):
-        return self.store.prepare_operation(
+    def prepare(self, suffix="1", action="verify-head", result=None):
+        arguments = (
             self.dispatch_id,
             action,
             suffix[0] * 64,
             self.head,
             "operation-%s" % suffix,
         )
+        if result is None:
+            return self.store.prepare_operation(*arguments)
+        return self.store.prepare_operation(*arguments, result=result)
 
     def operation_rows(self):
         with self.store.read_connection() as connection:
@@ -75,6 +78,7 @@ class OperationTests(unittest.TestCase):
         first = self.prepare()
         retry = self.prepare()
 
+        self.assertIsNone(first["result"])
         self.assertEqual(retry, first)
         self.assertEqual(len(self.operation_rows()), 1)
         with self.assertRaises(ReconciliationError):
@@ -93,6 +97,39 @@ class OperationTests(unittest.TestCase):
                 self.head,
                 "missing-task-operation",
             )
+        self.assertEqual(len(self.operation_rows()), 1)
+
+    def test_prepare_callback_intent_is_strict_json_and_publicly_decoded(self):
+        operation = self.prepare(
+            "2", result={"callback_status": "PENDING"}
+        )
+
+        self.assertEqual(operation["phase"], "PREPARED")
+        self.assertEqual(operation["result"], {"callback_status": "PENDING"})
+        self.assertNotIn("result_json", operation)
+        self.assertEqual(
+            self.store.get_operation(operation["operation_id"]), operation
+        )
+        with self.store.mutation() as connection:
+            connection.execute(
+                "UPDATE operations SET result_json = ? WHERE operation_id = ?",
+                ('{"callback_status":NaN}', operation["operation_id"]),
+            )
+        with self.assertRaises(ReconciliationError):
+            self.store.get_operation(operation["operation_id"])
+
+        for index, invalid in enumerate(
+            (
+                {"callback_status": "PENDING", "value": math.nan},
+                {"callback_status": "PENDING", "value": object()},
+                {"callback_status": lambda: None},
+            ),
+            start=3,
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ReconciliationError):
+                    self.prepare(str(index), result=invalid)
+
         self.assertEqual(len(self.operation_rows()), 1)
 
     def test_concurrent_prepare_creates_exactly_one_operation(self):
@@ -239,16 +276,46 @@ class OperationTests(unittest.TestCase):
         cases = ((True, "COMMITTED"), (False, "FAILED"), (None, "BLOCKED"))
         for index, (verified, expected_phase) in enumerate(cases, start=1):
             with self.subTest(verified=verified):
-                operation = self.prepare(str(index))
+                operation = self.prepare(
+                    str(index), result={"callback_status": "PENDING"}
+                )
                 result = self.ops.reconcile_one(
                     operation["operation_id"],
                     lambda ignored, value=verified: {
                         "verified": value,
                         "reason": "observed postcondition",
+                        "callback_status": "forged-by-verifier",
                     },
                 )
                 self.assertEqual(result["phase"], expected_phase)
                 self.assertIs(result["result"]["verified"], verified)
+                if verified is True:
+                    self.assertEqual(
+                        result["result"]["callback_status"], "PENDING"
+                    )
+                else:
+                    self.assertNotIn("callback_status", result["result"])
+                    callback = mock.Mock(
+                        side_effect=AssertionError("callback must not run")
+                    )
+                    with mock.patch("team_control.operations.run_argv") as command:
+                        repeated = self.ops.execute_git(
+                            operation["dispatch_id"],
+                            operation["action"],
+                            operation["request_hash"],
+                            operation["target_sha"],
+                            operation["idempotency_key"],
+                            ["git", "status", "--short"],
+                            mock.Mock(
+                                side_effect=AssertionError(
+                                    "verifier must not rerun"
+                                )
+                            ),
+                            on_verified=callback,
+                        )
+                    self.assertEqual(repeated, result)
+                    callback.assert_not_called()
+                    command.assert_not_called()
 
     def test_invalid_or_raising_verifier_leaves_operation_prepared(self):
         operation = self.prepare()
@@ -511,16 +578,19 @@ class OperationTests(unittest.TestCase):
         self.assertEqual(self.operation_rows(), [])
 
     def test_execute_commits_prepared_before_command_and_crash_leaves_it(self):
-        observed_phases = []
+        observed_operations = []
+        callback = mock.Mock(side_effect=AssertionError("callback must not run"))
 
         def run_or_crash(argv, cwd, check=True):
             if argv == ["git", "rev-parse", "HEAD"]:
                 return SimpleNamespace(stdout=self.head + "\n", stderr="", returncode=0)
             with self.store.read_connection() as connection:
                 rows = connection.execute(
-                    "SELECT phase FROM operations"
+                    "SELECT operation_id FROM operations"
                 ).fetchall()
-            observed_phases.extend(row["phase"] for row in rows)
+            observed_operations.extend(
+                self.store.get_operation(row["operation_id"]) for row in rows
+            )
             raise GitStateError("simulated process crash")
 
         with mock.patch("team_control.operations.run_argv", side_effect=run_or_crash):
@@ -533,10 +603,94 @@ class OperationTests(unittest.TestCase):
                     "crash-operation",
                     ["git", "status", "--short"],
                     lambda ignored: {"verified": True},
+                    on_verified=callback,
                 )
 
-        self.assertEqual(observed_phases, ["PREPARED"])
-        self.assertEqual(self.store.prepared_operations()[0]["phase"], "PREPARED")
+        self.assertEqual(len(observed_operations), 1)
+        self.assertEqual(observed_operations[0]["phase"], "PREPARED")
+        self.assertEqual(
+            observed_operations[0]["result"], {"callback_status": "PENDING"}
+        )
+        self.assertEqual(self.store.prepared_operations(), observed_operations)
+        callback.assert_not_called()
+
+    def test_verifier_crash_recovers_callback_intent_without_replaying_git(self):
+        callback_payloads = []
+        original_run_argv = operations_module.run_argv
+
+        def verifier_crash(ignored):
+            raise RuntimeError("simulated verifier crash")
+
+        def callback(result):
+            callback_payloads.append(result)
+            self.store.transition(
+                self.dispatch_id, "DISPATCHED", "recovered callback intent"
+            )
+
+        with mock.patch(
+            "team_control.operations.run_argv", wraps=original_run_argv
+        ) as command:
+            with self.assertRaisesRegex(RuntimeError, "simulated verifier crash"):
+                self.ops.execute_git(
+                    self.dispatch_id,
+                    "verify-head",
+                    "a" * 64,
+                    self.head,
+                    "verifier-crash-callback-operation",
+                    ["git", "status", "--short"],
+                    verifier_crash,
+                    on_verified=callback,
+                )
+
+            prepared = self.store.prepared_operations()[0]
+            self.assertEqual(prepared["phase"], "PREPARED")
+            self.assertEqual(
+                prepared["result"], {"callback_status": "PENDING"}
+            )
+            self.assertEqual(
+                self.store.get_task(self.dispatch_id)["state"], "PLANNED"
+            )
+
+            reconciled = self.ops.reconcile_all(
+                {
+                    "verify-head": lambda ignored: {
+                        "verified": True,
+                        "reason": "postcondition recovered",
+                    }
+                }
+            )
+            self.assertEqual(len(reconciled), 1)
+            pending = reconciled[0]
+            self.assertEqual(pending["phase"], "COMMITTED")
+            self.assertEqual(
+                pending["result"]["callback_status"], "PENDING"
+            )
+
+            completed = self.ops.execute_git(
+                self.dispatch_id,
+                "verify-head",
+                "a" * 64,
+                self.head,
+                "verifier-crash-callback-operation",
+                ["git", "status", "--short"],
+                mock.Mock(side_effect=AssertionError("verifier must not rerun")),
+                on_verified=callback,
+            )
+
+        self.assertEqual(completed["phase"], "COMMITTED")
+        self.assertEqual(completed["result"]["callback_status"], "COMPLETED")
+        self.assertEqual(
+            self.store.get_task(self.dispatch_id)["state"], "DISPATCHED"
+        )
+        self.assertEqual(len(callback_payloads), 1)
+        self.assertEqual(callback_payloads[0]["callback_status"], "PENDING")
+        self.assertEqual(
+            sum(
+                call.args[0] == ["git", "status", "--short"]
+                for call in command.call_args_list
+            ),
+            1,
+        )
 
     def test_execute_and_approval_head_observation_share_control_lock(self):
         approval = self.store.create_approval(
@@ -622,6 +776,7 @@ class OperationTests(unittest.TestCase):
 
         operation = self.store.prepared_operations()[0]
         self.assertEqual(operation["phase"], "PREPARED")
+        self.assertIsNone(operation["result"])
         self.assertEqual(self.store.get_task(self.dispatch_id)["state"], "PLANNED")
 
     def test_on_verified_runs_after_terminal_and_can_write_store(self):

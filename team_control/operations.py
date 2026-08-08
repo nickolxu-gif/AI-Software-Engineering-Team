@@ -190,6 +190,18 @@ class OperationCoordinator:
         # same lock and leave the operation PREPARED for later reconciliation.
         return _validated_verifier_result(verifier(operation))
 
+    @staticmethod
+    def _terminal_result(operation, result):
+        result.pop("callback_status", None)
+        prepared_result = operation["result"]
+        if (
+            result["verified"] is True
+            and prepared_result is not None
+            and prepared_result.get("callback_status") == "PENDING"
+        ):
+            result["callback_status"] = "PENDING"
+        return result
+
     def reconcile_one(self, operation_id, verifier):
         with self.store.controlled_operation() as controlled:
             operation = self.store.get_operation(operation_id)
@@ -198,6 +210,7 @@ class OperationCoordinator:
             if operation["phase"] != "PREPARED":
                 return operation
             result = self._verify(operation, verifier)
+            result = self._terminal_result(operation, result)
             return controlled.finish_operation(
                 operation_id,
                 _terminal_phase(result["verified"]),
@@ -248,6 +261,9 @@ class OperationCoordinator:
         if on_verified is not None and not callable(on_verified):
             raise ReconciliationError("on_verified must be callable")
 
+        prepared_result = (
+            {"callback_status": "PENDING"} if on_verified is not None else None
+        )
         terminal = None
         with self.store.controlled_operation() as controlled:
             existing = controlled.operation_for_idempotency(idempotency_key)
@@ -258,6 +274,7 @@ class OperationCoordinator:
                     request_hash,
                     target_sha,
                     idempotency_key,
+                    result=prepared_result,
                 )
                 if operation["phase"] == "PREPARED":
                     raise ReconciliationError(
@@ -288,19 +305,18 @@ class OperationCoordinator:
                     request_hash,
                     target_sha,
                     idempotency_key,
+                    result=prepared_result,
                 )
 
                 completed = run_argv(command_argv, cwd, check=False)
                 result = self._verify(operation, verifier)
-                result.pop("callback_status", None)
+                result = self._terminal_result(operation, result)
                 result.update(
                     {
                         "command_returncode": completed.returncode,
                         "stderr": completed.stderr.strip(),
                     }
                 )
-                if result["verified"] is True and on_verified is not None:
-                    result["callback_status"] = "PENDING"
                 terminal = controlled.finish_operation(
                     operation["operation_id"],
                     _terminal_phase(result["verified"]),

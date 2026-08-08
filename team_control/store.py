@@ -254,10 +254,21 @@ class _ControlledOperationSession:
         self._store = store
 
     def prepare_operation(
-        self, dispatch_id, action, request_hash, target_sha, idempotency_key
+        self,
+        dispatch_id,
+        action,
+        request_hash,
+        target_sha,
+        idempotency_key,
+        result=None,
     ):
         return self._store._prepare_operation_durable(
-            dispatch_id, action, request_hash, target_sha, idempotency_key
+            dispatch_id,
+            action,
+            request_hash,
+            target_sha,
+            idempotency_key,
+            result=result,
         )
 
     def operation_for_idempotency(self, idempotency_key):
@@ -466,7 +477,9 @@ class ControlStore:
         request_hash,
         target_sha,
         idempotency_key,
+        result=None,
     ):
+        result_json = None if result is None else _dump_operation_result(result)
         task = connection.execute(
             "SELECT 1 FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
         ).fetchone()
@@ -497,13 +510,14 @@ class ControlStore:
                    operation_id, dispatch_id, action, request_hash,
                    target_sha, phase, result_json, idempotency_key,
                    created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, 'PREPARED', NULL, ?, ?, ?)""",
+               ) VALUES (?, ?, ?, ?, ?, 'PREPARED', ?, ?, ?, ?)""",
             (
                 operation_id,
                 dispatch_id,
                 action,
                 request_hash,
                 target_sha,
+                result_json,
                 idempotency_key,
                 now,
                 now,
@@ -515,7 +529,13 @@ class ControlStore:
         return ControlStore._operation_from_row(row)
 
     def _prepare_operation_durable(
-        self, dispatch_id, action, request_hash, target_sha, idempotency_key
+        self,
+        dispatch_id,
+        action,
+        request_hash,
+        target_sha,
+        idempotency_key,
+        result=None,
     ):
         _validate_operation_inputs(
             action, request_hash, target_sha, idempotency_key
@@ -528,10 +548,17 @@ class ControlStore:
                 request_hash,
                 target_sha,
                 idempotency_key,
+                result=result,
             )
 
     def prepare_operation(
-        self, dispatch_id, action, request_hash, target_sha, idempotency_key
+        self,
+        dispatch_id,
+        action,
+        request_hash,
+        target_sha,
+        idempotency_key,
+        result=None,
     ):
         with self._control_lock():
             return self._prepare_operation_durable(
@@ -540,6 +567,7 @@ class ControlStore:
                 request_hash,
                 target_sha,
                 idempotency_key,
+                result=result,
             )
 
     def get_operation(self, operation_id):
