@@ -2,17 +2,26 @@
 
 > 日期：2026-08-08
 > 维护者：仅 Codex 主控。其他 Agent 和 Reviewer 只读，可提交修改建议。
+> 生效条件：本文件随验证分支合并后生效。
 
 ## 当前状态
 
 **Git 治理已完成，`main` 基线已建立。**
 
 - `main` 是唯一稳定主线；基线 SHA 为 `cd459565b8bb24156f92e400a11769d254eccda9`。
-- 本次验证分支 `agent/codex/20260808-001-bootstrap-verification` 将在复审后由 Codex 使用 `--no-ff` 合并并清理；最终只保留根 Worktree。
+- Codex 已使用 `--no-ff` 合并验证分支，并已清理该分支及其 Worktree；最终仅保留 `main` 根 Worktree。
 - 当前没有配置 remote。
-- `scripts/new-agent-worktree.sh` 与 `scripts/repo-health.sh` 已完成，并通过语法检查、运行验证和双审。
-- 验证报告：`GIT_BOOTSTRAP_VERIFICATION.md`。
+- `scripts/new-agent-worktree.sh` 与 `scripts/repo-health.sh` 已完成；可复核命令事实见 `GIT_BOOTSTRAP_VERIFICATION.md`。
 - `REVIEW_ITERATION_2026-08-08.md` 是状态为 `MODIFY` 的审阅证据，不是现行规范。
+
+可使用以下命令复核最终 Worktree 和分支状态：
+
+```bash
+git worktree list
+git branch --list
+```
+
+前者应仅显示 `main` 根 Worktree；后者不应包含已清理的验证分支。
 
 ## 现有四份规范
 

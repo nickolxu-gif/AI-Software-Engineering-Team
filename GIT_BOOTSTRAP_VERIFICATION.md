@@ -1,7 +1,7 @@
 # Git Bootstrap 验证记录
 
 > 日期：2026-08-08
-> 结论：**PASS**
+> 命令验证：**PASS**（仅指下列命令结果，不等于独立 Review 通过）
 
 ## 验证对象
 
@@ -9,18 +9,24 @@
 - `main` 基线 SHA：`cd459565b8bb24156f92e400a11769d254eccda9`。
 - Remote：无；`git remote -v` 无输出。
 
-## 已验证证据
+## 可复核命令事实
 
-1. `scripts/new-agent-worktree.sh` 与 `scripts/repo-health.sh` 均通过 `sh` 和 `dash` 语法检查。
+1. 以下四条语法检查命令退出码均为 `0`：
+   - `sh -n scripts/new-agent-worktree.sh`
+   - `sh -n scripts/repo-health.sh`
+   - `dash -n scripts/new-agent-worktree.sh`
+   - `dash -n scripts/repo-health.sh`
 2. `scripts/repo-health.sh` 在 `main` 根 Worktree 的引导验证中输出 `Repository health: PASS`。
-3. 非法参数 `bad/id` 被 `scripts/new-agent-worktree.sh` 以 `exit 1` 拒绝，未创建对应分支或目录。
-4. 正向 Worktree smoke test 已由脚本实际创建：
+3. 执行 `./scripts/new-agent-worktree.sh bad/id codex sample` 时，脚本输出 `ERROR: dispatch-id must not contain '/'` 并以 `exit 1` 拒绝，未创建对应分支或目录。
+4. 正向 Worktree smoke test 由脚本实际创建：
    - Dispatch ID：`20260808-001`
    - Branch：`agent/codex/20260808-001-bootstrap-verification`
    - Path：`/Users/qinxu/Documents/vibe coding/AI-Software-Engineering-Team/.worktrees/20260808-001-codex-bootstrap-verification`
    - Base SHA：`cd459565b8bb24156f92e400a11769d254eccda9`
-   - Worktree 创建时 `HEAD` 等于 Base SHA；验证分支产生记录提交后 `HEAD` 会前进，不将动态 `HEAD` 写死；验收以 `git merge-base HEAD main` 和 `git rev-parse main` 均等于基线 `cd459565b8bb24156f92e400a11769d254eccda9` 为准。
-5. Git 配置、运行契约、辅助脚本与基线提交均经过规格审查和质量审查；未发现 `Critical` 或 `Important` 问题。
+   - Worktree 创建时，`git rev-parse HEAD` 输出 `cd459565b8bb24156f92e400a11769d254eccda9`。
+   - 首次验证记录 commit 为 `eee2dbb3ecdc8947e4440da0f18b81fe3b53af15`。
+   - 固定命令 `git merge-base eee2dbb3ecdc8947e4440da0f18b81fe3b53af15 cd459565b8bb24156f92e400a11769d254eccda9` 输出 `cd459565b8bb24156f92e400a11769d254eccda9`，证明首次验证记录提交从指定基线派生。
+5. `git remote -v` 无输出，仓库未配置 remote。
 
 ## 已接受的 Minor 风险
 
@@ -28,4 +34,4 @@
 
 ## 验收边界
 
-本记录是 Git bootstrap 的 Codex 验证记录，不代表、也不声称 Claude 已完成验收。
+本报告在合并前接受独立 Review；当前不声明独立 Review 已通过。本记录不代表、也不声称 Claude 已完成验收。
