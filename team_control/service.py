@@ -6,7 +6,13 @@ import uuid
 from pathlib import Path
 
 from .contracts import validate_record
-from .errors import ApprovalError, BoundaryError, ContractError, GitStateError
+from .errors import (
+    ApprovalError,
+    BoundaryError,
+    ContractError,
+    GitStateError,
+    ReconciliationError,
+)
 from .git_context import RepoContext, canonical_under, run_argv, validate_component
 
 
@@ -164,6 +170,53 @@ class ControlPlane:
         }
         validate_record("task", record)
         return self.store.create_task(record)
+
+    def start_write_task(
+        self, dispatch_id, title, objective, risk_level, agent, slug
+    ):
+        _validated_component(agent, "agent")
+        _validated_component(slug, "slug")
+        task = self.store.get_task(dispatch_id)
+        if task is None:
+            task = self.create_task(dispatch_id, title, objective, risk_level)
+        else:
+            expected_branch = "agent/%s/%s-%s" % (agent, dispatch_id, slug)
+            expected_path = self.context.common_dir.parent / ".worktrees" / (
+                "%s-%s-%s" % (dispatch_id, agent, slug)
+            )
+            metadata_matches = (
+                task["title"] == title
+                and task["objective"] == objective
+                and task["risk_level"] == risk_level
+                and (task["agent"], task["slug"], task["branch"])
+                in ((None, None, None), (agent, slug, expected_branch))
+                and task["worktree_path"] in (None, str(expected_path))
+            )
+            if not metadata_matches or task["state"] not in (
+                "PLANNED", "DISPATCHED"
+            ):
+                raise ReconciliationError(
+                    "existing write task does not match the start request"
+                )
+        from .doctor import WorktreeDoctor
+
+        doctor = WorktreeDoctor(self.context, self.store)
+        report = doctor.inspect(
+            dispatch_id, agent, slug, task["task_base_sha"]
+        )
+        if task["state"] == "DISPATCHED":
+            if report["classification"] != "HEALTHY":
+                raise ReconciliationError(
+                    "dispatched write task Worktree is not healthy"
+                )
+            return task
+        if report["classification"] == "REPAIRABLE_BRANCH_ONLY":
+            doctor.repair(report)
+        else:
+            doctor.create(report)
+        return self.store.transition(
+            dispatch_id, "DISPATCHED", "isolated Worktree verified"
+        )
 
     def request_approval(
         self,

@@ -585,6 +585,9 @@ class ControlStore:
             ).fetchone()
         return self._operation_from_row(row)
 
+    def operation_for_idempotency(self, idempotency_key):
+        return self._operation_for_idempotency(idempotency_key)
+
     def _finish_operation_durable(self, operation_id, phase, result):
         if phase not in TERMINAL_OPERATION_PHASES:
             raise ReconciliationError("invalid terminal operation phase")
@@ -987,18 +990,66 @@ class ControlStore:
             task = dict(row)
         return task
 
+    def reserve_worktree_identity(self, dispatch_id, agent, slug, branch):
+        with self.mutation() as connection:
+            now = utc_now()
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(dispatch_id)
+            stored_identity = tuple(
+                row[field] for field in ("agent", "slug", "branch")
+            )
+            identity = (agent, slug, branch)
+            if (
+                stored_identity != (None, None, None)
+                and stored_identity != identity
+            ):
+                raise ReconciliationError(
+                    "worktree identity is already reserved"
+                )
+            connection.execute(
+                """UPDATE tasks
+                   SET agent = ?, slug = ?, branch = ?, updated_at = ?
+                   WHERE dispatch_id = ?""",
+                (agent, slug, branch, now, dispatch_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+            ).fetchone()
+            task = dict(row)
+        return task
+
     def attach_worktree(self, dispatch_id, agent, slug, branch, path):
         with self.mutation() as connection:
             now = utc_now()
-            cursor = connection.execute(
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(dispatch_id)
+            identity = (agent, slug, branch, str(path))
+            stored_identity = tuple(
+                row[field]
+                for field in ("agent", "slug", "branch", "worktree_path")
+            )
+            allowed_identities = {
+                (None, None, None, None),
+                (agent, slug, branch, None),
+                identity,
+            }
+            if stored_identity not in allowed_identities:
+                raise ReconciliationError(
+                    "worktree identity is already attached"
+                )
+            connection.execute(
                 """UPDATE tasks
                    SET agent = ?, slug = ?, branch = ?, worktree_path = ?,
                        updated_at = ?
                    WHERE dispatch_id = ?""",
                 (agent, slug, branch, str(path), now, dispatch_id),
             )
-            if cursor.rowcount != 1:
-                raise KeyError(dispatch_id)
             row = connection.execute(
                 "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
             ).fetchone()
