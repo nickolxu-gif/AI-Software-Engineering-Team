@@ -1,10 +1,57 @@
 import re
+from copy import deepcopy
+from pathlib import Path
 
-from .errors import GitStateError, ReconciliationError
-from .git_context import run_argv
+from .errors import BoundaryError, GitStateError, ReconciliationError
+from .git_context import (
+    RepoContext,
+    canonical_under,
+    run_argv,
+    validate_component,
+)
 
 
 GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+ALLOWED_GIT_SUBCOMMANDS = frozenset(
+    {
+        "status",
+        "rev-parse",
+        "merge",
+        "worktree",
+        "branch",
+        "commit",
+        "cherry-pick",
+        "rebase",
+        "reset",
+        "checkout",
+        "switch",
+        "restore",
+        "tag",
+        "update-ref",
+    }
+)
+BLOCKED_GIT_GLOBAL_OPTIONS = frozenset(
+    {
+        "-C",
+        "-c",
+        "--bare",
+        "--config-env",
+        "--exec-path",
+        "--git-dir",
+        "--namespace",
+        "--no-replace-objects",
+        "--super-prefix",
+        "--work-tree",
+    }
+)
+BLOCKED_GIT_GLOBAL_PREFIXES = (
+    "--config-env=",
+    "--exec-path=",
+    "--git-dir=",
+    "--namespace=",
+    "--super-prefix=",
+    "--work-tree=",
+)
 
 
 def _validated_argv(argv):
@@ -16,7 +63,17 @@ def _validated_argv(argv):
         raise ReconciliationError(
             "Git arguments must be a non-empty list or tuple of non-empty strings"
         )
-    return list(argv)
+    command = list(argv)
+    if command[0] != "git":
+        raise ReconciliationError("controlled command executable must be exactly git")
+    if len(command) < 2 or command[1] not in ALLOWED_GIT_SUBCOMMANDS:
+        raise ReconciliationError("Git subcommand is not allowed")
+    for argument in command[1:]:
+        if argument in BLOCKED_GIT_GLOBAL_OPTIONS or argument.startswith(
+            BLOCKED_GIT_GLOBAL_PREFIXES
+        ):
+            raise ReconciliationError("Git global redirection is not allowed")
+    return command
 
 
 def _validated_verifier_result(result):
@@ -43,10 +100,80 @@ class OperationCoordinator:
         self.context = context
         self.store = store
 
-    def _trusted_head(self):
-        completed = run_argv(
-            ["git", "rev-parse", "HEAD"], self.context.root
-        )
+    def _trusted_git_cwd(self, task):
+        registered_common = Path(self.context.common_dir).resolve(strict=True)
+        if task["worktree_path"]:
+            for field in ("dispatch_id", "agent", "slug"):
+                value = task[field]
+                if not isinstance(value, str):
+                    raise BoundaryError(
+                        "task %s is not a trusted component" % field
+                    )
+                validate_component(value, "task-%s" % field)
+            expected_branch = "agent/%s/%s-%s" % (
+                task["agent"],
+                task["dispatch_id"],
+                task["slug"],
+            )
+            if task["branch"] != expected_branch:
+                raise BoundaryError(
+                    "stored branch is not the normative task branch: %s"
+                    % expected_branch
+                )
+
+            repo_root = registered_common.parent
+            worktree_root = repo_root / ".worktrees"
+            if worktree_root.is_symlink():
+                raise BoundaryError(
+                    "worktree root must not be a symlink: %s" % worktree_root
+                )
+            candidate = worktree_root / (
+                "%s-%s-%s"
+                % (task["dispatch_id"], task["agent"], task["slug"])
+            )
+            if not isinstance(task["worktree_path"], str):
+                raise BoundaryError("stored worktree path is invalid")
+            stored_path = Path(task["worktree_path"])
+            if candidate.is_symlink() or stored_path.is_symlink():
+                raise BoundaryError(
+                    "worktree path must not be a symlink: %s" % stored_path
+                )
+            try:
+                expected_path = canonical_under(worktree_root, candidate)
+                cwd = canonical_under(worktree_root, stored_path)
+            except OSError as error:
+                raise BoundaryError(
+                    "trusted worktree path is unavailable: %s" % stored_path
+                ) from error
+            if cwd != expected_path:
+                raise BoundaryError(
+                    "worktree path must equal normative task path: %s"
+                    % expected_path
+                )
+        else:
+            cwd = Path(self.context.root)
+            if cwd.is_symlink():
+                raise BoundaryError("repository root must not be a symlink: %s" % cwd)
+
+        try:
+            resolved_cwd = cwd.resolve(strict=True)
+            discovered = RepoContext.discover(resolved_cwd)
+        except (BoundaryError, GitStateError):
+            raise
+        except OSError as error:
+            raise BoundaryError(
+                "trusted Git cwd is unavailable: %s" % cwd
+            ) from error
+        if discovered.root != resolved_cwd:
+            raise BoundaryError(
+                "trusted Git cwd must be a repository root: %s" % cwd
+            )
+        if discovered.common_dir != registered_common:
+            raise BoundaryError("trusted Git cwd belongs to another repository")
+        return resolved_cwd
+
+    def _trusted_head(self, cwd):
+        completed = run_argv(["git", "rev-parse", "HEAD"], cwd)
         actual_sha = completed.stdout.strip()
         if GIT_SHA_RE.fullmatch(actual_sha) is None:
             raise GitStateError("Git HEAD is not a full lowercase hexadecimal SHA")
@@ -58,13 +185,18 @@ class OperationCoordinator:
             return {"verified": None, "reason": "no verifier"}
         if not callable(verifier):
             raise ReconciliationError("operation verifier must be callable")
+        # Verifiers execute under the repository control lock and must only
+        # inspect Git postconditions. Cooperative store writes fail on the
+        # same lock and leave the operation PREPARED for later reconciliation.
         return _validated_verifier_result(verifier(operation))
 
     def reconcile_one(self, operation_id, verifier):
         with self.store.controlled_operation() as controlled:
             operation = self.store.get_operation(operation_id)
-            if operation is None or operation["phase"] != "PREPARED":
-                raise ReconciliationError("operation is not PREPARED")
+            if operation is None:
+                raise ReconciliationError("operation is missing")
+            if operation["phase"] != "PREPARED":
+                return operation
             result = self._verify(operation, verifier)
             return controlled.finish_operation(
                 operation_id,
@@ -102,6 +234,7 @@ class OperationCoordinator:
         if on_verified is not None and not callable(on_verified):
             raise ReconciliationError("on_verified must be callable")
 
+        terminal = None
         with self.store.controlled_operation() as controlled:
             existing = controlled.operation_for_idempotency(idempotency_key)
             if existing is not None:
@@ -114,23 +247,36 @@ class OperationCoordinator:
                 )
                 if operation["phase"] != "PREPARED":
                     return operation
-
-            actual_sha = self._trusted_head()
-            if target_sha != actual_sha:
-                raise GitStateError("operation target SHA does not match Git HEAD")
-
-            if existing is None:
-                operation = controlled.prepare_operation(
-                    dispatch_id,
-                    action,
-                    request_hash,
-                    target_sha,
-                    idempotency_key,
+                raise ReconciliationError(
+                    "operation is PREPARED; reconcile before executing again"
                 )
 
-            completed = run_argv(
-                command_argv, self.context.root, check=False
+            if controlled.prepared_operations():
+                raise ReconciliationError(
+                    "prepared operations must be reconciled before new execution"
+                )
+
+            task = controlled.get_task(dispatch_id)
+            if task is None:
+                raise KeyError(dispatch_id)
+            cwd = self._trusted_git_cwd(task)
+            actual_sha = self._trusted_head(cwd)
+            if not (
+                target_sha == task["current_head_sha"] == actual_sha
+            ):
+                raise GitStateError(
+                    "operation target, task head, and Git HEAD do not match"
+                )
+
+            operation = controlled.prepare_operation(
+                dispatch_id,
+                action,
+                request_hash,
+                target_sha,
+                idempotency_key,
             )
+
+            completed = run_argv(command_argv, cwd, check=False)
             result = self._verify(operation, verifier)
             result.update(
                 {
@@ -138,10 +284,12 @@ class OperationCoordinator:
                     "stderr": completed.stderr.strip(),
                 }
             )
-            if result["verified"] is True and on_verified is not None:
-                on_verified(result)
-            return controlled.finish_operation(
+            terminal = controlled.finish_operation(
                 operation["operation_id"],
                 _terminal_phase(result["verified"]),
                 result,
             )
+
+        if terminal["phase"] == "COMMITTED" and on_verified is not None:
+            on_verified(deepcopy(terminal["result"]))
+        return terminal

@@ -263,6 +263,12 @@ class _ControlledOperationSession:
     def operation_for_idempotency(self, idempotency_key):
         return self._store._operation_for_idempotency(idempotency_key)
 
+    def get_task(self, dispatch_id):
+        return self._store.get_task(dispatch_id)
+
+    def prepared_operations(self):
+        return self._store.prepared_operations()
+
     def finish_operation(self, operation_id, phase, result):
         return self._store._finish_operation_durable(operation_id, phase, result)
 

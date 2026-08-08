@@ -7,10 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from team_control.errors import GitStateError, ReconciliationError
+from team_control.errors import BoundaryError, GitStateError, ReconciliationError
 from team_control.git_context import RepoContext
-from team_control.operations import OperationCoordinator
-from team_control.store import ControlStore
+from team_control.operations import ALLOWED_GIT_SUBCOMMANDS, OperationCoordinator
+from team_control.store import ControlStore, StoreBusyError
 from tests.helpers import make_repo, run
 
 
@@ -59,6 +59,16 @@ class OperationTests(unittest.TestCase):
                     "SELECT * FROM operations ORDER BY operation_id"
                 ).fetchall()
             ]
+
+    def tamper_task_worktree(self, path, agent="agent", slug="tampered"):
+        branch = "agent/%s/%s-%s" % (agent, self.dispatch_id, slug)
+        with self.store.mutation() as connection:
+            connection.execute(
+                """UPDATE tasks
+                   SET agent = ?, slug = ?, branch = ?, worktree_path = ?
+                   WHERE dispatch_id = ?""",
+                (agent, slug, branch, str(path), self.dispatch_id),
+            )
 
     def test_prepare_is_idempotent_and_conflicting_reuse_fails_closed(self):
         first = self.prepare()
@@ -109,6 +119,68 @@ class OperationTests(unittest.TestCase):
             {self.operation_rows()[0]["operation_id"]},
         )
         self.assertEqual(len(self.operation_rows()), 1)
+
+    def test_execute_returns_terminal_idempotent_operation_without_command(self):
+        operation = self.prepare()
+        terminal = self.store.finish_operation(
+            operation["operation_id"], "COMMITTED", {"verified": True}
+        )
+
+        with mock.patch("team_control.operations.run_argv") as command:
+            result = self.ops.execute_git(
+                self.dispatch_id,
+                operation["action"],
+                operation["request_hash"],
+                operation["target_sha"],
+                operation["idempotency_key"],
+                ["git", "status", "--short"],
+                lambda ignored: {"verified": True},
+            )
+
+        self.assertEqual(result, terminal)
+        command.assert_not_called()
+
+    def test_execute_rejects_same_idempotency_prepared_without_replay(self):
+        operation = self.prepare()
+
+        with mock.patch("team_control.operations.run_argv") as command:
+            with self.assertRaisesRegex(ReconciliationError, "reconcile"):
+                self.ops.execute_git(
+                    self.dispatch_id,
+                    operation["action"],
+                    operation["request_hash"],
+                    operation["target_sha"],
+                    operation["idempotency_key"],
+                    ["git", "status", "--short"],
+                    lambda ignored: {"verified": True},
+                )
+
+        command.assert_not_called()
+        self.assertEqual(
+            self.store.get_operation(operation["operation_id"])["phase"],
+            "PREPARED",
+        )
+
+    def test_unrelated_prepared_operation_blocks_new_git_command(self):
+        existing = self.prepare("1", action="existing")
+
+        with mock.patch("team_control.operations.run_argv") as command:
+            with self.assertRaisesRegex(ReconciliationError, "reconcile"):
+                self.ops.execute_git(
+                    self.dispatch_id,
+                    "new-operation",
+                    "b" * 64,
+                    self.head,
+                    "new-operation-key",
+                    ["git", "status", "--short"],
+                    lambda ignored: {"verified": True},
+                )
+
+        command.assert_not_called()
+        self.assertEqual(
+            [row["operation_id"] for row in self.operation_rows()],
+            [existing["operation_id"]],
+        )
 
     def test_public_operation_decodes_result_and_hides_internal_json(self):
         operation = self.prepare()
@@ -202,6 +274,60 @@ class OperationTests(unittest.TestCase):
             "PREPARED",
         )
 
+    def test_reconcile_terminal_is_idempotent_without_reinvoking_verifier(self):
+        operation = self.prepare()
+        terminal = self.store.finish_operation(
+            operation["operation_id"], "FAILED", {"verified": False}
+        )
+        verifier = mock.Mock(side_effect=AssertionError("must not run"))
+
+        result = self.ops.reconcile_one(operation["operation_id"], verifier)
+
+        self.assertEqual(result, terminal)
+        verifier.assert_not_called()
+        with self.assertRaises(ReconciliationError):
+            self.ops.reconcile_one(str(uuid.uuid4()), verifier)
+
+    def test_concurrent_reconcile_all_returns_same_terminal_without_race_error(self):
+        operation = self.prepare()
+        barrier = threading.Barrier(2)
+        original_prepared = self.store.prepared_operations
+        results = []
+        errors = []
+        result_lock = threading.Lock()
+
+        def synchronized_prepared():
+            prepared = original_prepared()
+            barrier.wait()
+            return prepared
+
+        def reconcile():
+            try:
+                result = self.ops.reconcile_all(
+                    {operation["action"]: lambda ignored: {"verified": True}}
+                )
+                with result_lock:
+                    results.append(result)
+            except BaseException as error:
+                with result_lock:
+                    errors.append(error)
+
+        with mock.patch.object(
+            self.store, "prepared_operations", side_effect=synchronized_prepared
+        ):
+            threads = [threading.Thread(target=reconcile) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(5.0)
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        terminals = [result[0] for result in results]
+        self.assertEqual(terminals[0], terminals[1])
+        self.assertEqual(terminals[0]["phase"], "COMMITTED")
+
     def test_reconcile_all_blocks_operations_without_a_verifier(self):
         verified = self.prepare("1", action="known")
         unknown = self.prepare("2", action="unknown")
@@ -217,20 +343,153 @@ class OperationTests(unittest.TestCase):
         self.assertEqual(blocked["result"]["reason"], "no verifier")
 
     def test_execute_rejects_invalid_argv_before_preparing(self):
-        invalid = (None, [], (), "git status", ["git", 1], ["git", ""])
-        for argv in invalid:
+        invalid = (
+            None,
+            [],
+            (),
+            "git status",
+            ["git", 1],
+            ["git", ""],
+            ["/usr/bin/printf", "not-git"],
+            ["git", "-C", str(self.repo), "status"],
+            ["git", "-c", "alias.escape=!printf pwn", "escape"],
+            ["git", "--git-dir", str(self.context.common_dir), "status"],
+            ["git", "--git-dir=%s" % self.context.common_dir, "status"],
+            ["git", "--work-tree=%s" % self.repo, "status"],
+            ["git", "--namespace=other", "status"],
+            ["git", "--exec-path=/tmp", "status"],
+            ["git", "--config-env=core.editor=EDITOR", "status"],
+            ["git", "status", "--git-dir=%s" % self.context.common_dir],
+            ["git", "untrusted-alias"],
+            ["git", "clone", "source", "target"],
+        )
+        for index, argv in enumerate(invalid):
             with self.subTest(argv=argv):
-                with self.assertRaises(ReconciliationError):
-                    self.ops.execute_git(
-                        self.dispatch_id,
-                        "verify-head",
-                        "a" * 64,
-                        self.head,
-                        "invalid-argv-%s" % len(self.operation_rows()),
-                        argv,
-                        lambda ignored: {"verified": True},
-                    )
+                with mock.patch("team_control.operations.run_argv") as command:
+                    with self.assertRaises(ReconciliationError):
+                        self.ops.execute_git(
+                            self.dispatch_id,
+                            "verify-head",
+                            "a" * 64,
+                            self.head,
+                            "invalid-argv-%s" % index,
+                            argv,
+                            lambda ignored: {"verified": True},
+                        )
+                    command.assert_not_called()
                 self.assertEqual(self.operation_rows(), [])
+
+    def test_git_subcommand_allowlist_is_explicit_for_mvp_operations(self):
+        self.assertEqual(
+            ALLOWED_GIT_SUBCOMMANDS,
+            frozenset(
+                {
+                    "status",
+                    "rev-parse",
+                    "merge",
+                    "worktree",
+                    "branch",
+                    "commit",
+                    "cherry-pick",
+                    "rebase",
+                    "reset",
+                    "checkout",
+                    "switch",
+                    "restore",
+                    "tag",
+                    "update-ref",
+                }
+            ),
+        )
+
+    def test_external_repo_path_tamper_is_rejected_before_operation_or_command(self):
+        worktree_root = self.repo / ".worktrees"
+        worktree_root.mkdir()
+        external = make_repo(
+            worktree_root / ("%s-agent-tampered" % self.dispatch_id)
+        )
+        self.tamper_task_worktree(external, agent="agent", slug="tampered")
+
+        with mock.patch("team_control.operations.run_argv") as command:
+            with self.assertRaises(BoundaryError):
+                self.ops.execute_git(
+                    self.dispatch_id,
+                    "verify-head",
+                    "a" * 64,
+                    self.head,
+                    "external-repo-operation",
+                    ["git", "status", "--short"],
+                    lambda ignored: {"verified": True},
+                )
+
+        command.assert_not_called()
+        self.assertEqual(self.operation_rows(), [])
+
+    def test_execute_binds_head_and_command_to_registered_task_worktree(self):
+        agent = "agent"
+        slug = "trusted"
+        branch = "agent/%s/%s-%s" % (agent, self.dispatch_id, slug)
+        worktree = self.repo / ".worktrees" / (
+            "%s-%s-%s" % (self.dispatch_id, agent, slug)
+        )
+        worktree.parent.mkdir()
+        run(["git", "worktree", "add", "-b", branch, str(worktree)], self.repo)
+        self.store.attach_worktree(
+            self.dispatch_id, agent, slug, branch, worktree
+        )
+        calls = []
+
+        def controlled_run(argv, cwd, check=True):
+            calls.append((argv, Path(cwd), check))
+            if argv == ["git", "rev-parse", "HEAD"]:
+                return SimpleNamespace(
+                    stdout=self.head + "\n", stderr="", returncode=0
+                )
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        with mock.patch("team_control.operations.run_argv", side_effect=controlled_run):
+            terminal = self.ops.execute_git(
+                self.dispatch_id,
+                "verify-head",
+                "a" * 64,
+                self.head,
+                "trusted-worktree-operation",
+                ["git", "status", "--short"],
+                lambda ignored: {"verified": True},
+            )
+
+        self.assertEqual(terminal["phase"], "COMMITTED")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(
+            all(cwd == worktree.resolve() for ignored, cwd, check in calls)
+        )
+
+    def test_execute_requires_target_task_and_trusted_git_head_to_match(self):
+        with self.store.mutation() as connection:
+            connection.execute(
+                "UPDATE tasks SET current_head_sha = ? WHERE dispatch_id = ?",
+                ("b" * 40, self.dispatch_id),
+            )
+
+        with mock.patch(
+            "team_control.operations.run_argv",
+            return_value=SimpleNamespace(
+                stdout=self.head + "\n", stderr="", returncode=0
+            ),
+        ) as command:
+            with self.assertRaises(GitStateError):
+                self.ops.execute_git(
+                    self.dispatch_id,
+                    "verify-head",
+                    "a" * 64,
+                    self.head,
+                    "task-head-drift-operation",
+                    ["git", "status", "--short"],
+                    lambda ignored: {"verified": True},
+                )
+
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(self.operation_rows(), [])
 
     def test_execute_reads_trusted_head_under_lock_and_rejects_drift(self):
         (self.repo / "drift.txt").write_text("drift\n", encoding="utf-8")
@@ -341,6 +600,93 @@ class OperationTests(unittest.TestCase):
         if errors:
             raise errors[0]
         self.assertTrue(approval_observed.is_set())
+
+    def test_verifier_control_write_fails_and_leaves_operation_prepared(self):
+        self.store.lock_timeout = 0.05
+
+        def writing_verifier(ignored):
+            self.store.transition(self.dispatch_id, "DISPATCHED", "illegal verifier write")
+            return {"verified": True}
+
+        with self.assertRaises(StoreBusyError):
+            self.ops.execute_git(
+                self.dispatch_id,
+                "verify-head",
+                "a" * 64,
+                self.head,
+                "writing-verifier-operation",
+                ["git", "status", "--short"],
+                writing_verifier,
+            )
+
+        operation = self.store.prepared_operations()[0]
+        self.assertEqual(operation["phase"], "PREPARED")
+        self.assertEqual(self.store.get_task(self.dispatch_id)["state"], "PLANNED")
+
+    def test_on_verified_runs_after_terminal_and_can_write_store(self):
+        self.store.lock_timeout = 0.05
+        callback_payloads = []
+
+        def callback(result):
+            callback_payloads.append(result)
+            result["verified"] = False
+            result["callback_mutation"] = True
+            self.store.transition(
+                self.dispatch_id, "DISPATCHED", "callback after terminal"
+            )
+
+        terminal = self.ops.execute_git(
+            self.dispatch_id,
+            "verify-head",
+            "a" * 64,
+            self.head,
+            "callback-write-operation",
+            ["git", "status", "--short"],
+            lambda ignored: {"verified": True, "nested": {"value": "stable"}},
+            on_verified=callback,
+        )
+
+        self.assertEqual(terminal["phase"], "COMMITTED")
+        self.assertIs(terminal["result"]["verified"], True)
+        self.assertNotIn("callback_mutation", terminal["result"])
+        persisted = self.store.get_operation(terminal["operation_id"])
+        self.assertEqual(persisted, terminal)
+        self.assertEqual(self.store.get_task(self.dispatch_id)["state"], "DISPATCHED")
+        self.assertEqual(len(callback_payloads), 1)
+
+    def test_callback_failure_keeps_terminal_and_does_not_replay_git(self):
+        def failing_callback(ignored):
+            raise RuntimeError("callback failed")
+
+        with self.assertRaisesRegex(RuntimeError, "callback failed"):
+            self.ops.execute_git(
+                self.dispatch_id,
+                "verify-head",
+                "a" * 64,
+                self.head,
+                "failing-callback-operation",
+                ["git", "status", "--short"],
+                lambda ignored: {"verified": True},
+                on_verified=failing_callback,
+            )
+
+        terminal = self.store.get_operation(
+            self.operation_rows()[0]["operation_id"]
+        )
+        self.assertEqual(terminal["phase"], "COMMITTED")
+        with mock.patch("team_control.operations.run_argv") as command:
+            retried = self.ops.execute_git(
+                self.dispatch_id,
+                "verify-head",
+                "a" * 64,
+                self.head,
+                "failing-callback-operation",
+                ["git", "status", "--short"],
+                lambda ignored: {"verified": True},
+                on_verified=failing_callback,
+            )
+        self.assertEqual(retried, terminal)
+        command.assert_not_called()
 
     def test_command_returncode_does_not_replace_verified_postcondition(self):
         committed = self.ops.execute_git(
