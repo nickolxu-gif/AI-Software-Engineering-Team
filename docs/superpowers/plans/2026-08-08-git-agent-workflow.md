@@ -19,19 +19,19 @@
 - Create: `handoff.md`
 - Create: `GIT_WORKFLOW.md`
 
-- [ ] **Step 1: 写入 Git 忽略和文本规范**
+- [x] **Step 1: 写入 Git 忽略和文本规范**
 
 `.gitignore` 必须忽略 `.worktrees/`、系统缓存、编辑器缓存、常见构建输出、本地环境文件和日志；`.gitattributes` 必须统一文本文件为 LF，并把常见二进制格式标记为 `binary`。
 
-- [ ] **Step 2: 写入 Agent 运行契约**
+- [x] **Step 2: 写入 Agent 运行契约**
 
 `AGENTS.md` 必须要求 Agent 先读 `handoff.md`，把最新三份协议作为当前执行依据，禁止 Agent 自行合并 `main`、扩大权限或修改任务范围。
 
-- [ ] **Step 3: 写入当前交接状态**
+- [x] **Step 3: 写入当前交接状态**
 
 `handoff.md` 必须记录当前主线、规范优先级、已完成的 Git 初始化任务、下一步使用方式和已知的 v0.1 七问口径差异。
 
-- [ ] **Step 4: 写入 Git 操作手册**
+- [x] **Step 4: 写入 Git 操作手册**
 
 `GIT_WORKFLOW.md` 必须给出分支命名、Worktree 创建、Agent 执行、Codex Review、验收、合并和清理的完整命令。
 
@@ -41,15 +41,15 @@
 - Create: `scripts/new-agent-worktree.sh`
 - Create: `scripts/repo-health.sh`
 
-- [ ] **Step 1: 实现 Worktree 创建脚本**
+- [x] **Step 1: 实现 Worktree 创建脚本**
 
 脚本接收 `<dispatch-id> <agent> <slug>`，校验参数只能包含字母、数字、点、下划线和连字符，确认 `.worktrees/` 已被 Git 忽略，然后从 `main` 创建 `agent/<agent>/<dispatch-id>-<slug>` 分支及对应 Worktree。
 
-- [ ] **Step 2: 实现仓库健康检查脚本**
+- [x] **Step 2: 实现仓库健康检查脚本**
 
 脚本检查必需文档、`main` 分支、`.worktrees/` 忽略规则和工作区状态，并打印 Worktree 清单。
 
-- [ ] **Step 3: 验证脚本语法**
+- [x] **Step 3: 验证脚本语法**
 
 Run:
 
@@ -65,7 +65,7 @@ Expected: 两条命令均返回 0，且无语法错误输出。
 **Files:**
 - Create: `.git/` repository metadata
 
-- [ ] **Step 1: 初始化唯一稳定主线**
+- [x] **Step 1: 初始化唯一稳定主线**
 
 Run:
 
@@ -75,7 +75,7 @@ git init -b main
 
 Expected: 当前仓库分支为 `main`。
 
-- [ ] **Step 2: 验证 Worktree 目录被忽略**
+- [x] **Step 2: 验证 Worktree 目录被忽略**
 
 Run:
 
@@ -85,7 +85,7 @@ git check-ignore -q .worktrees/
 
 Expected: 返回 0。
 
-- [ ] **Step 3: 建立基线提交**
+- [x] **Step 3: 建立基线提交**
 
 Run:
 
@@ -103,7 +103,7 @@ Expected: 创建根提交，包含现有规范、运行契约、辅助脚本和�
 **Files:**
 - Test: `scripts/repo-health.sh`
 
-- [ ] **Step 1: 运行仓库健康检查**
+- [x] **Step 1: 运行仓库健康检查**
 
 Run:
 
@@ -113,7 +113,7 @@ Run:
 
 Expected: 输出 `Repository health: PASS`、当前分支和 Worktree 清单。
 
-- [ ] **Step 2: 检查 Git 状态**
+- [x] **Step 2: 检查 Git 状态**
 
 Run:
 
@@ -124,7 +124,7 @@ git log --oneline --decorate -1
 
 Expected: `main` 工作区干净，并显示基线提交。
 
-- [ ] **Step 3: 检查 Worktree 脚本的拒绝路径**
+- [x] **Step 3: 检查 Worktree 脚本的拒绝路径**
 
 Run:
 
@@ -133,3 +133,5 @@ Run:
 ```
 
 Expected: 非零退出，并说明参数包含不允许的字符；不得创建分支或目录。
+
+实际正向 Worktree smoke test 已由 `20260808-001` 完成；创建结果的 branch、path、base SHA 均与预期一致，证据见 `GIT_BOOTSTRAP_VERIFICATION.md`。
