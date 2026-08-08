@@ -29,15 +29,18 @@ def canonical_under(root, candidate):
 def run_argv(argv, cwd, check=True):
     if not isinstance(argv, (list, tuple)) or not argv or not all(isinstance(v, str) for v in argv):
         raise BoundaryError("subprocess arguments must be a non-empty string argv")
-    completed = subprocess.run(
-        list(argv),
-        cwd=str(cwd),
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=dict(os.environ),
-    )
+    try:
+        completed = subprocess.run(
+            list(argv),
+            cwd=str(cwd),
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=dict(os.environ),
+        )
+    except OSError as exc:
+        raise GitStateError("command failed to start: %s" % exc) from exc
     if check and completed.returncode != 0:
         raise GitStateError("command failed (%s): %s" % (completed.returncode, completed.stderr.strip()))
     return completed
