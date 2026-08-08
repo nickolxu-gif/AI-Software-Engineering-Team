@@ -44,11 +44,14 @@ class ControlPlane:
             raise BoundaryError(
                 "branch must equal normative task branch: %s" % expected_branch
             )
+        worktree_root = self.context.root / ".worktrees"
+        if worktree_root.is_symlink():
+            raise BoundaryError(
+                "worktree root must not be a symlink: %s" % worktree_root
+            )
         expected_path = canonical_under(
             self.context.root,
-            self.context.root
-            / ".worktrees"
-            / ("%s-%s-%s" % (dispatch_id, agent, slug)),
+            worktree_root / ("%s-%s-%s" % (dispatch_id, agent, slug)),
         )
         actual_path = canonical_under(self.context.root, path)
         if actual_path != expected_path:

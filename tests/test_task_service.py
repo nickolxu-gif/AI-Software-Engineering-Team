@@ -337,6 +337,22 @@ class TaskServiceTests(unittest.TestCase):
 
         self.assertEqual(self.store.get_task("20260808-003"), original)
 
+    def test_attach_worktree_rejects_worktrees_symlink_within_repo(self):
+        original = self.create()
+        redirect = self.context.root / "redirect"
+        redirect.mkdir()
+        (self.context.root / ".worktrees").symlink_to(
+            redirect, target_is_directory=True
+        )
+        branch, path = self.worktree_identity()
+
+        with self.assertRaises(BoundaryError):
+            self.control.attach_worktree(
+                "20260808-003", "codex", "safe-slug", branch, path
+            )
+
+        self.assertEqual(self.store.get_task("20260808-003"), original)
+
     def test_service_rejects_invalid_create_and_transition_inputs(self):
         create_cases = (
             ("../task", "Title", "Objective", "L1", BoundaryError),
