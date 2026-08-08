@@ -34,7 +34,6 @@ VALID_RECORDS = {
         "action": "merge",
         "target_sha": "b" * 40,
         "request_hash": "c" * 64,
-        "nonce_hash": "d" * 64,
         "expires_at": CREATED_AT,
         "consumed_at": None,
         "idempotency_key": "approval-1:merge",
@@ -84,7 +83,7 @@ VALID_RECORDS = {
 STRING_FIELDS = {
     "task": ("dispatch_id", "title", "objective", "risk_level", "state", "task_base_sha", "owner"),
     "event": ("dispatch_id", "event_type", "created_at"),
-    "approval": ("approval_id", "dispatch_id", "action", "target_sha", "request_hash", "nonce_hash", "expires_at", "idempotency_key"),
+    "approval": ("approval_id", "dispatch_id", "action", "target_sha", "request_hash", "expires_at", "idempotency_key"),
     "evidence": ("evidence_id", "dispatch_id", "kind", "path", "sha256", "created_at"),
     "agent_status": ("dispatch_id", "agent_id", "role", "state", "updated_at"),
     "review": ("review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "created_at"),
@@ -187,7 +186,6 @@ class ContractTests(unittest.TestCase):
             ("approval empty expiry", "approval", changed("approval", expires_at="")),
             ("approval empty consumed time", "approval", changed("approval", consumed_at="")),
             ("approval empty idempotency key", "approval", changed("approval", idempotency_key="")),
-            ("approval missing nonce", "approval", without("approval", "nonce_hash")),
             ("approval missing consumed time", "approval", without("approval", "consumed_at")),
             ("approval missing idempotency key", "approval", without("approval", "idempotency_key")),
             ("evidence kind enum", "evidence", changed("evidence", kind="log")),
@@ -242,7 +240,11 @@ class ContractTests(unittest.TestCase):
 
         approval = loaded["approval.schema.json"]
         self.assertTrue(
-            {"nonce_hash", "consumed_at", "idempotency_key"}.issubset(approval["required"])
+            {"consumed_at", "idempotency_key"}.issubset(approval["required"])
+        )
+        self.assertNotIn("nonce_hash", approval["required"])
+        self.assertEqual(
+            approval["properties"]["nonce_hash"]["pattern"], "^[0-9a-f]{64}$"
         )
         self.assertEqual(approval["properties"]["idempotency_key"]["minLength"], 1)
 

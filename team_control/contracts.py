@@ -29,7 +29,7 @@ RFC3339_RE = re.compile(
 REQUIRED = {
     "task": ("schema_version", "dispatch_id", "title", "objective", "risk_level", "state", "task_base_sha", "owner"),
     "event": ("schema_version", "dispatch_id", "sequence", "event_type", "created_at"),
-    "approval": ("schema_version", "approval_id", "dispatch_id", "action", "target_sha", "request_hash", "nonce_hash", "expires_at", "consumed_at", "idempotency_key"),
+    "approval": ("schema_version", "approval_id", "dispatch_id", "action", "target_sha", "request_hash", "expires_at", "consumed_at", "idempotency_key"),
     "evidence": ("schema_version", "evidence_id", "dispatch_id", "kind", "path", "sha256", "created_at"),
     "agent_status": ("schema_version", "dispatch_id", "agent_id", "role", "state", "updated_at"),
     "review": ("schema_version", "review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "created_at"),
@@ -39,7 +39,7 @@ REQUIRED = {
 STRING_FIELDS = {
     "task": ("dispatch_id", "title", "objective", "risk_level", "state", "task_base_sha", "owner"),
     "event": ("dispatch_id", "event_type", "created_at"),
-    "approval": ("approval_id", "dispatch_id", "action", "target_sha", "request_hash", "nonce_hash", "expires_at", "idempotency_key"),
+    "approval": ("approval_id", "dispatch_id", "action", "target_sha", "request_hash", "expires_at", "idempotency_key"),
     "evidence": ("evidence_id", "dispatch_id", "kind", "path", "sha256", "created_at"),
     "agent_status": ("dispatch_id", "agent_id", "role", "state", "updated_at"),
     "review": ("review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "created_at"),
@@ -156,7 +156,14 @@ def validate_record(kind, record):
     elif kind == "approval":
         _validate_pattern(record, "target_sha", SHA_RE, "a full hexadecimal SHA")
         _validate_pattern(record, "request_hash", HASH_RE, "a 64-character hexadecimal hash")
-        _validate_pattern(record, "nonce_hash", HASH_RE, "a 64-character hexadecimal hash")
+        if "nonce_hash" in record:
+            _validate_string(record, "nonce_hash")
+            _validate_pattern(
+                record,
+                "nonce_hash",
+                HASH_RE,
+                "a 64-character hexadecimal hash",
+            )
     elif kind == "evidence":
         if record["kind"] not in EVIDENCE_KINDS:
             raise ContractError("unknown evidence kind: %s" % record["kind"])

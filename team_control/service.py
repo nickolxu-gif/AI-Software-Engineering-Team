@@ -3,13 +3,16 @@ import json
 import math
 import re
 import uuid
+from pathlib import Path
 
 from .contracts import validate_record
-from .errors import ApprovalError, BoundaryError, ContractError
-from .git_context import canonical_under, run_argv, validate_component
+from .errors import ApprovalError, BoundaryError, ContractError, GitStateError
+from .git_context import RepoContext, canonical_under, run_argv, validate_component
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
+APPROVAL_REQUEST_DOMAIN = b"team-control/approval-request/v1\n"
+JS_SAFE_INTEGER_MAX = 9007199254740991
 
 
 def _validated_component(value, label):
@@ -25,11 +28,11 @@ def _validated_sha(value, label):
 
 
 def _validate_json_value(value):
-    if value is None or type(value) in (str, bool, int):
+    if value is None or type(value) in (str, bool):
         return
-    if type(value) is float:
-        if not math.isfinite(value):
-            raise ContractError("approval parameters must not contain NaN or infinity")
+    if type(value) is int:
+        if abs(value) > JS_SAFE_INTEGER_MAX:
+            raise ContractError("approval integers must be within the JS safe range")
         return
     if type(value) is list:
         for item in value:
@@ -44,6 +47,25 @@ def _validate_json_value(value):
     raise ContractError("approval parameters must contain only JSON values")
 
 
+def _canonical_approval_request_bytes(
+    dispatch_id, action, target_sha, parameters
+):
+    payload = {
+        "dispatch_id": dispatch_id,
+        "action": action,
+        "target_sha": target_sha,
+        "parameters": parameters,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return APPROVAL_REQUEST_DOMAIN + encoded
+
+
 class ControlPlane:
     def __init__(self, context, store):
         self.context = context
@@ -53,6 +75,78 @@ class ControlPlane:
         return run_argv(
             ["git", "rev-parse", "HEAD"], self.context.root
         ).stdout.strip()
+
+    def _trusted_git_cwd(self, task):
+        registered_common = Path(self.context.common_dir).resolve(strict=True)
+        if task["worktree_path"]:
+            component_fields = ("dispatch_id", "agent", "slug")
+            for field in component_fields:
+                value = task[field]
+                if not isinstance(value, str):
+                    raise BoundaryError("task %s is not a trusted component" % field)
+                validate_component(value, "task-%s" % field)
+            expected_branch = "agent/%s/%s-%s" % (
+                task["agent"],
+                task["dispatch_id"],
+                task["slug"],
+            )
+            if task["branch"] != expected_branch:
+                raise BoundaryError(
+                    "stored branch is not the normative task branch: %s"
+                    % expected_branch
+                )
+
+            repo_root = registered_common.parent
+            worktree_root = repo_root / ".worktrees"
+            if worktree_root.is_symlink():
+                raise BoundaryError(
+                    "worktree root must not be a symlink: %s" % worktree_root
+                )
+            candidate = worktree_root / (
+                "%s-%s-%s"
+                % (task["dispatch_id"], task["agent"], task["slug"])
+            )
+            stored_path = Path(task["worktree_path"])
+            if candidate.is_symlink() or stored_path.is_symlink():
+                raise BoundaryError(
+                    "worktree path must not be a symlink: %s" % stored_path
+                )
+            try:
+                expected_path = canonical_under(worktree_root, candidate)
+                cwd = canonical_under(worktree_root, stored_path)
+            except OSError as error:
+                raise BoundaryError(
+                    "trusted worktree path is unavailable: %s" % stored_path
+                ) from error
+            if cwd != expected_path:
+                raise BoundaryError(
+                    "worktree path must equal normative task path: %s"
+                    % expected_path
+                )
+        else:
+            cwd = Path(self.context.root)
+            if cwd.is_symlink():
+                raise BoundaryError("repository root must not be a symlink: %s" % cwd)
+
+        try:
+            resolved_cwd = cwd.resolve(strict=True)
+            discovered = RepoContext.discover(resolved_cwd)
+        except (BoundaryError, GitStateError):
+            raise
+        except OSError as error:
+            raise BoundaryError("trusted Git cwd is unavailable: %s" % cwd) from error
+        if discovered.root != resolved_cwd:
+            raise BoundaryError("trusted Git cwd must be a repository root: %s" % cwd)
+        if discovered.common_dir != registered_common:
+            raise BoundaryError("trusted Git cwd belongs to another repository")
+        return resolved_cwd
+
+    def _trusted_actual_head(self, task):
+        cwd = self._trusted_git_cwd(task)
+        actual_sha = run_argv(["git", "rev-parse", "HEAD"], cwd).stdout.strip()
+        if SHA_RE.fullmatch(actual_sha) is None:
+            raise GitStateError("Git HEAD is not a full lowercase hexadecimal SHA")
+        return actual_sha, cwd
 
     def create_task(self, dispatch_id, title, objective, risk_level):
         validate_component(dispatch_id, "dispatch-id")
@@ -84,8 +178,14 @@ class ControlPlane:
         if type(parameters) is not dict:
             raise ContractError("approval parameters must be a JSON object")
         _validate_json_value(parameters)
-        if not isinstance(nonce, str) or not nonce.strip():
-            raise ContractError("approval nonce must be a non-empty string")
+        if (
+            not isinstance(nonce, str)
+            or not nonce.strip()
+            or len(nonce) < 16
+        ):
+            raise ContractError(
+                "approval nonce must be a non-empty string of at least 16 characters"
+            )
         if (
             isinstance(ttl_minutes, bool)
             or not isinstance(ttl_minutes, (int, float))
@@ -97,20 +197,15 @@ class ControlPlane:
                 "ttl_minutes must be a finite number from 1 to 1440"
             )
         try:
-            request_json = json.dumps(
-                {
-                    "dispatch_id": dispatch_id,
-                    "action": action,
-                    "target_sha": target_sha,
-                    "parameters": parameters,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
+            request_bytes = _canonical_approval_request_bytes(
+                dispatch_id,
+                action,
+                target_sha,
+                parameters,
             )
         except (TypeError, ValueError) as error:
             raise ContractError("approval parameters must be valid JSON") from error
-        request_hash = hashlib.sha256(request_json.encode("utf-8")).hexdigest()
+        request_hash = hashlib.sha256(request_bytes).hexdigest()
         return self.store.create_approval(
             dispatch_id,
             action,
@@ -121,9 +216,10 @@ class ControlPlane:
             str(uuid.uuid4()),
         )
 
-    def consume_approval(self, approval_id, nonce, actual_sha):
+    def consume_approval(self, approval_id, nonce):
         _validated_component(approval_id, "approval-id")
-        _validated_sha(actual_sha, "actual_sha")
+        task = self.store.approval_task_snapshot(approval_id)
+        actual_sha, _ = self._trusted_actual_head(task)
         return self.store.consume_approval(approval_id, nonce, actual_sha)
 
     def transition(self, dispatch_id, target, reason):
@@ -170,10 +266,7 @@ class ControlPlane:
         task, events, approvals = self.store.status_snapshot(dispatch_id)
         if task is None:
             raise KeyError(dispatch_id)
-        git_cwd = task["worktree_path"] or self.context.root
-        actual_head_sha = run_argv(
-            ["git", "rev-parse", "HEAD"], git_cwd
-        ).stdout.strip()
+        actual_head_sha, _ = self._trusted_actual_head(task)
         return {
             "task": task,
             "events": events,

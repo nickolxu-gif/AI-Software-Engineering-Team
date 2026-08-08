@@ -13,16 +13,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import team_control.service as service_module
 from team_control.contracts import validate_record
 from team_control.errors import (
     ApprovalError,
+    BoundaryError,
     ContractError,
+    GitStateError,
     TeamControlError,
 )
 from team_control.git_context import RepoContext
 from team_control.service import ControlPlane
 from team_control.store import ControlStore
-from tests.helpers import make_repo
+from tests.helpers import make_repo, run
 
 
 DEFAULT_PARAMETERS = object()
@@ -82,21 +85,46 @@ class ApprovalTests(unittest.TestCase):
                 ).fetchall()
             ]
 
+    def tamper_task_worktree(self, path, agent="agent", slug="malicious"):
+        branch = "agent/%s/%s-%s" % (agent, self.dispatch_id, slug)
+        with self.store.mutation() as connection:
+            connection.execute(
+                """UPDATE tasks
+                   SET agent = ?, slug = ?, branch = ?, worktree_path = ?
+                   WHERE dispatch_id = ?""",
+                (agent, slug, branch, str(path), self.dispatch_id),
+            )
+
+    def test_canonical_request_has_fixed_domain_separated_bytes_and_hash(self):
+        canonical = service_module._canonical_approval_request_bytes(
+            "20260808-004",
+            "integrate",
+            "a" * 40,
+            {"z": [1, True, None], "a": {"key": "值"}},
+        )
+        expected = (
+            b"team-control/approval-request/v1\n"
+            b'{"action":"integrate","dispatch_id":"20260808-004",'
+            b'"parameters":{"a":{"key":"\xe5\x80\xbc"},"z":[1,true,null]},'
+            b'"target_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+        )
+        self.assertEqual(canonical, expected)
+        self.assertEqual(
+            hashlib.sha256(canonical).hexdigest(),
+            "8c6a4e3717d0fb792cc8951d9c387bbcdade92cbdb3b18255822c1402ff623f2",
+        )
+
     def test_request_uses_canonical_hash_and_returns_public_contract(self):
         nonce = "PLAINTEXT-NONCE-SECRET"
         parameters = {"z": [1, True, None], "a": {"key": "value"}}
         approval = self.request(nonce=nonce, parameters=parameters)
 
-        canonical = json.dumps(
-            {
-                "dispatch_id": self.dispatch_id,
-                "action": "integrate",
-                "target_sha": self.task["current_head_sha"],
-                "parameters": parameters,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
+        canonical = (
+            "team-control/approval-request/v1\n"
+            '{"action":"integrate","dispatch_id":"%s",'
+            '"parameters":{"a":{"key":"value"},"z":[1,true,null]},'
+            '"target_sha":"%s"}'
+            % (self.dispatch_id, self.task["current_head_sha"])
         )
         self.assertEqual(
             approval["request_hash"],
@@ -111,16 +139,12 @@ class ApprovalTests(unittest.TestCase):
                 "action",
                 "target_sha",
                 "request_hash",
-                "nonce_hash",
                 "expires_at",
                 "consumed_at",
                 "idempotency_key",
             },
         )
         self.assertEqual(approval["schema_version"], 1)
-        self.assertEqual(
-            approval["nonce_hash"], hashlib.sha256(nonce.encode("utf-8")).hexdigest()
-        )
         uuid.UUID(approval["approval_id"])
         uuid.UUID(approval["idempotency_key"])
         validate_record("approval", approval)
@@ -128,10 +152,22 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(self.store.pending_approvals(self.dispatch_id), [approval])
 
         persisted = json.dumps(self.approval_rows(), sort_keys=True)
-        returned = json.dumps(approval, sort_keys=True)
+        public = json.dumps(
+            {
+                "approval": approval,
+                "get": self.store.get_approval(approval["approval_id"]),
+                "pending": self.store.pending_approvals(self.dispatch_id),
+                "status": self.control.status(self.dispatch_id),
+            },
+            sort_keys=True,
+        )
         events = json.dumps(self.store.list_events(self.dispatch_id), sort_keys=True)
+        nonce_hash = hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+        self.assertEqual(self.approval_rows()[0]["nonce_hash"], nonce_hash)
         self.assertNotIn(nonce, persisted)
-        self.assertNotIn(nonce, returned)
+        self.assertNotIn(nonce, public)
+        self.assertNotIn(nonce_hash, public)
+        self.assertNotIn("nonce_hash", public)
         self.assertNotIn(nonce, events)
 
     def test_nonce_can_be_consumed_only_once(self):
@@ -142,9 +178,7 @@ class ApprovalTests(unittest.TestCase):
             "NEEDS_HUMAN_APPROVAL",
         )
 
-        operation = self.control.consume_approval(
-            approval["approval_id"], nonce, self.task["current_head_sha"]
-        )
+        operation = self.control.consume_approval(approval["approval_id"], nonce)
 
         self.assertEqual(operation["phase"], "PREPARED")
         self.assertIsNone(operation["result_json"])
@@ -153,9 +187,7 @@ class ApprovalTests(unittest.TestCase):
             self.control.status(self.dispatch_id)["effective_state"], "PLANNED"
         )
         with self.assertRaises(ApprovalError):
-            self.control.consume_approval(
-                approval["approval_id"], nonce, self.task["current_head_sha"]
-            )
+            self.control.consume_approval(approval["approval_id"], nonce)
         self.assertEqual(len(self.operation_rows()), 1)
 
         consumed = self.store.get_approval(approval["approval_id"])
@@ -163,7 +195,7 @@ class ApprovalTests(unittest.TestCase):
         validate_record("approval", consumed)
 
     def test_concurrent_consumption_has_exactly_one_winner(self):
-        nonce = "one-winner"
+        nonce = "one-winner-nonce"
         approval = self.request(nonce=nonce)
         barrier = threading.Barrier(3)
         results = []
@@ -172,9 +204,7 @@ class ApprovalTests(unittest.TestCase):
         def consume_once():
             barrier.wait()
             try:
-                result = self.control.consume_approval(
-                    approval["approval_id"], nonce, self.task["current_head_sha"]
-                )
+                result = self.control.consume_approval(approval["approval_id"], nonce)
             except BaseException as error:
                 result = error
             with result_lock:
@@ -192,6 +222,81 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(sum(isinstance(item, ApprovalError) for item in results), 1)
         self.assertEqual(len(self.operation_rows()), 1)
 
+    def test_consume_uses_trusted_git_head_and_has_no_caller_sha_argument(self):
+        nonce = "trusted-head-nonce"
+        approval = self.request(nonce=nonce)
+        (self.repo / "drift.txt").write_text("new head\n", encoding="utf-8")
+        run(["git", "add", "--", "drift.txt"], self.repo)
+        run(["git", "commit", "-m", "test: move approval head"], self.repo)
+
+        with self.assertRaises(TypeError):
+            self.control.consume_approval(
+                approval["approval_id"], nonce, self.task["current_head_sha"]
+            )
+        with self.assertRaises(ApprovalError):
+            self.control.consume_approval(approval["approval_id"], nonce)
+
+        self.assertEqual(self.operation_rows(), [])
+        persisted = self.store.get_approval(approval["approval_id"])
+        self.assertIsNone(persisted["consumed_at"])
+
+    def test_same_nonce_retries_are_idempotent_and_conflicts_fail_closed(self):
+        nonce = "idempotent-request-nonce"
+        first = self.request(nonce=nonce)
+        retry = self.request(nonce=nonce)
+
+        self.assertEqual(retry, first)
+        self.assertEqual(len(self.approval_rows()), 1)
+        with self.assertRaises(ApprovalError):
+            self.request(nonce=nonce, parameters={"branch": "different"})
+        self.assertEqual(len(self.approval_rows()), 1)
+
+        self.control.consume_approval(first["approval_id"], nonce)
+        consumed_retry = self.request(nonce=nonce)
+        self.assertEqual(consumed_retry["approval_id"], first["approval_id"])
+        self.assertIsNotNone(consumed_retry["consumed_at"])
+        self.assertEqual(len(self.approval_rows()), 1)
+
+    def test_concurrent_same_nonce_requests_create_one_approval(self):
+        nonce = "concurrent-request-nonce"
+        barrier = threading.Barrier(3)
+        results = []
+        result_lock = threading.Lock()
+
+        def request_once():
+            barrier.wait()
+            try:
+                result = self.request(nonce=nonce)
+            except BaseException as error:
+                result = error
+            with result_lock:
+                results.append(result)
+
+        threads = [threading.Thread(target=request_once) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(5.0)
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(sum(isinstance(item, dict) for item in results), 2)
+        self.assertEqual(
+            {item["approval_id"] for item in results if isinstance(item, dict)},
+            {self.approval_rows()[0]["approval_id"]},
+        )
+        self.assertEqual(len(self.approval_rows()), 1)
+
+    def test_nonce_requires_at_least_sixteen_characters(self):
+        for nonce in (None, "", "short", " " * 16, "123456789012345"):
+            with self.subTest(nonce=nonce):
+                with self.assertRaisesRegex(ContractError, "at least 16"):
+                    self.request(nonce=nonce)
+        approval = self.request(nonce="valid-sixteen-characters")
+        with self.assertRaisesRegex(ApprovalError, "at least 16"):
+            self.control.consume_approval(approval["approval_id"], "short")
+        self.assertEqual(self.operation_rows(), [])
+
     def test_nonce_comparison_is_constant_time_and_empty_nonce_is_rejected(self):
         nonce = "constant-time-secret"
         approval = self.request(nonce=nonce)
@@ -200,33 +305,29 @@ class ApprovalTests(unittest.TestCase):
         with mock.patch(
             "team_control.store.hmac.compare_digest", wraps=hmac.compare_digest
         ) as compare_digest:
-            self.control.consume_approval(
-                approval["approval_id"], nonce, self.task["current_head_sha"]
-            )
+            self.control.consume_approval(approval["approval_id"], nonce)
 
         compare_digest.assert_called_once_with(expected_hash, expected_hash)
         with self.assertRaises(ContractError):
             self.request(nonce="")
-        second = self.request(nonce="nonempty")
+        second = self.request(nonce="another-valid-nonce")
         before = len(self.operation_rows())
         with self.assertRaises(ApprovalError):
-            self.control.consume_approval(
-                second["approval_id"], "", self.task["current_head_sha"]
-            )
+            self.control.consume_approval(second["approval_id"], "")
         self.assertEqual(len(self.operation_rows()), before)
 
     def test_rejected_consumptions_leave_approval_and_operations_unchanged(self):
         cases = (
             "wrong_nonce",
-            "target_drift",
             "expired",
+            "invalid_expiry",
             "missing",
             "non_pending",
             "consumed_marker",
         )
         for case in cases:
             with self.subTest(case=case):
-                nonce = "nonce-%s" % case
+                nonce = "approval-nonce-%s" % case
                 approval = None if case == "missing" else self.request(nonce=nonce)
                 if case == "expired":
                     expired = (
@@ -236,6 +337,12 @@ class ApprovalTests(unittest.TestCase):
                         connection.execute(
                             "UPDATE approvals SET expires_at = ? WHERE approval_id = ?",
                             (expired, approval["approval_id"]),
+                        )
+                elif case == "invalid_expiry":
+                    with self.store.mutation() as connection:
+                        connection.execute(
+                            "UPDATE approvals SET expires_at = 'not-a-date' WHERE approval_id = ?",
+                            (approval["approval_id"],),
                         )
                 elif case == "non_pending":
                     with self.store.mutation() as connection:
@@ -251,14 +358,13 @@ class ApprovalTests(unittest.TestCase):
                         )
 
                 approval_id = str(uuid.uuid4()) if approval is None else approval["approval_id"]
-                supplied_nonce = "wrong" if case == "wrong_nonce" else nonce
-                actual_sha = "b" * 40 if case == "target_drift" else self.task["current_head_sha"]
+                supplied_nonce = (
+                    "wrong-approval-nonce" if case == "wrong_nonce" else nonce
+                )
                 before_operations = len(self.operation_rows())
 
                 with self.assertRaises(ApprovalError):
-                    self.control.consume_approval(
-                        approval_id, supplied_nonce, actual_sha
-                    )
+                    self.control.consume_approval(approval_id, supplied_nonce)
 
                 self.assertEqual(len(self.operation_rows()), before_operations)
                 if approval is not None:
@@ -297,8 +403,11 @@ class ApprovalTests(unittest.TestCase):
             "not-an-object",
             {"value": object()},
             {"value": (1, 2)},
+            {"value": 1.0},
             {"value": math.nan},
             {"value": math.inf},
+            {"value": 9007199254740992},
+            {"value": -9007199254740992},
             {1: "non-string-key"},
             {"nested": {2: "non-string-key"}},
         )
@@ -308,6 +417,12 @@ class ApprovalTests(unittest.TestCase):
                 with self.assertRaises(ContractError):
                     self.request(parameters=parameters)
                 self.assertEqual(len(self.approval_rows()), before)
+
+        approval = self.request(
+            nonce="safe-integer-bounds",
+            parameters={"minimum": -9007199254740991, "maximum": 9007199254740991},
+        )
+        validate_record("approval", approval)
 
     def test_request_inputs_fail_closed_and_target_must_match_task(self):
         invalid = (
@@ -325,17 +440,27 @@ class ApprovalTests(unittest.TestCase):
                 before = len(self.approval_rows())
                 with self.assertRaises(TeamControlError):
                     self.control.request_approval(
-                        dispatch_id, action, target_sha, {}, "nonce", 10
+                        dispatch_id, action, target_sha, {}, "request-input-nonce", 10
                     )
                 self.assertEqual(len(self.approval_rows()), before)
 
         with self.assertRaises(ApprovalError):
             self.control.request_approval(
-                self.dispatch_id, "integrate", "b" * 40, {}, "nonce", 10
+                self.dispatch_id,
+                "integrate",
+                "b" * 40,
+                {},
+                "request-target-nonce",
+                10,
             )
         with self.assertRaises(KeyError):
             self.control.request_approval(
-                "missing-task", "integrate", self.task["current_head_sha"], {}, "nonce", 10
+                "missing-task",
+                "integrate",
+                self.task["current_head_sha"],
+                {},
+                "request-missing-nonce",
+                10,
             )
         self.assertEqual(self.approval_rows(), [])
 
@@ -345,7 +470,7 @@ class ApprovalTests(unittest.TestCase):
             "integrate",
             self.task["current_head_sha"],
             "a" * 64,
-            "nonce",
+            "store-validation-nonce",
             10,
             str(uuid.uuid4()),
         )
@@ -363,7 +488,7 @@ class ApprovalTests(unittest.TestCase):
             "integrate",
             self.task["current_head_sha"],
             "b" * 64,
-            "nonce",
+            "store-idempotency-nonce-one",
             10,
             idempotency_key,
         )
@@ -373,7 +498,7 @@ class ApprovalTests(unittest.TestCase):
                 "integrate",
                 self.task["current_head_sha"],
                 "b" * 64,
-                "nonce",
+                "store-idempotency-nonce-two",
                 10,
                 idempotency_key,
             )
@@ -413,7 +538,7 @@ class ApprovalTests(unittest.TestCase):
                 if not task_read.wait(5.0):
                     raise AssertionError("status did not read task")
                 writer_started.set()
-                self.request(nonce="snapshot-writer")
+                self.request(nonce="snapshot-writer-nonce")
             except BaseException as error:
                 writer_errors.append(error)
             finally:
@@ -442,35 +567,109 @@ class ApprovalTests(unittest.TestCase):
 
     def test_status_uses_fixed_git_argv_and_reports_head_drift(self):
         completed = SimpleNamespace(stdout=self.task["current_head_sha"] + "\n")
-        with mock.patch(
-            "team_control.service.run_argv", return_value=completed
-        ) as called:
-            status = self.control.status(self.dispatch_id)
+        fake_repo_context = SimpleNamespace(
+            discover=mock.Mock(return_value=self.context)
+        )
+        with mock.patch.object(
+            service_module, "RepoContext", fake_repo_context, create=True
+        ):
+            with mock.patch(
+                "team_control.service.run_argv", return_value=completed
+            ) as called:
+                status = self.control.status(self.dispatch_id)
         called.assert_called_once_with(
             ["git", "rev-parse", "HEAD"], self.context.root
         )
         self.assertEqual(status["actual_head_sha"], self.task["current_head_sha"])
         self.assertFalse(status["head_drift"])
 
-        worktree_path = str(self.context.root)
-        with self.store.mutation() as connection:
-            connection.execute(
-                "UPDATE tasks SET worktree_path = ? WHERE dispatch_id = ?",
-                (worktree_path, self.dispatch_id),
-            )
         drifted = SimpleNamespace(stdout="b" * 40 + "\n")
-        with mock.patch(
-            "team_control.service.run_argv", return_value=drifted
-        ) as called:
-            status = self.control.status(self.dispatch_id)
+        with mock.patch.object(
+            service_module, "RepoContext", fake_repo_context, create=True
+        ):
+            with mock.patch(
+                "team_control.service.run_argv", return_value=drifted
+            ) as called:
+                status = self.control.status(self.dispatch_id)
         called.assert_called_once_with(
-            ["git", "rev-parse", "HEAD"], worktree_path
+            ["git", "rev-parse", "HEAD"], self.context.root
         )
         self.assertEqual(status["actual_head_sha"], "b" * 40)
         self.assertTrue(status["head_drift"])
 
-    def test_expired_pending_approval_remains_visible_and_blocks_status(self):
-        approval = self.request(nonce="expired-visible")
+    def test_external_repo_in_normative_path_is_rejected_for_status_and_consume(self):
+        approval = self.request(nonce="external-repo-cwd-nonce")
+        worktree_root = self.repo / ".worktrees"
+        worktree_root.mkdir()
+        candidate = worktree_root / ("%s-agent-malicious" % self.dispatch_id)
+        make_repo(candidate)
+        self.tamper_task_worktree(candidate)
+
+        for operation in (
+            lambda: self.control.status(self.dispatch_id),
+            lambda: self.control.consume_approval(
+                approval["approval_id"], "external-repo-cwd-nonce"
+            ),
+        ):
+            with self.assertRaises((BoundaryError, GitStateError)):
+                operation()
+        self.assertEqual(self.operation_rows(), [])
+
+    def test_missing_tampered_worktree_is_rejected_with_domain_error(self):
+        approval = self.request(nonce="missing-worktree-cwd-nonce")
+        candidate = self.repo / ".worktrees" / (
+            "%s-agent-malicious" % self.dispatch_id
+        )
+        self.tamper_task_worktree(candidate)
+
+        for operation in (
+            lambda: self.control.status(self.dispatch_id),
+            lambda: self.control.consume_approval(
+                approval["approval_id"], "missing-worktree-cwd-nonce"
+            ),
+        ):
+            with self.assertRaises((BoundaryError, GitStateError)):
+                operation()
+        self.assertEqual(self.operation_rows(), [])
+
+    def test_symlinked_worktree_target_is_rejected_before_git_use(self):
+        approval = self.request(nonce="target-symlink-cwd-nonce")
+        external = make_repo(Path(self.tmp.name) / "external-target")
+        worktree_root = self.repo / ".worktrees"
+        worktree_root.mkdir()
+        candidate = worktree_root / ("%s-agent-malicious" % self.dispatch_id)
+        candidate.symlink_to(external, target_is_directory=True)
+        self.tamper_task_worktree(candidate)
+
+        with self.assertRaises(BoundaryError):
+            self.control.status(self.dispatch_id)
+        with self.assertRaises(BoundaryError):
+            self.control.consume_approval(
+                approval["approval_id"], "target-symlink-cwd-nonce"
+            )
+        self.assertEqual(self.operation_rows(), [])
+
+    def test_symlinked_worktree_root_is_rejected_before_git_use(self):
+        approval = self.request(nonce="root-symlink-cwd-nonce")
+        outside = Path(self.tmp.name) / "outside-worktrees"
+        outside.mkdir()
+        candidate = outside / ("%s-agent-malicious" % self.dispatch_id)
+        make_repo(candidate)
+        worktree_root = self.repo / ".worktrees"
+        worktree_root.symlink_to(outside, target_is_directory=True)
+        self.tamper_task_worktree(worktree_root / candidate.name)
+
+        with self.assertRaises(BoundaryError):
+            self.control.status(self.dispatch_id)
+        with self.assertRaises(BoundaryError):
+            self.control.consume_approval(
+                approval["approval_id"], "root-symlink-cwd-nonce"
+            )
+        self.assertEqual(self.operation_rows(), [])
+
+    def test_expired_approval_is_audited_without_blocking_and_needs_new_nonce(self):
+        nonce = "expired-visible-nonce"
+        approval = self.request(nonce=nonce)
         expired = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
         with self.store.mutation() as connection:
             connection.execute(
@@ -480,18 +679,51 @@ class ApprovalTests(unittest.TestCase):
 
         status = self.control.status(self.dispatch_id)
 
+        self.assertEqual(status["pending_approvals"], [])
+        self.assertEqual(status["effective_state"], self.task["state"])
         self.assertEqual(
-            [item["approval_id"] for item in status["pending_approvals"]],
-            [approval["approval_id"]],
+            self.store.get_approval(approval["approval_id"])["approval_id"],
+            approval["approval_id"],
         )
-        self.assertEqual(status["effective_state"], "NEEDS_HUMAN_APPROVAL")
         with self.assertRaises(ApprovalError):
-            self.control.consume_approval(
-                approval["approval_id"],
-                "expired-visible",
-                self.task["current_head_sha"],
-            )
+            self.control.consume_approval(approval["approval_id"], nonce)
         self.assertEqual(self.operation_rows(), [])
+
+        retry = self.request(nonce=nonce)
+        self.assertEqual(retry["approval_id"], approval["approval_id"])
+        self.assertEqual(len(self.approval_rows()), 1)
+        fresh = self.request(nonce="fresh-after-expiry-nonce")
+        operation = self.control.consume_approval(
+            fresh["approval_id"], "fresh-after-expiry-nonce"
+        )
+        self.assertEqual(operation["phase"], "PREPARED")
+
+    def test_rfc3339_z_expiry_is_timezone_aware_for_future_and_past(self):
+        future = self.request(nonce="future-z-expiry-nonce")
+        with self.store.mutation() as connection:
+            connection.execute(
+                "UPDATE approvals SET expires_at = ? WHERE approval_id = ?",
+                ("2999-01-01T00:00:00Z", future["approval_id"]),
+            )
+        self.assertEqual(
+            [item["approval_id"] for item in self.store.pending_approvals(self.dispatch_id)],
+            [future["approval_id"]],
+        )
+        operation = self.control.consume_approval(
+            future["approval_id"], "future-z-expiry-nonce"
+        )
+        self.assertEqual(operation["phase"], "PREPARED")
+
+        past = self.request(nonce="past-z-expiry-nonce")
+        with self.store.mutation() as connection:
+            connection.execute(
+                "UPDATE approvals SET expires_at = ? WHERE approval_id = ?",
+                ("2000-01-01T00:00:00Z", past["approval_id"]),
+            )
+        self.assertEqual(self.store.pending_approvals(self.dispatch_id), [])
+        with self.assertRaises(ApprovalError):
+            self.control.consume_approval(past["approval_id"], "past-z-expiry-nonce")
+        self.assertEqual(len(self.operation_rows()), 1)
 
 
 if __name__ == "__main__":

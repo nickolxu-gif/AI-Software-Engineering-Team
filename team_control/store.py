@@ -122,6 +122,38 @@ def sha256_text(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+MIN_APPROVAL_NONCE_LENGTH = 16
+
+
+def validate_approval_nonce(value, error_type):
+    # Callers must generate approval nonces with a cryptographically secure,
+    # high-entropy generator; length is only the enforceable minimum here.
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) < MIN_APPROVAL_NONCE_LENGTH
+    ):
+        raise error_type(
+            "approval nonce must be a non-empty string of at least 16 characters"
+        )
+    return value
+
+
+def parse_approval_expiry(value):
+    if not isinstance(value, str):
+        raise ApprovalError("approval expiry is invalid")
+    normalized = value
+    if normalized.endswith(("Z", "z")):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        expires_at = datetime.fromisoformat(normalized)
+        if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+            raise ValueError("timezone is missing")
+    except ValueError as error:
+        raise ApprovalError("approval expiry is invalid") from error
+    return expires_at.astimezone(timezone.utc)
+
+
 def validate_ttl_minutes(value):
     if (
         isinstance(value, bool)
@@ -318,7 +350,6 @@ class ControlStore:
             "action": row["action"],
             "target_sha": row["target_sha"],
             "request_hash": row["request_hash"],
-            "nonce_hash": row["nonce_hash"],
             "expires_at": row["expires_at"],
             "consumed_at": row["consumed_at"],
             "idempotency_key": row["idempotency_key"],
@@ -336,12 +367,31 @@ class ControlStore:
         ttl_minutes,
         idempotency_key,
     ):
-        if not isinstance(nonce, str) or not nonce.strip():
-            raise ContractError("approval nonce must be a non-empty string")
+        validate_approval_nonce(nonce, ContractError)
         validate_ttl_minutes(ttl_minutes)
         approval_id = str(uuid.uuid4())
         nonce_hash = sha256_text(nonce)
         with self.mutation() as connection:
+            existing = connection.execute(
+                "SELECT * FROM approvals WHERE nonce_hash = ?",
+                (nonce_hash,),
+            ).fetchone()
+            if existing is not None:
+                identity = (
+                    "dispatch_id",
+                    "action",
+                    "target_sha",
+                    "request_hash",
+                )
+                requested = {
+                    "dispatch_id": dispatch_id,
+                    "action": action,
+                    "target_sha": target_sha,
+                    "request_hash": request_hash,
+                }
+                if all(existing[field] == requested[field] for field in identity):
+                    return self._approval_from_row(existing)
+                raise ApprovalError("approval nonce was already used for another request")
             task = connection.execute(
                 "SELECT current_head_sha FROM tasks WHERE dispatch_id = ?",
                 (dispatch_id,),
@@ -385,19 +435,42 @@ class ControlStore:
             ).fetchone()
         return self._approval_from_row(row)
 
+    def approval_task_snapshot(self, approval_id):
+        with self.read_connection() as connection:
+            connection.execute("BEGIN")
+            approval = connection.execute(
+                "SELECT dispatch_id FROM approvals WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+            if approval is None:
+                raise ApprovalError("approval is missing")
+            task = connection.execute(
+                "SELECT * FROM tasks WHERE dispatch_id = ?",
+                (approval["dispatch_id"],),
+            ).fetchone()
+            if task is None:
+                raise ApprovalError("approval task is missing")
+            result = dict(task)
+        return result
+
     def pending_approvals(self, dispatch_id):
         with self.read_connection() as connection:
             rows = connection.execute(
                 """SELECT * FROM approvals
                    WHERE dispatch_id = ? AND status = 'PENDING'
+                     AND consumed_at IS NULL
                    ORDER BY expires_at, approval_id""",
                 (dispatch_id,),
             ).fetchall()
-        return [self._approval_from_row(row) for row in rows]
+        now = datetime.now(timezone.utc)
+        return [
+            self._approval_from_row(row)
+            for row in rows
+            if parse_approval_expiry(row["expires_at"]) > now
+        ]
 
     def consume_approval(self, approval_id, nonce, actual_sha):
-        if not isinstance(nonce, str) or not nonce.strip():
-            raise ApprovalError("approval nonce must be a non-empty string")
+        validate_approval_nonce(nonce, ApprovalError)
         if not isinstance(actual_sha, str):
             raise ApprovalError("approval actual SHA must be a string")
         supplied_nonce_hash = sha256_text(nonce)
@@ -414,12 +487,7 @@ class ControlStore:
                 raise ApprovalError("approval is missing or already consumed")
             if not hmac.compare_digest(row["nonce_hash"], supplied_nonce_hash):
                 raise ApprovalError("approval nonce mismatch")
-            try:
-                expires_at = datetime.fromisoformat(row["expires_at"])
-                if expires_at.tzinfo is None or expires_at.utcoffset() is None:
-                    raise ValueError("timezone is missing")
-            except (TypeError, ValueError) as error:
-                raise ApprovalError("approval expiry is invalid") from error
+            expires_at = parse_approval_expiry(row["expires_at"])
             now_datetime = datetime.now(timezone.utc)
             if expires_at <= now_datetime:
                 raise ApprovalError("approval expired")
@@ -474,12 +542,18 @@ class ControlStore:
             approval_rows = connection.execute(
                 """SELECT * FROM approvals
                    WHERE dispatch_id = ? AND status = 'PENDING'
+                     AND consumed_at IS NULL
                    ORDER BY expires_at, approval_id""",
                 (dispatch_id,),
             ).fetchall()
             task = dict(task_row) if task_row is not None else None
             events = [self._event_from_row(row) for row in event_rows]
-            approvals = [self._approval_from_row(row) for row in approval_rows]
+            now = datetime.now(timezone.utc)
+            approvals = [
+                self._approval_from_row(row)
+                for row in approval_rows
+                if parse_approval_expiry(row["expires_at"]) > now
+            ]
         return task, events, approvals
 
     def transition(self, dispatch_id, target, reason):
