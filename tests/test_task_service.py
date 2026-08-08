@@ -180,9 +180,8 @@ class TaskServiceTests(unittest.TestCase):
 
     def test_get_task_and_status_report_missing_and_existing_tasks(self):
         self.assertIsNone(self.store.get_task("missing"))
-        self.assertEqual(
-            self.control.status("missing"), {"task": None, "events": []}
-        )
+        with self.assertRaises(KeyError):
+            self.control.status("missing")
 
         task = self.create()
         status = self.control.status("20260808-003")

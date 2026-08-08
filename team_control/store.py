@@ -1,14 +1,17 @@
 import fcntl
+import hashlib
+import hmac
 import json
 import math
 import sqlite3
 import time
+import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .contracts import validate_record
-from .errors import TeamControlError
+from .errors import ApprovalError, ContractError, TeamControlError
 from .git_context import canonical_under
 from .state_machine import next_state
 
@@ -113,6 +116,22 @@ class StoreBusyError(TeamControlError):
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def sha256_text(value):
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def validate_ttl_minutes(value):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 1
+        or value > 1440
+    ):
+        raise ContractError("ttl_minutes must be a finite number from 1 to 1440")
+    return value
 
 
 class ControlStore:
@@ -288,6 +307,160 @@ class ControlStore:
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
 
+    @staticmethod
+    def _approval_from_row(row):
+        if row is None:
+            return None
+        approval = {
+            "schema_version": 1,
+            "approval_id": row["approval_id"],
+            "dispatch_id": row["dispatch_id"],
+            "action": row["action"],
+            "target_sha": row["target_sha"],
+            "request_hash": row["request_hash"],
+            "nonce_hash": row["nonce_hash"],
+            "expires_at": row["expires_at"],
+            "consumed_at": row["consumed_at"],
+            "idempotency_key": row["idempotency_key"],
+        }
+        validate_record("approval", approval)
+        return approval
+
+    def create_approval(
+        self,
+        dispatch_id,
+        action,
+        target_sha,
+        request_hash,
+        nonce,
+        ttl_minutes,
+        idempotency_key,
+    ):
+        if not isinstance(nonce, str) or not nonce.strip():
+            raise ContractError("approval nonce must be a non-empty string")
+        validate_ttl_minutes(ttl_minutes)
+        approval_id = str(uuid.uuid4())
+        nonce_hash = sha256_text(nonce)
+        with self.mutation() as connection:
+            task = connection.execute(
+                "SELECT current_head_sha FROM tasks WHERE dispatch_id = ?",
+                (dispatch_id,),
+            ).fetchone()
+            if task is None:
+                raise KeyError(dispatch_id)
+            if task["current_head_sha"] != target_sha:
+                raise ApprovalError("approval target SHA does not match task head")
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
+            ).isoformat()
+            connection.execute(
+                """INSERT INTO approvals (
+                       approval_id, dispatch_id, action, target_sha,
+                       request_hash, nonce_hash, expires_at, consumed_at,
+                       status, idempotency_key
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'PENDING', ?)""",
+                (
+                    approval_id,
+                    dispatch_id,
+                    action,
+                    target_sha,
+                    request_hash,
+                    nonce_hash,
+                    expires_at,
+                    idempotency_key,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM approvals WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+            approval = self._approval_from_row(row)
+        return approval
+
+    def get_approval(self, approval_id):
+        with self.read_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM approvals WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+        return self._approval_from_row(row)
+
+    def pending_approvals(self, dispatch_id):
+        with self.read_connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM approvals
+                   WHERE dispatch_id = ? AND status = 'PENDING'
+                   ORDER BY expires_at, approval_id""",
+                (dispatch_id,),
+            ).fetchall()
+        return [self._approval_from_row(row) for row in rows]
+
+    def consume_approval(self, approval_id, nonce, actual_sha):
+        if not isinstance(nonce, str) or not nonce.strip():
+            raise ApprovalError("approval nonce must be a non-empty string")
+        if not isinstance(actual_sha, str):
+            raise ApprovalError("approval actual SHA must be a string")
+        supplied_nonce_hash = sha256_text(nonce)
+        with self.mutation() as connection:
+            row = connection.execute(
+                "SELECT * FROM approvals WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+            if (
+                row is None
+                or row["status"] != "PENDING"
+                or row["consumed_at"] is not None
+            ):
+                raise ApprovalError("approval is missing or already consumed")
+            if not hmac.compare_digest(row["nonce_hash"], supplied_nonce_hash):
+                raise ApprovalError("approval nonce mismatch")
+            try:
+                expires_at = datetime.fromisoformat(row["expires_at"])
+                if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+                    raise ValueError("timezone is missing")
+            except (TypeError, ValueError) as error:
+                raise ApprovalError("approval expiry is invalid") from error
+            now_datetime = datetime.now(timezone.utc)
+            if expires_at <= now_datetime:
+                raise ApprovalError("approval expired")
+            if row["target_sha"] != actual_sha:
+                raise ApprovalError("approval target SHA drifted")
+
+            now = now_datetime.isoformat()
+            operation_id = str(uuid.uuid4())
+            connection.execute(
+                """INSERT INTO operations (
+                       operation_id, dispatch_id, action, request_hash,
+                       target_sha, phase, result_json, idempotency_key,
+                       created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, 'PREPARED', NULL, ?, ?, ?)""",
+                (
+                    operation_id,
+                    row["dispatch_id"],
+                    row["action"],
+                    row["request_hash"],
+                    row["target_sha"],
+                    row["idempotency_key"],
+                    now,
+                    now,
+                ),
+            )
+            cursor = connection.execute(
+                """UPDATE approvals
+                   SET status = 'CONSUMED', consumed_at = ?
+                   WHERE approval_id = ? AND status = 'PENDING'
+                     AND consumed_at IS NULL""",
+                (now, approval_id),
+            )
+            if cursor.rowcount != 1:
+                raise ApprovalError("approval is missing or already consumed")
+            operation = connection.execute(
+                "SELECT * FROM operations WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            result = dict(operation)
+        return result
+
     def status_snapshot(self, dispatch_id):
         with self.read_connection() as connection:
             connection.execute("BEGIN")
@@ -298,9 +471,16 @@ class ControlStore:
                 "SELECT * FROM events WHERE dispatch_id = ? ORDER BY sequence",
                 (dispatch_id,),
             ).fetchall()
+            approval_rows = connection.execute(
+                """SELECT * FROM approvals
+                   WHERE dispatch_id = ? AND status = 'PENDING'
+                   ORDER BY expires_at, approval_id""",
+                (dispatch_id,),
+            ).fetchall()
             task = dict(task_row) if task_row is not None else None
             events = [self._event_from_row(row) for row in event_rows]
-        return task, events
+            approvals = [self._approval_from_row(row) for row in approval_rows]
+        return task, events, approvals
 
     def transition(self, dispatch_id, target, reason):
         with self.mutation() as connection:
