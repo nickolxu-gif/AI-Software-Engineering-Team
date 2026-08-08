@@ -21,7 +21,8 @@ DISPATCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 RFC3339_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?"
+    r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt]"
+    r"(?:[01]\d|2[0-3]):[0-5]\d:(?P<second>[0-5]\d|60)(?:\.\d+)?"
     r"(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$"
 )
 
@@ -98,7 +99,8 @@ def _validate_datetime(record, field, nullable=False):
     value = record[field]
     if nullable and value is None:
         return
-    if not RFC3339_RE.fullmatch(value):
+    match = RFC3339_RE.fullmatch(value)
+    if match is None:
         raise ContractError("%s must be an RFC3339 date-time with a timezone" % field)
 
     normalized = value
@@ -106,6 +108,8 @@ def _validate_datetime(record, field, nullable=False):
         normalized = normalized[:-1] + "+00:00"
     if normalized[10] == "t":
         normalized = normalized[:10] + "T" + normalized[11:]
+    if match.group("second") == "60":
+        normalized = normalized[:17] + "59" + normalized[19:]
     try:
         parsed = datetime.fromisoformat(normalized)
     except ValueError:

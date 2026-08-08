@@ -143,6 +143,22 @@ class ContractTests(unittest.TestCase):
                 with self.subTest(kind=kind, field=field):
                     self.assertIs(validate_record(kind, record), record)
 
+    def test_rfc3339_leap_seconds_are_accepted(self):
+        leap_seconds = (
+            "1990-12-31T23:59:60Z",
+            "1990-12-31T23:59:60+08:00",
+        )
+        for kind, fields in DATE_TIME_FIELDS.items():
+            for field in fields:
+                for value in leap_seconds:
+                    record = changed(kind, **{field: value})
+                    with self.subTest(kind=kind, field=field, value=value):
+                        try:
+                            result = validate_record(kind, record)
+                        except ContractError as error:
+                            self.fail("valid RFC3339 leap second was rejected: %s" % error)
+                        self.assertIs(result, record)
+
     def test_invalid_records_raise_only_contract_error(self):
         cases = [
             ("kind type", [], {}),
@@ -161,6 +177,10 @@ class ContractTests(unittest.TestCase):
             ("event empty type", "event", changed("event", event_type="")),
             ("event empty timestamp", "event", changed("event", created_at="")),
             ("event invalid timezone offset", "event", changed("event", created_at="2026-08-08T12:00:00+08:99")),
+            ("event second 61", "event", changed("event", created_at="1990-12-31T23:59:61Z")),
+            ("event invalid leap date", "event", changed("event", created_at="1990-02-30T23:59:60Z")),
+            ("event naive leap second", "event", changed("event", created_at="1990-12-31T23:59:60")),
+            ("event leap second invalid offset", "event", changed("event", created_at="1990-12-31T23:59:60+08:99")),
             ("approval target SHA", "approval", changed("approval", target_sha="g" * 40)),
             ("approval request hash", "approval", changed("approval", request_hash="c" * 63)),
             ("approval nonce hash", "approval", changed("approval", nonce_hash="d" * 63)),
