@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import team_control.operations as operations_module
 from team_control.errors import BoundaryError, GitStateError, ReconciliationError
 from team_control.git_context import RepoContext
 from team_control.operations import ALLOWED_GIT_SUBCOMMANDS, OperationCoordinator
@@ -631,6 +632,7 @@ class OperationTests(unittest.TestCase):
             callback_payloads.append(result)
             result["verified"] = False
             result["callback_mutation"] = True
+            result["nested"]["value"] = "callback-mutated"
             self.store.transition(
                 self.dispatch_id, "DISPATCHED", "callback after terminal"
             )
@@ -647,45 +649,213 @@ class OperationTests(unittest.TestCase):
         )
 
         self.assertEqual(terminal["phase"], "COMMITTED")
+        self.assertEqual(terminal["result"]["callback_status"], "COMPLETED")
         self.assertIs(terminal["result"]["verified"], True)
+        self.assertEqual(terminal["result"]["nested"], {"value": "stable"})
         self.assertNotIn("callback_mutation", terminal["result"])
         persisted = self.store.get_operation(terminal["operation_id"])
         self.assertEqual(persisted, terminal)
         self.assertEqual(self.store.get_task(self.dispatch_id)["state"], "DISPATCHED")
         self.assertEqual(len(callback_payloads), 1)
+        self.assertEqual(callback_payloads[0]["callback_status"], "PENDING")
 
-    def test_callback_failure_keeps_terminal_and_does_not_replay_git(self):
-        def failing_callback(ignored):
-            raise RuntimeError("callback failed")
+    def test_callback_failure_is_persisted_and_terminal_retry_recovers_only_callback(self):
+        callback_attempts = []
+        original_run_argv = operations_module.run_argv
 
-        with self.assertRaisesRegex(RuntimeError, "callback failed"):
+        def recoverable_callback(result):
+            callback_attempts.append(result)
+            self.assertEqual(result["callback_status"], "PENDING")
+            if len(callback_attempts) == 1:
+                raise RuntimeError("callback failed")
+            self.store.transition(
+                self.dispatch_id, "DISPATCHED", "recovered callback"
+            )
+
+        with mock.patch(
+            "team_control.operations.run_argv", wraps=original_run_argv
+        ) as command:
+            with self.assertRaisesRegex(RuntimeError, "callback failed"):
+                self.ops.execute_git(
+                    self.dispatch_id,
+                    "verify-head",
+                    "a" * 64,
+                    self.head,
+                    "failing-callback-operation",
+                    ["git", "status", "--short"],
+                    lambda ignored: {"verified": True},
+                    on_verified=recoverable_callback,
+                )
+
+            pending = self.store.get_operation(
+                self.operation_rows()[0]["operation_id"]
+            )
+            self.assertEqual(pending["phase"], "COMMITTED")
+            self.assertEqual(pending["result"]["callback_status"], "PENDING")
+            self.assertEqual(self.store.get_task(self.dispatch_id)["state"], "PLANNED")
+
+            unchanged = self.ops.execute_git(
+                self.dispatch_id,
+                "verify-head",
+                "a" * 64,
+                self.head,
+                "failing-callback-operation",
+                ["git", "status", "--short"],
+                mock.Mock(side_effect=AssertionError("verifier must not rerun")),
+            )
+            self.assertEqual(unchanged, pending)
+
+            completed = self.ops.execute_git(
+                self.dispatch_id,
+                "verify-head",
+                "a" * 64,
+                self.head,
+                "failing-callback-operation",
+                ["git", "status", "--short"],
+                mock.Mock(side_effect=AssertionError("verifier must not rerun")),
+                on_verified=recoverable_callback,
+            )
+            self.assertEqual(completed["result"]["callback_status"], "COMPLETED")
+            self.assertEqual(self.store.get_task(self.dispatch_id)["state"], "DISPATCHED")
+
+            callback = mock.Mock(side_effect=AssertionError("callback must not rerun"))
+            repeated = self.ops.execute_git(
+                self.dispatch_id,
+                "verify-head",
+                "a" * 64,
+                self.head,
+                "failing-callback-operation",
+                ["git", "status", "--short"],
+                mock.Mock(side_effect=AssertionError("verifier must not rerun")),
+                on_verified=callback,
+            )
+
+        self.assertEqual(repeated, completed)
+        callback.assert_not_called()
+        self.assertEqual(len(callback_attempts), 2)
+        self.assertEqual(
+            sum(
+                call.args[0] == ["git", "status", "--short"]
+                for call in command.call_args_list
+            ),
+            1,
+        )
+
+    def test_callback_completion_update_is_guarded_and_idempotent(self):
+        operation = self.prepare()
+        pending = self.store.finish_operation(
+            operation["operation_id"],
+            "COMMITTED",
+            {
+                "verified": True,
+                "command_returncode": 0,
+                "stderr": "",
+                "callback_status": "PENDING",
+            },
+        )
+
+        completed = self.store.complete_operation_callback(
+            operation["operation_id"]
+        )
+        repeated = self.store.complete_operation_callback(
+            operation["operation_id"]
+        )
+
+        self.assertEqual(completed, repeated)
+        self.assertEqual(completed["phase"], "COMMITTED")
+        self.assertEqual(completed["result"]["callback_status"], "COMPLETED")
+        expected_result = dict(pending["result"])
+        expected_result["callback_status"] = "COMPLETED"
+        self.assertEqual(completed["result"], expected_result)
+
+    def test_callback_never_runs_when_persisted_verification_is_not_true(self):
+        operation = self.prepare()
+        terminal = self.store.finish_operation(
+            operation["operation_id"],
+            "COMMITTED",
+            {"verified": False, "callback_status": "PENDING"},
+        )
+        callback = mock.Mock(side_effect=AssertionError("callback must not run"))
+
+        with mock.patch("team_control.operations.run_argv") as command:
+            result = self.ops.execute_git(
+                self.dispatch_id,
+                operation["action"],
+                operation["request_hash"],
+                operation["target_sha"],
+                operation["idempotency_key"],
+                ["git", "status", "--short"],
+                lambda ignored: {"verified": True},
+                on_verified=callback,
+            )
+
+        self.assertEqual(result, terminal)
+        callback.assert_not_called()
+        command.assert_not_called()
+        with self.assertRaises(ReconciliationError):
+            self.store.complete_operation_callback(operation["operation_id"])
+
+    def test_concurrent_pending_callback_retries_never_replay_git(self):
+        def fail_initially(ignored):
+            raise RuntimeError("leave callback pending")
+
+        with self.assertRaisesRegex(RuntimeError, "leave callback pending"):
             self.ops.execute_git(
                 self.dispatch_id,
                 "verify-head",
                 "a" * 64,
                 self.head,
-                "failing-callback-operation",
+                "concurrent-callback-operation",
                 ["git", "status", "--short"],
                 lambda ignored: {"verified": True},
-                on_verified=failing_callback,
+                on_verified=fail_initially,
             )
 
-        terminal = self.store.get_operation(
-            self.operation_rows()[0]["operation_id"]
-        )
-        self.assertEqual(terminal["phase"], "COMMITTED")
+        callback_barrier = threading.Barrier(2)
+        callback_calls = []
+        results = []
+        errors = []
+        result_lock = threading.Lock()
+
+        def callback(result):
+            callback_calls.append(result)
+            callback_barrier.wait()
+
+        def retry():
+            try:
+                result = self.ops.execute_git(
+                    self.dispatch_id,
+                    "verify-head",
+                    "a" * 64,
+                    self.head,
+                    "concurrent-callback-operation",
+                    ["git", "status", "--short"],
+                    lambda ignored: {"verified": True},
+                    on_verified=callback,
+                )
+                with result_lock:
+                    results.append(result)
+            except BaseException as error:
+                with result_lock:
+                    errors.append(error)
+
         with mock.patch("team_control.operations.run_argv") as command:
-            retried = self.ops.execute_git(
-                self.dispatch_id,
-                "verify-head",
-                "a" * 64,
-                self.head,
-                "failing-callback-operation",
-                ["git", "status", "--short"],
-                lambda ignored: {"verified": True},
-                on_verified=failing_callback,
-            )
-        self.assertEqual(retried, terminal)
+            threads = [threading.Thread(target=retry) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(5.0)
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        self.assertTrue(
+            all(result["result"]["callback_status"] == "COMPLETED" for result in results)
+        )
+        self.assertEqual(len(callback_calls), 2)
+        self.assertTrue(
+            all(result["callback_status"] == "PENDING" for result in callback_calls)
+        )
         command.assert_not_called()
 
     def test_command_returncode_does_not_replace_verified_postcondition(self):

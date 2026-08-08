@@ -581,6 +581,69 @@ class ControlStore:
         with self._control_lock():
             return self._finish_operation_durable(operation_id, phase, result)
 
+    def complete_operation_callback(self, operation_id):
+        with self._control_lock():
+            with self._transaction() as connection:
+                row = connection.execute(
+                    "SELECT * FROM operations WHERE operation_id = ?",
+                    (operation_id,),
+                ).fetchone()
+                operation = self._operation_from_row(row)
+                if operation is None:
+                    raise ReconciliationError("operation is missing")
+                if operation["phase"] != "COMMITTED":
+                    raise ReconciliationError(
+                        "callback completion requires a COMMITTED operation"
+                    )
+                if operation["result"].get("verified") is not True:
+                    raise ReconciliationError(
+                        "callback completion requires verified true"
+                    )
+                callback_status = operation["result"].get("callback_status")
+                if callback_status == "COMPLETED":
+                    return operation
+                if callback_status != "PENDING":
+                    raise ReconciliationError(
+                        "operation callback is not PENDING"
+                    )
+
+                completed_result = dict(operation["result"])
+                completed_result["callback_status"] = "COMPLETED"
+                completed_json = _dump_operation_result(completed_result)
+                cursor = connection.execute(
+                    """UPDATE operations
+                       SET result_json = ?, updated_at = ?
+                       WHERE operation_id = ? AND phase = 'COMMITTED'
+                         AND result_json = ?""",
+                    (
+                        completed_json,
+                        utc_now(),
+                        operation_id,
+                        row["result_json"],
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    current = connection.execute(
+                        "SELECT * FROM operations WHERE operation_id = ?",
+                        (operation_id,),
+                    ).fetchone()
+                    current_operation = self._operation_from_row(current)
+                    if (
+                        current_operation is not None
+                        and current_operation["phase"] == "COMMITTED"
+                        and current_operation["result"].get("callback_status")
+                        == "COMPLETED"
+                    ):
+                        return current_operation
+                    raise ReconciliationError(
+                        "operation callback completion lost its guard"
+                    )
+                completed = connection.execute(
+                    "SELECT * FROM operations WHERE operation_id = ?",
+                    (operation_id,),
+                ).fetchone()
+                return self._operation_from_row(completed)
+
     def prepared_operations(self):
         with self.read_connection() as connection:
             rows = connection.execute(

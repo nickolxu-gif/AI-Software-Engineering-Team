@@ -217,6 +217,20 @@ class OperationCoordinator:
             )
         return results
 
+    def _run_pending_callback(self, operation, on_verified):
+        if (
+            on_verified is None
+            or operation["phase"] != "COMMITTED"
+            or operation["result"].get("verified") is not True
+            or operation["result"].get("callback_status") != "PENDING"
+        ):
+            return operation
+        # A crash after callback success but before the guarded marker leaves
+        # PENDING and causes an at-least-once retry. Callbacks must therefore
+        # be idempotent; exactly-once delivery is not claimed across processes.
+        on_verified(deepcopy(operation["result"]))
+        return self.store.complete_operation_callback(operation["operation_id"])
+
     def execute_git(
         self,
         dispatch_id,
@@ -245,51 +259,52 @@ class OperationCoordinator:
                     target_sha,
                     idempotency_key,
                 )
-                if operation["phase"] != "PREPARED":
-                    return operation
-                raise ReconciliationError(
-                    "operation is PREPARED; reconcile before executing again"
+                if operation["phase"] == "PREPARED":
+                    raise ReconciliationError(
+                        "operation is PREPARED; reconcile before executing again"
+                    )
+                terminal = operation
+            else:
+                if controlled.prepared_operations():
+                    raise ReconciliationError(
+                        "prepared operations must be reconciled before new execution"
+                    )
+
+                task = controlled.get_task(dispatch_id)
+                if task is None:
+                    raise KeyError(dispatch_id)
+                cwd = self._trusted_git_cwd(task)
+                actual_sha = self._trusted_head(cwd)
+                if not (
+                    target_sha == task["current_head_sha"] == actual_sha
+                ):
+                    raise GitStateError(
+                        "operation target, task head, and Git HEAD do not match"
+                    )
+
+                operation = controlled.prepare_operation(
+                    dispatch_id,
+                    action,
+                    request_hash,
+                    target_sha,
+                    idempotency_key,
                 )
 
-            if controlled.prepared_operations():
-                raise ReconciliationError(
-                    "prepared operations must be reconciled before new execution"
+                completed = run_argv(command_argv, cwd, check=False)
+                result = self._verify(operation, verifier)
+                result.pop("callback_status", None)
+                result.update(
+                    {
+                        "command_returncode": completed.returncode,
+                        "stderr": completed.stderr.strip(),
+                    }
+                )
+                if result["verified"] is True and on_verified is not None:
+                    result["callback_status"] = "PENDING"
+                terminal = controlled.finish_operation(
+                    operation["operation_id"],
+                    _terminal_phase(result["verified"]),
+                    result,
                 )
 
-            task = controlled.get_task(dispatch_id)
-            if task is None:
-                raise KeyError(dispatch_id)
-            cwd = self._trusted_git_cwd(task)
-            actual_sha = self._trusted_head(cwd)
-            if not (
-                target_sha == task["current_head_sha"] == actual_sha
-            ):
-                raise GitStateError(
-                    "operation target, task head, and Git HEAD do not match"
-                )
-
-            operation = controlled.prepare_operation(
-                dispatch_id,
-                action,
-                request_hash,
-                target_sha,
-                idempotency_key,
-            )
-
-            completed = run_argv(command_argv, cwd, check=False)
-            result = self._verify(operation, verifier)
-            result.update(
-                {
-                    "command_returncode": completed.returncode,
-                    "stderr": completed.stderr.strip(),
-                }
-            )
-            terminal = controlled.finish_operation(
-                operation["operation_id"],
-                _terminal_phase(result["verified"]),
-                result,
-            )
-
-        if terminal["phase"] == "COMMITTED" and on_verified is not None:
-            on_verified(deepcopy(terminal["result"]))
-        return terminal
+        return self._run_pending_callback(terminal, on_verified)
