@@ -1,7 +1,12 @@
 import fcntl
+import math
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
+
+from .errors import TeamControlError
+from .git_context import canonical_under
 
 
 SCHEMA = """
@@ -98,15 +103,47 @@ CREATE TABLE IF NOT EXISTS blockers (
 """
 
 
+class StoreBusyError(TeamControlError):
+    code = "STORE_BUSY"
+
+
 class ControlStore:
-    def __init__(self, path, lock_path):
+    def __init__(self, path, lock_path, lock_timeout=5.0, lock_poll_interval=0.05):
         self.path = Path(path).resolve()
         self.lock_path = Path(lock_path).resolve()
+        self.lock_timeout = self._positive_interval(lock_timeout, "lock_timeout")
+        self.lock_poll_interval = self._positive_interval(
+            lock_poll_interval, "lock_poll_interval"
+        )
+        self._common_dir = None
+
+    @staticmethod
+    def _positive_interval(value, name):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError("%s must be a positive finite number" % name)
+        return float(value)
 
     @classmethod
     def for_repo(cls, context):
-        runtime = context.common_dir / "team" / "runtime"
-        return cls(runtime / "team.db", runtime / "control-plane.lock")
+        common_dir = Path(context.common_dir).resolve(strict=True)
+        runtime = canonical_under(common_dir, common_dir / "team" / "runtime")
+        path = canonical_under(common_dir, runtime / "team.db")
+        lock_path = canonical_under(common_dir, runtime / "control-plane.lock")
+        store = cls(path, lock_path)
+        store._common_dir = common_dir
+        return store
+
+    def _validate_repo_paths(self):
+        if self._common_dir is None:
+            return
+        canonical_under(self._common_dir, self.path.parent)
+        canonical_under(self._common_dir, self.path)
+        canonical_under(self._common_dir, self.lock_path)
 
     def initialize(self):
         with self.mutation() as connection:
@@ -121,13 +158,30 @@ class ControlStore:
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
+    def _acquire_lock(self, lock_file):
+        deadline = time.monotonic() + self.lock_timeout
+        while True:
+            try:
+                fcntl.flock(
+                    lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
+                )
+                return
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise StoreBusyError("control store is busy")
+                time.sleep(min(self.lock_poll_interval, remaining))
+
     @contextmanager
     def mutation(self):
+        self._validate_repo_paths()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.lock_path.open("a+") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
             connection = None
+            lock_acquired = False
             try:
+                self._acquire_lock(lock_file)
+                lock_acquired = True
                 connection = self._connect()
                 connection.execute("BEGIN IMMEDIATE")
                 yield connection
@@ -141,10 +195,12 @@ class ControlStore:
                     if connection is not None:
                         connection.close()
                 finally:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    if lock_acquired:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     @contextmanager
     def read_connection(self):
+        self._validate_repo_paths()
         uri = self.path.resolve().as_uri() + "?mode=ro"
         connection = sqlite3.connect(uri, uri=True, timeout=5.0)
         connection.row_factory = sqlite3.Row

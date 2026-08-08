@@ -2,12 +2,17 @@ import fcntl
 import multiprocessing
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
+from team_control import store as store_module
+from team_control.errors import BoundaryError
 from team_control.git_context import RepoContext
-from team_control.store import ControlStore
 from tests.helpers import make_repo, run
+
+
+ControlStore = store_module.ControlStore
 
 
 EXPECTED_COLUMNS = {
@@ -86,6 +91,16 @@ def _contend_for_store(db_path, lock_path, probe_done, saw_contention, entered):
         entered.set()
 
 
+def _hold_store_lock(lock_path, locked, release):
+    with Path(lock_path).open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        locked.set()
+        try:
+            release.wait(2.0)
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _insert_task(connection, dispatch_id="task-1"):
     connection.execute(
         """INSERT INTO tasks (
@@ -112,6 +127,22 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.path, runtime / "team.db")
             self.assertEqual(store.lock_path, runtime / "control-plane.lock")
             self.assertTrue(store.path.is_file())
+
+    def test_for_repo_rejects_team_symlink_escape_before_creating_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = make_repo(root / "repo")
+            context = RepoContext.discover(repo)
+            outside = root / "outside"
+            outside.mkdir()
+            (context.common_dir / "team").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaises(BoundaryError):
+                ControlStore.for_repo(context)
+
+            self.assertFalse((outside / "runtime").exists())
+            self.assertEqual(list(outside.rglob("team.db")), [])
+            self.assertEqual(list(outside.rglob("control-plane.lock")), [])
 
     def test_schema_matches_all_control_plane_tables_and_constraints(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -259,6 +290,62 @@ class StoreTests(unittest.TestCase):
                 store.lock_path,
                 (Path(tmp) / "runtime" / "control-plane.lock").resolve(),
             )
+
+    def test_lock_timing_options_must_be_positive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for option in ("lock_timeout", "lock_poll_interval"):
+                for invalid in (0, -0.1):
+                    with self.subTest(option=option, invalid=invalid):
+                        values = {"lock_timeout": 5.0, "lock_poll_interval": 0.01}
+                        values[option] = invalid
+                        with self.assertRaises(ValueError):
+                            ControlStore(
+                                root / "team.db",
+                                root / "control-plane.lock",
+                                **values
+                            )
+
+    def test_process_lock_times_out_with_stable_domain_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+            store = ControlStore(
+                store.path,
+                store.lock_path,
+                lock_timeout=0.15,
+                lock_poll_interval=0.01,
+            )
+            process_context = multiprocessing.get_context("spawn")
+            locked = process_context.Event()
+            release = process_context.Event()
+            holder = process_context.Process(
+                target=_hold_store_lock,
+                args=(store.lock_path, locked, release),
+            )
+
+            try:
+                holder.start()
+                self.assertTrue(locked.wait(5.0), "lock holder failed to start")
+                started = time.monotonic()
+                with self.assertRaisesRegex(
+                    store_module.StoreBusyError, r"^control store is busy$"
+                ) as raised:
+                    with store.mutation():
+                        self.fail("writer entered while another process held the lock")
+                elapsed = time.monotonic() - started
+
+                self.assertEqual(raised.exception.code, "STORE_BUSY")
+                self.assertLess(elapsed, 1.0, "lock timeout exceeded its bounded wait")
+            finally:
+                release.set()
+                holder.join(5.0)
+                if holder.is_alive():
+                    holder.terminate()
+                    holder.join(5.0)
+
+            self.assertFalse(holder.is_alive(), "lock holder leaked after cleanup")
+            self.assertEqual(holder.exitcode, 0)
 
     def test_process_lock_serializes_two_writers_with_bounded_waits(self):
         with tempfile.TemporaryDirectory() as tmp:
