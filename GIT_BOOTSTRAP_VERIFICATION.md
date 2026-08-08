@@ -19,7 +19,7 @@
    - Branch：`agent/codex/20260808-001-bootstrap-verification`
    - Path：`/Users/qinxu/Documents/vibe coding/AI-Software-Engineering-Team/.worktrees/20260808-001-codex-bootstrap-verification`
    - Base SHA：`cd459565b8bb24156f92e400a11769d254eccda9`
-   - Worktree 创建时 `HEAD` 等于 Base SHA `cd459565b8bb24156f92e400a11769d254eccda9`；提交验证记录后当前分支 `HEAD` 已前进至 `eee2dbb3ecdc8947e4440da0f18b81fe3b53af15`；`git merge-base HEAD main` 与 `git rev-parse main` 仍为 `cd459565b8bb24156f92e400a11769d254eccda9`，证明该 Worktree 从指定基线创建。
+   - Worktree 创建时 `HEAD` 等于 Base SHA；验证分支产生记录提交后 `HEAD` 会前进，不将动态 `HEAD` 写死；验收以 `git merge-base HEAD main` 和 `git rev-parse main` 均等于基线 `cd459565b8bb24156f92e400a11769d254eccda9` 为准。
 5. Git 配置、运行契约、辅助脚本与基线提交均经过规格审查和质量审查；未发现 `Critical` 或 `Important` 问题。
 
 ## 已接受的 Minor 风险
