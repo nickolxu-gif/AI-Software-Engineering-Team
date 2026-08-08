@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import math
+import re
 import sqlite3
 import time
 import uuid
@@ -11,7 +12,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .contracts import validate_record
-from .errors import ApprovalError, ContractError, TeamControlError
+from .errors import (
+    ApprovalError,
+    ContractError,
+    ReconciliationError,
+    TeamControlError,
+)
 from .git_context import canonical_under
 from .state_machine import next_state
 
@@ -62,7 +68,9 @@ CREATE TABLE IF NOT EXISTS operations (
     action TEXT NOT NULL,
     request_hash TEXT NOT NULL,
     target_sha TEXT NOT NULL,
-    phase TEXT NOT NULL,
+    phase TEXT NOT NULL CHECK (
+        phase IN ('PREPARED', 'COMMITTED', 'FAILED', 'BLOCKED')
+    ),
     result_json TEXT,
     idempotency_key TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
@@ -123,6 +131,11 @@ def sha256_text(value):
 
 
 MIN_APPROVAL_NONCE_LENGTH = 16
+OPERATION_PHASES = frozenset(("PREPARED", "COMMITTED", "FAILED", "BLOCKED"))
+TERMINAL_OPERATION_PHASES = frozenset(("COMMITTED", "FAILED", "BLOCKED"))
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+ACTION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def validate_approval_nonce(value, error_type):
@@ -164,6 +177,94 @@ def validate_ttl_minutes(value):
     ):
         raise ContractError("ttl_minutes must be a finite number from 1 to 1440")
     return value
+
+
+def _validate_operation_inputs(action, request_hash, target_sha, idempotency_key):
+    if (
+        not isinstance(action, str)
+        or ACTION_RE.fullmatch(action) is None
+        or ".." in action
+    ):
+        raise ReconciliationError("operation action is invalid")
+    if not isinstance(request_hash, str) or SHA256_RE.fullmatch(request_hash) is None:
+        raise ReconciliationError("operation request hash is invalid")
+    if not isinstance(target_sha, str) or GIT_SHA_RE.fullmatch(target_sha) is None:
+        raise ReconciliationError("operation target SHA is invalid")
+    if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+        raise ReconciliationError("operation idempotency key is invalid")
+
+
+def _validate_json_value(value):
+    if value is None or isinstance(value, (str, bool)):
+        return
+    if isinstance(value, int) and not isinstance(value, bool):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ReconciliationError("operation result must be strict JSON")
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_json_value(item)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ReconciliationError("operation result keys must be strings")
+            _validate_json_value(item)
+        return
+    raise ReconciliationError("operation result must be strict JSON")
+
+
+def _dump_operation_result(result):
+    if not isinstance(result, dict):
+        raise ReconciliationError("operation result must be a JSON object")
+    _validate_json_value(result)
+    try:
+        return json.dumps(
+            result,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError) as error:
+        raise ReconciliationError("operation result must be strict JSON") from error
+
+
+def _load_operation_result(value):
+    if value is None:
+        return None
+
+    def reject_constant(constant):
+        raise ValueError("invalid JSON constant: %s" % constant)
+
+    try:
+        result = json.loads(value, parse_constant=reject_constant)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ReconciliationError("stored operation result is invalid") from error
+    if not isinstance(result, dict):
+        raise ReconciliationError("stored operation result is not an object")
+    _validate_json_value(result)
+    return result
+
+
+class _ControlledOperationSession:
+    def __init__(self, store):
+        self._store = store
+
+    def prepare_operation(
+        self, dispatch_id, action, request_hash, target_sha, idempotency_key
+    ):
+        return self._store._prepare_operation_durable(
+            dispatch_id, action, request_hash, target_sha, idempotency_key
+        )
+
+    def operation_for_idempotency(self, idempotency_key):
+        return self._store._operation_for_idempotency(idempotency_key)
+
+    def finish_operation(self, operation_id, phase, result):
+        return self._store._finish_operation_durable(operation_id, phase, result)
 
 
 class ControlStore:
@@ -232,30 +333,43 @@ class ControlStore:
                 time.sleep(min(self.lock_poll_interval, remaining))
 
     @contextmanager
-    def mutation(self):
+    def _control_lock(self):
         self._validate_repo_paths()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.lock_path.open("a+") as lock_file:
-            connection = None
             lock_acquired = False
             try:
                 self._acquire_lock(lock_file)
                 lock_acquired = True
-                connection = self._connect()
-                connection.execute("BEGIN IMMEDIATE")
-                yield connection
-                connection.commit()
-            except BaseException:
-                if connection is not None:
-                    connection.rollback()
-                raise
+                yield
             finally:
-                try:
-                    if connection is not None:
-                        connection.close()
-                finally:
-                    if lock_acquired:
-                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                if lock_acquired:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    @contextmanager
+    def _transaction(self):
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            yield connection
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    @contextmanager
+    def mutation(self):
+        with self._control_lock():
+            with self._transaction() as connection:
+                yield connection
+
+    @contextmanager
+    def controlled_operation(self):
+        """Hold the repository control lock across durable Git operation phases."""
+        with self._control_lock():
+            yield _ControlledOperationSession(self)
 
     @contextmanager
     def read_connection(self):
@@ -317,6 +431,158 @@ class ControlStore:
                 "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
             ).fetchone()
         return dict(row) if row is not None else None
+
+    @staticmethod
+    def _operation_from_row(row):
+        if row is None:
+            return None
+        phase = row["phase"]
+        if phase not in OPERATION_PHASES:
+            raise ReconciliationError("stored operation phase is invalid")
+        return {
+            "operation_id": row["operation_id"],
+            "dispatch_id": row["dispatch_id"],
+            "action": row["action"],
+            "request_hash": row["request_hash"],
+            "target_sha": row["target_sha"],
+            "phase": phase,
+            "result": _load_operation_result(row["result_json"]),
+            "idempotency_key": row["idempotency_key"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _prepare_operation_in_transaction(
+        connection,
+        dispatch_id,
+        action,
+        request_hash,
+        target_sha,
+        idempotency_key,
+    ):
+        task = connection.execute(
+            "SELECT 1 FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+        ).fetchone()
+        if task is None:
+            raise KeyError(dispatch_id)
+
+        existing = connection.execute(
+            "SELECT * FROM operations WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+        if existing is not None:
+            requested = {
+                "dispatch_id": dispatch_id,
+                "action": action,
+                "request_hash": request_hash,
+                "target_sha": target_sha,
+            }
+            if all(existing[field] == value for field, value in requested.items()):
+                return ControlStore._operation_from_row(existing)
+            raise ReconciliationError(
+                "operation idempotency key was used for another request"
+            )
+
+        operation_id = str(uuid.uuid4())
+        now = utc_now()
+        connection.execute(
+            """INSERT INTO operations (
+                   operation_id, dispatch_id, action, request_hash,
+                   target_sha, phase, result_json, idempotency_key,
+                   created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, 'PREPARED', NULL, ?, ?, ?)""",
+            (
+                operation_id,
+                dispatch_id,
+                action,
+                request_hash,
+                target_sha,
+                idempotency_key,
+                now,
+                now,
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM operations WHERE operation_id = ?", (operation_id,)
+        ).fetchone()
+        return ControlStore._operation_from_row(row)
+
+    def _prepare_operation_durable(
+        self, dispatch_id, action, request_hash, target_sha, idempotency_key
+    ):
+        _validate_operation_inputs(
+            action, request_hash, target_sha, idempotency_key
+        )
+        with self._transaction() as connection:
+            return self._prepare_operation_in_transaction(
+                connection,
+                dispatch_id,
+                action,
+                request_hash,
+                target_sha,
+                idempotency_key,
+            )
+
+    def prepare_operation(
+        self, dispatch_id, action, request_hash, target_sha, idempotency_key
+    ):
+        with self._control_lock():
+            return self._prepare_operation_durable(
+                dispatch_id,
+                action,
+                request_hash,
+                target_sha,
+                idempotency_key,
+            )
+
+    def get_operation(self, operation_id):
+        with self.read_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM operations WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+        return self._operation_from_row(row)
+
+    def _operation_for_idempotency(self, idempotency_key):
+        with self.read_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM operations WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        return self._operation_from_row(row)
+
+    def _finish_operation_durable(self, operation_id, phase, result):
+        if phase not in TERMINAL_OPERATION_PHASES:
+            raise ReconciliationError("invalid terminal operation phase")
+        result_json = _dump_operation_result(result)
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                """UPDATE operations
+                   SET phase = ?, result_json = ?, updated_at = ?
+                   WHERE operation_id = ? AND phase = 'PREPARED'""",
+                (phase, result_json, utc_now(), operation_id),
+            )
+            if cursor.rowcount != 1:
+                raise ReconciliationError(
+                    "operation is missing or is not PREPARED"
+                )
+            row = connection.execute(
+                "SELECT * FROM operations WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            return self._operation_from_row(row)
+
+    def finish_operation(self, operation_id, phase, result):
+        with self._control_lock():
+            return self._finish_operation_durable(operation_id, phase, result)
+
+    def prepared_operations(self):
+        with self.read_connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM operations
+                   WHERE phase = 'PREPARED'
+                   ORDER BY created_at, operation_id"""
+            ).fetchall()
+        return [self._operation_from_row(row) for row in rows]
 
     @staticmethod
     def _event_from_row(row):
@@ -544,6 +810,8 @@ class ControlStore:
                 "SELECT * FROM operations WHERE operation_id = ?",
                 (operation_id,),
             ).fetchone()
+            # Task6's approval API keeps its established PREPARED row shape.
+            # Task7's operation APIs expose the decoded public operation shape.
             result = dict(operation)
         return result
 
