@@ -1,12 +1,16 @@
 import fcntl
+import json
 import math
 import sqlite3
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
+from .contracts import validate_record
 from .errors import TeamControlError
 from .git_context import canonical_under
+from .state_machine import next_state
 
 
 SCHEMA = """
@@ -105,6 +109,10 @@ CREATE TABLE IF NOT EXISTS blockers (
 
 class StoreBusyError(TeamControlError):
     code = "STORE_BUSY"
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
 
 
 class ControlStore:
@@ -209,3 +217,117 @@ class ControlStore:
             yield connection
         finally:
             connection.close()
+
+    def create_task(self, record):
+        validate_record("task", record)
+        now = utc_now()
+        with self.mutation() as connection:
+            connection.execute(
+                """INSERT INTO tasks (
+                       dispatch_id, schema_version, title, objective, risk_level,
+                       state, resume_state, task_base_sha, current_head_sha,
+                       owner, agent, slug, branch, worktree_path, created_at,
+                       updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL,
+                             NULL, ?, ?)""",
+                (
+                    record["dispatch_id"], record["schema_version"],
+                    record["title"], record["objective"], record["risk_level"],
+                    record["state"], record["task_base_sha"],
+                    record["task_base_sha"], record["owner"], now, now,
+                ),
+            )
+            payload_json = json.dumps(record, sort_keys=True)
+            event = {
+                "schema_version": 1,
+                "dispatch_id": record["dispatch_id"],
+                "sequence": 1,
+                "event_type": "TASK_CREATED",
+                "created_at": now,
+            }
+            validate_record("event", event)
+            connection.execute(
+                "INSERT INTO events VALUES (?, ?, ?, ?, ?)",
+                (
+                    event["dispatch_id"], event["sequence"], event["event_type"],
+                    payload_json, event["created_at"],
+                ),
+            )
+        return self.get_task(record["dispatch_id"])
+
+    def get_task(self, dispatch_id):
+        with self.read_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_events(self, dispatch_id):
+        with self.read_connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM events WHERE dispatch_id = ? ORDER BY sequence",
+                (dispatch_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def transition(self, dispatch_id, target, reason):
+        now = utc_now()
+        with self.mutation() as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(dispatch_id)
+
+            target_state, resume_state = next_state(
+                row["state"], target, row["resume_state"]
+            )
+            sequence = connection.execute(
+                """SELECT COALESCE(MAX(sequence), 0) + 1
+                     FROM events WHERE dispatch_id = ?""",
+                (dispatch_id,),
+            ).fetchone()[0]
+            connection.execute(
+                """UPDATE tasks
+                   SET state = ?, resume_state = ?, updated_at = ?
+                   WHERE dispatch_id = ?""",
+                (target_state, resume_state, now, dispatch_id),
+            )
+            payload_json = json.dumps(
+                {"from": row["state"], "to": target_state, "reason": reason},
+                sort_keys=True,
+            )
+            event = {
+                "schema_version": 1,
+                "dispatch_id": dispatch_id,
+                "sequence": sequence,
+                "event_type": "STATE_CHANGED",
+                "created_at": now,
+            }
+            validate_record("event", event)
+            connection.execute(
+                "INSERT INTO events VALUES (?, ?, ?, ?, ?)",
+                (
+                    event["dispatch_id"], event["sequence"], event["event_type"],
+                    payload_json, event["created_at"],
+                ),
+            )
+        return self.get_task(dispatch_id)
+
+    def attach_worktree(self, dispatch_id, agent, slug, branch, path):
+        now = utc_now()
+        with self.mutation() as connection:
+            cursor = connection.execute(
+                """UPDATE tasks
+                   SET agent = ?, slug = ?, branch = ?, worktree_path = ?,
+                       updated_at = ?
+                   WHERE dispatch_id = ?""",
+                (agent, slug, branch, str(path), now, dispatch_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(dispatch_id)
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+            ).fetchone()
+            task = dict(row)
+        return task

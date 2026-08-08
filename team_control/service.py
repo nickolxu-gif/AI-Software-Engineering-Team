@@ -1,0 +1,52 @@
+from .contracts import validate_record
+from .errors import ContractError
+from .git_context import run_argv, validate_component
+
+
+class ControlPlane:
+    def __init__(self, context, store):
+        self.context = context
+        self.store = store
+
+    def current_head(self):
+        return run_argv(
+            ["git", "rev-parse", "HEAD"], self.context.root
+        ).stdout.strip()
+
+    def create_task(self, dispatch_id, title, objective, risk_level):
+        validate_component(dispatch_id, "dispatch-id")
+        record = {
+            "schema_version": 1,
+            "dispatch_id": dispatch_id,
+            "title": title,
+            "objective": objective,
+            "risk_level": risk_level,
+            "state": "PLANNED",
+            "task_base_sha": self.current_head(),
+            "owner": "Codex",
+        }
+        validate_record("task", record)
+        return self.store.create_task(record)
+
+    def transition(self, dispatch_id, target, reason):
+        validate_component(dispatch_id, "dispatch-id")
+        validate_component(target, "target-state")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ContractError("transition reason must be a non-empty string")
+        return self.store.transition(dispatch_id, target, reason)
+
+    def attach_worktree(self, dispatch_id, agent, slug, branch, path):
+        validate_component(dispatch_id, "dispatch-id")
+        validate_component(agent, "agent")
+        validate_component(slug, "slug")
+        validate_component(branch, "branch")
+        return self.store.attach_worktree(
+            dispatch_id, agent, slug, branch, str(path)
+        )
+
+    def status(self, dispatch_id):
+        validate_component(dispatch_id, "dispatch-id")
+        return {
+            "task": self.store.get_task(dispatch_id),
+            "events": self.store.list_events(dispatch_id),
+        }
