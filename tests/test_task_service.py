@@ -1,8 +1,8 @@
-import json
 import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +33,94 @@ class TaskServiceTests(unittest.TestCase):
         return self.control.create_task(
             dispatch_id, "Example", "Exercise lifecycle", "L1"
         )
+
+    def worktree_identity(self, dispatch_id="20260808-003", agent="codex", slug="safe-slug"):
+        branch = "agent/%s/%s-%s" % (agent, dispatch_id, slug)
+        path = self.context.root / ".worktrees" / ("%s-%s-%s" % (dispatch_id, agent, slug))
+        return branch, path
+
+    def assert_event_contract(self, event):
+        self.assertEqual(
+            set(event),
+            {
+                "schema_version", "dispatch_id", "sequence", "event_type",
+                "payload", "created_at",
+            },
+        )
+        self.assertNotIn("payload_json", event)
+        self.assertIsInstance(event["payload"], dict)
+        validate_record("event", event)
+
+    def run_with_followup_writer(self, operation, followup):
+        mutation_finished = threading.Event()
+        writer_ready = threading.Event()
+        writer_done = threading.Event()
+        writer_errors = []
+        main_thread = threading.current_thread()
+        original_mutation = self.store.mutation
+        original_get_task = self.store.get_task
+
+        @contextmanager
+        def observed_mutation():
+            with original_mutation() as connection:
+                yield connection
+            if threading.current_thread() is main_thread:
+                mutation_finished.set()
+
+        def coordinated_get_task(dispatch_id):
+            if threading.current_thread() is main_thread:
+                if not writer_done.wait(5.0):
+                    raise AssertionError("followup writer did not finish")
+            return original_get_task(dispatch_id)
+
+        def writer():
+            writer_ready.set()
+            try:
+                if not mutation_finished.wait(5.0):
+                    raise AssertionError("primary mutation did not finish")
+                followup()
+            except BaseException as error:
+                writer_errors.append(error)
+            finally:
+                writer_done.set()
+
+        thread = threading.Thread(target=writer)
+        with mock.patch.object(self.store, "mutation", observed_mutation), mock.patch.object(
+            self.store, "get_task", coordinated_get_task
+        ):
+            thread.start()
+            self.assertTrue(writer_ready.wait(5.0), "followup writer did not start")
+            result = operation()
+            thread.join(5.0)
+
+        self.assertFalse(thread.is_alive(), "followup writer leaked")
+        if writer_errors:
+            raise writer_errors[0]
+        return result
+
+    def assert_utc_now_inside_mutation(self, operation):
+        inside_mutation = {"value": False}
+        original_mutation = self.store.mutation
+
+        @contextmanager
+        def observed_mutation():
+            with original_mutation() as connection:
+                inside_mutation["value"] = True
+                try:
+                    yield connection
+                finally:
+                    inside_mutation["value"] = False
+
+        def checked_now():
+            self.assertTrue(
+                inside_mutation["value"], "utc_now called before mutation lock"
+            )
+            return "2026-08-09T00:00:00+00:00"
+
+        with mock.patch.object(self.store, "mutation", observed_mutation), mock.patch(
+            "team_control.store.utc_now", side_effect=checked_now
+        ):
+            operation()
 
     def assert_rfc3339(self, value):
         event = {
@@ -65,8 +153,9 @@ class TaskServiceTests(unittest.TestCase):
         self.assertEqual(task["owner"], "Codex")
         events = self.store.list_events("20260808-003")
         self.assertEqual([event["sequence"] for event in events], [1])
+        self.assert_event_contract(events[0])
         self.assertEqual(events[0]["event_type"], "TASK_CREATED")
-        payload = json.loads(events[0]["payload_json"])
+        payload = events[0]["payload"]
         self.assertEqual(payload["dispatch_id"], "20260808-003")
         self.assertEqual(payload["task_base_sha"], self.head)
 
@@ -80,6 +169,7 @@ class TaskServiceTests(unittest.TestCase):
         status = self.control.status("20260808-003")
         self.assertEqual(status["task"], task)
         self.assertEqual([event["sequence"] for event in status["events"]], [1])
+        self.assert_event_contract(status["events"][0])
 
     def test_transition_records_stable_payload_and_next_sequence(self):
         self.create()
@@ -90,9 +180,20 @@ class TaskServiceTests(unittest.TestCase):
         self.assertEqual(task["state"], "DISPATCHED")
         events = self.store.list_events("20260808-003")
         self.assertEqual([event["sequence"] for event in events], [1, 2])
+        for event in events:
+            self.assert_event_contract(event)
         self.assertEqual(events[1]["event_type"], "STATE_CHANGED")
         self.assertEqual(
-            events[1]["payload_json"],
+            events[1]["payload"],
+            {"from": "PLANNED", "reason": "scope approved", "to": "DISPATCHED"},
+        )
+        with self.store.read_connection() as connection:
+            payload_json = connection.execute(
+                "SELECT payload_json FROM events WHERE dispatch_id = ? AND sequence = 2",
+                ("20260808-003",),
+            ).fetchone()[0]
+        self.assertEqual(
+            payload_json,
             '{"from": "PLANNED", "reason": "scope approved", "to": "DISPATCHED"}',
         )
 
@@ -149,40 +250,92 @@ class TaskServiceTests(unittest.TestCase):
             [1, 2, 3, 4, 5, 6],
         )
 
-    def test_attach_worktree_updates_fields_and_stores_path_as_text(self):
-        self.create()
-        injected_path = Path(self.tmp.name) / "$(touch should-not-exist)"
+    def test_attach_worktree_accepts_normative_branch_and_path_types(self):
+        for index, path_type in enumerate((Path, str), start=1):
+            dispatch_id = "20260808-00%d" % index
+            self.create(dispatch_id)
+            branch, path = self.worktree_identity(dispatch_id)
 
-        task = self.control.attach_worktree(
-            "20260808-003", "codex", "safe-slug", "safe-branch", injected_path
-        )
+            task = self.control.attach_worktree(
+                dispatch_id, "codex", "safe-slug", branch, path_type(path)
+            )
 
-        self.assertEqual(task["agent"], "codex")
-        self.assertEqual(task["slug"], "safe-slug")
-        self.assertEqual(task["branch"], "safe-branch")
-        self.assertEqual(task["worktree_path"], str(injected_path))
-        self.assertFalse((Path(self.tmp.name) / "should-not-exist").exists())
+            self.assertEqual(task["agent"], "codex")
+            self.assertEqual(task["slug"], "safe-slug")
+            self.assertEqual(task["branch"], branch)
+            self.assertEqual(task["worktree_path"], str(path.resolve()))
 
     def test_attach_worktree_missing_task_raises_key_error(self):
+        branch, path = self.worktree_identity("missing")
         with self.assertRaisesRegex(KeyError, "missing"):
             self.control.attach_worktree(
-                "missing", "codex", "safe-slug", "safe-branch", self.repo
+                "missing", "codex", "safe-slug", branch, path
             )
+
+    def test_attach_worktree_rejects_noncanonical_branch_without_update(self):
+        original = self.create()
+        expected_branch, expected_path = self.worktree_identity()
+        cases = (
+            "safe-branch",
+            "agent/other/20260808-003-safe-slug",
+            "agent/codex/20260808-999-safe-slug",
+            "agent/codex/20260808-003-other-slug",
+            expected_branch + "/extra",
+        )
+        for branch in cases:
+            with self.subTest(branch=branch):
+                with self.assertRaises(BoundaryError):
+                    self.control.attach_worktree(
+                        "20260808-003", "codex", "safe-slug", branch,
+                        expected_path,
+                    )
+                self.assertEqual(self.store.get_task("20260808-003"), original)
 
     def test_attach_worktree_rejects_unsafe_components_without_update(self):
         original = self.create()
         cases = (
-            ("bad agent", "safe-slug", "safe-branch"),
-            ("codex", "../slug", "safe-branch"),
-            ("codex", "safe-slug", "branch;touch-pwned"),
+            ("bad agent", "safe-slug"),
+            ("codex", "../slug"),
         )
-        for agent, slug, branch in cases:
-            with self.subTest(agent=agent, slug=slug, branch=branch):
+        for agent, slug in cases:
+            branch, path = self.worktree_identity(agent=agent, slug=slug)
+            with self.subTest(agent=agent, slug=slug):
                 with self.assertRaises(BoundaryError):
                     self.control.attach_worktree(
-                        "20260808-003", agent, slug, branch, self.repo
+                        "20260808-003", agent, slug, branch, path
                     )
                 self.assertEqual(self.store.get_task("20260808-003"), original)
+
+    def test_attach_worktree_rejects_path_outside_or_with_wrong_basename(self):
+        original = self.create()
+        branch, expected_path = self.worktree_identity()
+        paths = (
+            Path(self.tmp.name) / expected_path.name,
+            self.context.root / ".worktrees" / "wrong-basename",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                with self.assertRaises(BoundaryError):
+                    self.control.attach_worktree(
+                        "20260808-003", "codex", "safe-slug", branch, path
+                    )
+                self.assertEqual(self.store.get_task("20260808-003"), original)
+
+    def test_attach_worktree_rejects_worktrees_symlink_escape(self):
+        original = self.create()
+        outside = Path(self.tmp.name) / "outside"
+        outside.mkdir()
+        (self.context.root / ".worktrees").symlink_to(
+            outside, target_is_directory=True
+        )
+        branch, path = self.worktree_identity()
+
+        with self.assertRaises(BoundaryError):
+            self.control.attach_worktree(
+                "20260808-003", "codex", "safe-slug", branch, path
+            )
+
+        self.assertEqual(self.store.get_task("20260808-003"), original)
 
     def test_service_rejects_invalid_create_and_transition_inputs(self):
         create_cases = (
@@ -241,6 +394,31 @@ class TaskServiceTests(unittest.TestCase):
         self.assertEqual(self.store.get_task("20260808-003"), original)
         self.assertEqual(len(self.store.list_events("20260808-003")), 1)
 
+    def test_create_returns_snapshot_before_followup_writer_transition(self):
+        task = self.run_with_followup_writer(
+            self.create,
+            lambda: self.control.transition(
+                "20260808-003", "DISPATCHED", "followup writer"
+            ),
+        )
+
+        self.assertEqual(task["state"], "PLANNED")
+        self.assertEqual(self.store.get_task("20260808-003")["state"], "DISPATCHED")
+
+    def test_transition_returns_its_snapshot_before_followup_writer_transition(self):
+        self.create()
+        task = self.run_with_followup_writer(
+            lambda: self.control.transition(
+                "20260808-003", "DISPATCHED", "primary writer"
+            ),
+            lambda: self.control.transition(
+                "20260808-003", "IN_PROGRESS", "followup writer"
+            ),
+        )
+
+        self.assertEqual(task["state"], "DISPATCHED")
+        self.assertEqual(self.store.get_task("20260808-003")["state"], "IN_PROGRESS")
+
     def test_concurrent_same_transition_is_serialized_without_duplicate_sequence(self):
         self.create()
         barrier = threading.Barrier(3)
@@ -275,8 +453,9 @@ class TaskServiceTests(unittest.TestCase):
 
     def test_persisted_timestamps_follow_rfc3339_contract(self):
         created = self.create()
+        branch, path = self.worktree_identity()
         attached = self.control.attach_worktree(
-            "20260808-003", "codex", "safe-slug", "safe-branch", self.repo
+            "20260808-003", "codex", "safe-slug", branch, path
         )
         transitioned = self.control.transition(
             "20260808-003", "DISPATCHED", "timestamp check"
@@ -291,6 +470,26 @@ class TaskServiceTests(unittest.TestCase):
             self.assert_rfc3339(value)
         for event in self.store.list_events("20260808-003"):
             self.assert_rfc3339(event["created_at"])
+
+    def test_mutation_timestamps_are_captured_after_lock_entry(self):
+        self.assert_utc_now_inside_mutation(
+            lambda: self.create("timestamp-create")
+        )
+
+        self.create("timestamp-transition")
+        self.assert_utc_now_inside_mutation(
+            lambda: self.control.transition(
+                "timestamp-transition", "DISPATCHED", "timestamp"
+            )
+        )
+
+        self.create("timestamp-attach")
+        branch, path = self.worktree_identity("timestamp-attach")
+        self.assert_utc_now_inside_mutation(
+            lambda: self.control.attach_worktree(
+                "timestamp-attach", "codex", "safe-slug", branch, path
+            )
+        )
 
 
 if __name__ == "__main__":

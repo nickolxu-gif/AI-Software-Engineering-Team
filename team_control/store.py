@@ -220,8 +220,8 @@ class ControlStore:
 
     def create_task(self, record):
         validate_record("task", record)
-        now = utc_now()
         with self.mutation() as connection:
+            now = utc_now()
             connection.execute(
                 """INSERT INTO tasks (
                        dispatch_id, schema_version, title, objective, risk_level,
@@ -253,7 +253,12 @@ class ControlStore:
                     payload_json, event["created_at"],
                 ),
             )
-        return self.get_task(record["dispatch_id"])
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE dispatch_id = ?",
+                (record["dispatch_id"],),
+            ).fetchone()
+            task = dict(row)
+        return task
 
     def get_task(self, dispatch_id):
         with self.read_connection() as connection:
@@ -268,11 +273,23 @@ class ControlStore:
                 "SELECT * FROM events WHERE dispatch_id = ? ORDER BY sequence",
                 (dispatch_id,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        events = []
+        for row in rows:
+            event = {
+                "schema_version": 1,
+                "dispatch_id": row["dispatch_id"],
+                "sequence": row["sequence"],
+                "event_type": row["event_type"],
+                "payload": json.loads(row["payload_json"]),
+                "created_at": row["created_at"],
+            }
+            validate_record("event", event)
+            events.append(event)
+        return events
 
     def transition(self, dispatch_id, target, reason):
-        now = utc_now()
         with self.mutation() as connection:
+            now = utc_now()
             row = connection.execute(
                 "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
             ).fetchone()
@@ -312,11 +329,15 @@ class ControlStore:
                     payload_json, event["created_at"],
                 ),
             )
-        return self.get_task(dispatch_id)
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+            ).fetchone()
+            task = dict(row)
+        return task
 
     def attach_worktree(self, dispatch_id, agent, slug, branch, path):
-        now = utc_now()
         with self.mutation() as connection:
+            now = utc_now()
             cursor = connection.execute(
                 """UPDATE tasks
                    SET agent = ?, slug = ?, branch = ?, worktree_path = ?,

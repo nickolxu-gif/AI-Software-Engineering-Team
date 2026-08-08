@@ -1,6 +1,6 @@
 from .contracts import validate_record
-from .errors import ContractError
-from .git_context import run_argv, validate_component
+from .errors import BoundaryError, ContractError
+from .git_context import canonical_under, run_argv, validate_component
 
 
 class ControlPlane:
@@ -39,9 +39,24 @@ class ControlPlane:
         validate_component(dispatch_id, "dispatch-id")
         validate_component(agent, "agent")
         validate_component(slug, "slug")
-        validate_component(branch, "branch")
+        expected_branch = "agent/%s/%s-%s" % (agent, dispatch_id, slug)
+        if branch != expected_branch:
+            raise BoundaryError(
+                "branch must equal normative task branch: %s" % expected_branch
+            )
+        expected_path = canonical_under(
+            self.context.root,
+            self.context.root
+            / ".worktrees"
+            / ("%s-%s-%s" % (dispatch_id, agent, slug)),
+        )
+        actual_path = canonical_under(self.context.root, path)
+        if actual_path != expected_path:
+            raise BoundaryError(
+                "worktree path must equal normative task path: %s" % expected_path
+            )
         return self.store.attach_worktree(
-            dispatch_id, agent, slug, branch, str(path)
+            dispatch_id, agent, slug, branch, str(actual_path)
         )
 
     def status(self, dispatch_id):
