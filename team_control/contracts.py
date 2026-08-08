@@ -1,5 +1,6 @@
 import re
 from collections.abc import Mapping
+from datetime import datetime
 
 from .errors import ContractError
 
@@ -19,6 +20,10 @@ BLOCKER_STATUSES = frozenset({"OPEN", "RESOLVED"})
 DISPATCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+RFC3339_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?"
+    r"(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$"
+)
 
 REQUIRED = {
     "task": ("schema_version", "dispatch_id", "title", "objective", "risk_level", "state", "task_base_sha", "owner"),
@@ -58,6 +63,15 @@ NON_EMPTY_FIELDS = {
     "blocker": ("reason", "owner", "created_at"),
 }
 
+DATE_TIME_FIELDS = {
+    "event": ("created_at",),
+    "approval": ("expires_at", "consumed_at"),
+    "evidence": ("created_at",),
+    "agent_status": ("updated_at",),
+    "review": ("created_at",),
+    "blocker": ("created_at",),
+}
+
 
 def _validate_string(record, field, nullable=False):
     value = record[field]
@@ -80,6 +94,26 @@ def _validate_integer(record, field, minimum, maximum=None):
         raise ContractError("%s is outside the allowed range" % field)
 
 
+def _validate_datetime(record, field, nullable=False):
+    value = record[field]
+    if nullable and value is None:
+        return
+    if not RFC3339_RE.fullmatch(value):
+        raise ContractError("%s must be an RFC3339 date-time with a timezone" % field)
+
+    normalized = value
+    if normalized.endswith(("Z", "z")):
+        normalized = normalized[:-1] + "+00:00"
+    if normalized[10] == "t":
+        normalized = normalized[:10] + "T" + normalized[11:]
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        raise ContractError("%s must be a valid RFC3339 date-time" % field)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ContractError("%s must include a timezone" % field)
+
+
 def validate_record(kind, record):
     if not isinstance(kind, str) or kind not in REQUIRED:
         raise ContractError("unknown contract kind: %s" % kind)
@@ -100,6 +134,9 @@ def validate_record(kind, record):
     for field in NON_EMPTY_FIELDS[kind]:
         if not record[field]:
             raise ContractError("%s must not be empty" % field)
+    for field in DATE_TIME_FIELDS.get(kind, ()):
+        nullable = kind == "approval" and field == "consumed_at"
+        _validate_datetime(record, field, nullable=nullable)
 
     if kind == "task":
         _validate_pattern(record, "dispatch_id", DISPATCH_RE, "a valid dispatch identifier")
@@ -116,8 +153,6 @@ def validate_record(kind, record):
         _validate_pattern(record, "target_sha", SHA_RE, "a full hexadecimal SHA")
         _validate_pattern(record, "request_hash", HASH_RE, "a 64-character hexadecimal hash")
         _validate_pattern(record, "nonce_hash", HASH_RE, "a 64-character hexadecimal hash")
-        if record["consumed_at"] == "":
-            raise ContractError("consumed_at must be null or a non-empty string")
     elif kind == "evidence":
         if record["kind"] not in EVIDENCE_KINDS:
             raise ContractError("unknown evidence kind: %s" % record["kind"])

@@ -99,6 +99,15 @@ NULLABLE_STRING_FIELDS = {
     "blocker": ("resolution_condition",),
 }
 
+DATE_TIME_FIELDS = {
+    "event": ("created_at",),
+    "approval": ("expires_at", "consumed_at"),
+    "evidence": ("created_at",),
+    "agent_status": ("updated_at",),
+    "review": ("created_at",),
+    "blocker": ("created_at",),
+}
+
 
 def changed(contract_kind, **updates):
     record = dict(VALID_RECORDS[contract_kind])
@@ -127,6 +136,13 @@ class ContractTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 self.assertIs(validate_record(kind, record), record)
 
+    def test_rfc3339_dates_with_offsets_are_accepted(self):
+        for kind, fields in DATE_TIME_FIELDS.items():
+            for field in fields:
+                record = changed(kind, **{field: "2026-08-08T12:00:00+08:00"})
+                with self.subTest(kind=kind, field=field):
+                    self.assertIs(validate_record(kind, record), record)
+
     def test_invalid_records_raise_only_contract_error(self):
         cases = [
             ("kind type", [], {}),
@@ -144,6 +160,7 @@ class ContractTests(unittest.TestCase):
             ("event sequence range", "event", changed("event", sequence=0)),
             ("event empty type", "event", changed("event", event_type="")),
             ("event empty timestamp", "event", changed("event", created_at="")),
+            ("event invalid timezone offset", "event", changed("event", created_at="2026-08-08T12:00:00+08:99")),
             ("approval target SHA", "approval", changed("approval", target_sha="g" * 40)),
             ("approval request hash", "approval", changed("approval", request_hash="c" * 63)),
             ("approval nonce hash", "approval", changed("approval", nonce_hash="d" * 63)),
@@ -173,6 +190,10 @@ class ContractTests(unittest.TestCase):
         for kind, fields in NULLABLE_STRING_FIELDS.items():
             for field in fields:
                 cases.append(("%s %s type" % (kind, field), kind, changed(kind, **{field: 7})))
+        for kind, fields in DATE_TIME_FIELDS.items():
+            for field in fields:
+                cases.append(("%s %s invalid date" % (kind, field), kind, changed(kind, **{field: "not-a-date"})))
+                cases.append(("%s %s naive date" % (kind, field), kind, changed(kind, **{field: "2026-08-08T12:00:00"})))
 
         for label, kind, record in cases:
             with self.subTest(label=label):
@@ -204,3 +225,29 @@ class ContractTests(unittest.TestCase):
             {"nonce_hash", "consumed_at", "idempotency_key"}.issubset(approval["required"])
         )
         self.assertEqual(approval["properties"]["idempotency_key"]["minLength"], 1)
+
+        schema_constraints = {
+            "evidence path minLength": (
+                loaded["evidence.schema.json"]["properties"]["path"],
+                "minLength",
+                1,
+            ),
+            "blocker reason minLength": (
+                loaded["blocker.schema.json"]["properties"]["reason"],
+                "minLength",
+                1,
+            ),
+            "blocker owner minLength": (
+                loaded["blocker.schema.json"]["properties"]["owner"],
+                "minLength",
+                1,
+            ),
+            "review source SHA pattern": (
+                loaded["review.schema.json"]["properties"]["source_sha"],
+                "pattern",
+                "^[0-9a-f]{40,64}$",
+            ),
+        }
+        for label, (schema_property, keyword, expected_value) in schema_constraints.items():
+            with self.subTest(label=label):
+                self.assertEqual(schema_property.get(keyword), expected_value)
