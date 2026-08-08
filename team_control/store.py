@@ -267,25 +267,40 @@ class ControlStore:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    @staticmethod
+    def _event_from_row(row):
+        event = {
+            "schema_version": 1,
+            "dispatch_id": row["dispatch_id"],
+            "sequence": row["sequence"],
+            "event_type": row["event_type"],
+            "payload": json.loads(row["payload_json"]),
+            "created_at": row["created_at"],
+        }
+        validate_record("event", event)
+        return event
+
     def list_events(self, dispatch_id):
         with self.read_connection() as connection:
             rows = connection.execute(
                 "SELECT * FROM events WHERE dispatch_id = ? ORDER BY sequence",
                 (dispatch_id,),
             ).fetchall()
-        events = []
-        for row in rows:
-            event = {
-                "schema_version": 1,
-                "dispatch_id": row["dispatch_id"],
-                "sequence": row["sequence"],
-                "event_type": row["event_type"],
-                "payload": json.loads(row["payload_json"]),
-                "created_at": row["created_at"],
-            }
-            validate_record("event", event)
-            events.append(event)
-        return events
+        return [self._event_from_row(row) for row in rows]
+
+    def status_snapshot(self, dispatch_id):
+        with self.read_connection() as connection:
+            connection.execute("BEGIN")
+            task_row = connection.execute(
+                "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+            ).fetchone()
+            event_rows = connection.execute(
+                "SELECT * FROM events WHERE dispatch_id = ? ORDER BY sequence",
+                (dispatch_id,),
+            ).fetchall()
+            task = dict(task_row) if task_row is not None else None
+            events = [self._event_from_row(row) for row in event_rows]
+        return task, events
 
     def transition(self, dispatch_id, target, reason):
         with self.mutation() as connection:

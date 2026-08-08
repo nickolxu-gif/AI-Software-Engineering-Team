@@ -44,16 +44,17 @@ class ControlPlane:
             raise BoundaryError(
                 "branch must equal normative task branch: %s" % expected_branch
             )
-        worktree_root = self.context.root / ".worktrees"
+        repo_root = self.context.common_dir.parent
+        worktree_root = repo_root / ".worktrees"
         if worktree_root.is_symlink():
             raise BoundaryError(
                 "worktree root must not be a symlink: %s" % worktree_root
             )
         expected_path = canonical_under(
-            self.context.root,
+            repo_root,
             worktree_root / ("%s-%s-%s" % (dispatch_id, agent, slug)),
         )
-        actual_path = canonical_under(self.context.root, path)
+        actual_path = canonical_under(repo_root, path)
         if actual_path != expected_path:
             raise BoundaryError(
                 "worktree path must equal normative task path: %s" % expected_path
@@ -64,7 +65,8 @@ class ControlPlane:
 
     def status(self, dispatch_id):
         validate_component(dispatch_id, "dispatch-id")
+        task, events = self.store.status_snapshot(dispatch_id)
         return {
-            "task": self.store.get_task(dispatch_id),
-            "events": self.store.list_events(dispatch_id),
+            "task": task,
+            "events": events,
         }

@@ -34,10 +34,24 @@ class TaskServiceTests(unittest.TestCase):
             dispatch_id, "Example", "Exercise lifecycle", "L1"
         )
 
-    def worktree_identity(self, dispatch_id="20260808-003", agent="codex", slug="safe-slug"):
+    def worktree_identity(
+        self, dispatch_id="20260808-003", agent="codex", slug="safe-slug"
+    ):
         branch = "agent/%s/%s-%s" % (agent, dispatch_id, slug)
-        path = self.context.root / ".worktrees" / ("%s-%s-%s" % (dispatch_id, agent, slug))
+        path = self.context.common_dir.parent / ".worktrees" / (
+            "%s-%s-%s" % (dispatch_id, agent, slug)
+        )
         return branch, path
+
+    def linked_control(self):
+        linked = Path(self.tmp.name) / "linked"
+        run(
+            ["git", "worktree", "add", "-b", "linked-service", str(linked)],
+            self.repo,
+        )
+        context = RepoContext.discover(linked)
+        store = ControlStore.for_repo(context)
+        return linked, context, ControlPlane(context, store)
 
     def assert_event_contract(self, event):
         self.assertEqual(
@@ -171,6 +185,71 @@ class TaskServiceTests(unittest.TestCase):
         self.assertEqual([event["sequence"] for event in status["events"]], [1])
         self.assert_event_contract(status["events"][0])
 
+    def test_status_task_and_events_come_from_one_read_snapshot(self):
+        self.create()
+        self.control.transition("20260808-003", "DISPATCHED", "initial state")
+        task_read = threading.Event()
+        writer_done = threading.Event()
+        writer_errors = []
+        main_thread = threading.current_thread()
+        original_read_connection = self.store.read_connection
+        original_list_events = self.store.list_events
+
+        @contextmanager
+        def coordinated_read_connection():
+            with original_read_connection() as connection:
+                class CoordinatedConnection:
+                    def execute(inner_self, statement, parameters=()):
+                        cursor = connection.execute(statement, parameters)
+                        normalized = " ".join(statement.split())
+                        if (
+                            threading.current_thread() is main_thread
+                            and normalized.startswith("SELECT * FROM tasks")
+                        ):
+                            task_read.set()
+                        return cursor
+
+                yield CoordinatedConnection()
+
+        def coordinated_list_events(dispatch_id):
+            if not writer_done.wait(5.0):
+                raise AssertionError("status writer did not finish")
+            return original_list_events(dispatch_id)
+
+        def writer():
+            try:
+                if not task_read.wait(5.0):
+                    raise AssertionError("status did not start its read")
+                self.control.transition(
+                    "20260808-003", "IN_PROGRESS", "concurrent status writer"
+                )
+            except BaseException as error:
+                writer_errors.append(error)
+            finally:
+                writer_done.set()
+
+        thread = threading.Thread(target=writer)
+        with mock.patch.object(
+            self.store, "read_connection", coordinated_read_connection
+        ), mock.patch.object(
+            self.store, "list_events", coordinated_list_events
+        ):
+            thread.start()
+            status = self.control.status("20260808-003")
+            thread.join(5.0)
+
+        self.assertFalse(thread.is_alive(), "status writer leaked")
+        if writer_errors:
+            raise writer_errors[0]
+        state_events = [
+            event for event in status["events"]
+            if event["event_type"] == "STATE_CHANGED"
+        ]
+        self.assertTrue(state_events)
+        self.assertEqual(
+            status["task"]["state"], state_events[-1]["payload"]["to"]
+        )
+
     def test_transition_records_stable_payload_and_next_sequence(self):
         self.create()
         task = self.control.transition(
@@ -264,6 +343,36 @@ class TaskServiceTests(unittest.TestCase):
             self.assertEqual(task["slug"], "safe-slug")
             self.assertEqual(task["branch"], branch)
             self.assertEqual(task["worktree_path"], str(path.resolve()))
+
+    def test_linked_context_accepts_and_stores_main_repo_worktree_path(self):
+        self.create()
+        linked, context, control = self.linked_control()
+        branch, path = self.worktree_identity()
+
+        task = control.attach_worktree(
+            "20260808-003", "codex", "safe-slug", branch, path
+        )
+
+        self.assertNotEqual(context.root, context.common_dir.parent)
+        self.assertEqual(context.root, linked.resolve())
+        self.assertEqual(task["worktree_path"], str(path.resolve()))
+        self.assertEqual(
+            self.store.get_task("20260808-003")["worktree_path"],
+            str(path.resolve()),
+        )
+
+    def test_linked_context_rejects_linked_checkout_worktree_path(self):
+        original = self.create()
+        linked, _, control = self.linked_control()
+        branch, expected_path = self.worktree_identity()
+        linked_path = linked / ".worktrees" / expected_path.name
+
+        with self.assertRaises(BoundaryError):
+            control.attach_worktree(
+                "20260808-003", "codex", "safe-slug", branch, linked_path
+            )
+
+        self.assertEqual(self.store.get_task("20260808-003"), original)
 
     def test_attach_worktree_missing_task_raises_key_error(self):
         branch, path = self.worktree_identity("missing")
