@@ -1,0 +1,44 @@
+# Agent worktrees
+/.worktrees/
+
+# macOS and operating-system metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+Desktop.ini
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Dependencies and build outputs
+node_modules/
+/dist/
+/build/
+
+# Language and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.venv/
+venv/
+
+# Logs and local runtime files
+*.log
+*.pid
+*.pid.lock
+
+# Local environment files; keep the shareable template
+.env
+.env.*
+!.env.example
