@@ -50,11 +50,15 @@ class ControlPlane:
             raise BoundaryError(
                 "worktree root must not be a symlink: %s" % worktree_root
             )
-        expected_path = canonical_under(
-            repo_root,
-            worktree_root / ("%s-%s-%s" % (dispatch_id, agent, slug)),
+        candidate = worktree_root / (
+            "%s-%s-%s" % (dispatch_id, agent, slug)
         )
-        actual_path = canonical_under(repo_root, path)
+        if candidate.is_symlink():
+            raise BoundaryError(
+                "worktree path must not be a symlink: %s" % candidate
+            )
+        expected_path = canonical_under(worktree_root, candidate)
+        actual_path = canonical_under(worktree_root, path)
         if actual_path != expected_path:
             raise BoundaryError(
                 "worktree path must equal normative task path: %s" % expected_path

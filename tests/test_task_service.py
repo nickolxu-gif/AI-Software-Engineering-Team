@@ -43,6 +43,11 @@ class TaskServiceTests(unittest.TestCase):
         )
         return branch, path
 
+    def prepare_worktree_root(self):
+        worktree_root = self.context.common_dir.parent / ".worktrees"
+        worktree_root.mkdir(exist_ok=True)
+        return worktree_root
+
     def linked_control(self):
         linked = Path(self.tmp.name) / "linked"
         run(
@@ -330,6 +335,7 @@ class TaskServiceTests(unittest.TestCase):
         )
 
     def test_attach_worktree_accepts_normative_branch_and_path_types(self):
+        self.prepare_worktree_root()
         for index, path_type in enumerate((Path, str), start=1):
             dispatch_id = "20260808-00%d" % index
             self.create(dispatch_id)
@@ -346,6 +352,7 @@ class TaskServiceTests(unittest.TestCase):
 
     def test_linked_context_accepts_and_stores_main_repo_worktree_path(self):
         self.create()
+        self.prepare_worktree_root()
         linked, context, control = self.linked_control()
         branch, path = self.worktree_identity()
 
@@ -363,6 +370,7 @@ class TaskServiceTests(unittest.TestCase):
 
     def test_linked_context_rejects_linked_checkout_worktree_path(self):
         original = self.create()
+        self.prepare_worktree_root()
         linked, _, control = self.linked_control()
         branch, expected_path = self.worktree_identity()
         linked_path = linked / ".worktrees" / expected_path.name
@@ -375,6 +383,7 @@ class TaskServiceTests(unittest.TestCase):
         self.assertEqual(self.store.get_task("20260808-003"), original)
 
     def test_attach_worktree_missing_task_raises_key_error(self):
+        self.prepare_worktree_root()
         branch, path = self.worktree_identity("missing")
         with self.assertRaisesRegex(KeyError, "missing"):
             self.control.attach_worktree(
@@ -417,6 +426,7 @@ class TaskServiceTests(unittest.TestCase):
 
     def test_attach_worktree_rejects_path_outside_or_with_wrong_basename(self):
         original = self.create()
+        self.prepare_worktree_root()
         branch, expected_path = self.worktree_identity()
         paths = (
             Path(self.tmp.name) / expected_path.name,
@@ -454,6 +464,22 @@ class TaskServiceTests(unittest.TestCase):
             redirect, target_is_directory=True
         )
         branch, path = self.worktree_identity()
+
+        with self.assertRaises(BoundaryError):
+            self.control.attach_worktree(
+                "20260808-003", "codex", "safe-slug", branch, path
+            )
+
+        self.assertEqual(self.store.get_task("20260808-003"), original)
+
+    def test_attach_worktree_rejects_normative_path_symlink_within_repo(self):
+        original = self.create()
+        worktree_root = self.context.common_dir.parent / ".worktrees"
+        worktree_root.mkdir()
+        redirect = self.context.common_dir.parent / "redirect"
+        redirect.mkdir()
+        branch, path = self.worktree_identity()
+        path.symlink_to(redirect, target_is_directory=True)
 
         with self.assertRaises(BoundaryError):
             self.control.attach_worktree(
@@ -578,6 +604,7 @@ class TaskServiceTests(unittest.TestCase):
 
     def test_persisted_timestamps_follow_rfc3339_contract(self):
         created = self.create()
+        self.prepare_worktree_root()
         branch, path = self.worktree_identity()
         attached = self.control.attach_worktree(
             "20260808-003", "codex", "safe-slug", branch, path
@@ -609,6 +636,7 @@ class TaskServiceTests(unittest.TestCase):
         )
 
         self.create("timestamp-attach")
+        self.prepare_worktree_root()
         branch, path = self.worktree_identity("timestamp-attach")
         self.assert_utc_now_inside_mutation(
             lambda: self.control.attach_worktree(
