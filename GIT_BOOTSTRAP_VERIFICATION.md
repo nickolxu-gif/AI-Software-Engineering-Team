@@ -28,10 +28,14 @@
    - 固定命令 `git merge-base eee2dbb3ecdc8947e4440da0f18b81fe3b53af15 cd459565b8bb24156f92e400a11769d254eccda9` 输出 `cd459565b8bb24156f92e400a11769d254eccda9`，证明首次验证记录提交从指定基线派生。
 5. `git remote -v` 无输出，仓库未配置 remote。
 
+## 独立审查范围
+
+验证分支创建前的配置、运行契约、脚本和基线均经过独立规格/质量审查，最终无 `Critical / Important`；审查摘要见 `GIT_BOOTSTRAP_REVIEW_LOG.md`。
+
 ## 已接受的 Minor 风险
 
 `git worktree add` 失败时，可能残留目录、branch 或 Worktree metadata。为避免脚本在异常状态下自动强删有效数据，脚本不执行自动强制清理；发生失败后须由 Codex 人工检查实际状态，再决定处理方式。
 
 ## 验收边界
 
-本报告在合并前接受独立 Review；当前不声明独立 Review 已通过。本记录不代表、也不声称 Claude 已完成验收。
+本报告及本验证分支自身的合并前 Review 不在本文件中自我声明，由 Codex 在 `HEAD` 提交后执行。本记录不代表、也不声称 Claude 已完成验收。

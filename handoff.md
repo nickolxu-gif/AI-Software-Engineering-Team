@@ -12,6 +12,7 @@
 - Codex 已使用 `--no-ff` 合并验证分支，并已清理该分支及其 Worktree；最终仅保留 `main` 根 Worktree。
 - 当前没有配置 remote。
 - `scripts/new-agent-worktree.sh` 与 `scripts/repo-health.sh` 已完成；可复核命令事实见 `GIT_BOOTSTRAP_VERIFICATION.md`。
+- Git bootstrap 验证工件：`GIT_BOOTSTRAP_VERIFICATION.md`、`GIT_BOOTSTRAP_REVIEW_LOG.md`。
 - `REVIEW_ITERATION_2026-08-08.md` 是状态为 `MODIFY` 的审阅证据，不是现行规范。
 
 可使用以下命令复核最终 Worktree 和分支状态：
