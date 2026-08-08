@@ -2,15 +2,27 @@
 
 > 日期：2026-08-08
 > 维护者：仅 Codex 主控。其他 Agent 和 Reviewer 只读，可提交修改建议。
+> 生效条件：本文件随验证分支合并后生效。
 
 ## 当前状态
 
-**Git 治理已初始化并建立 main 基线。**
+**Git 治理已完成，`main` 基线已建立。**
 
-- `main` 是唯一稳定主线；当前只有根 Worktree，没有 Agent Worktree。
-- 当前没有配置远程仓库。
-- `scripts/new-agent-worktree.sh` 与 `scripts/repo-health.sh` 已完成，并通过语法检查和双审。
+- `main` 是唯一稳定主线；基线 SHA 为 `cd459565b8bb24156f92e400a11769d254eccda9`。
+- Codex 已使用 `--no-ff` 合并验证分支，并已清理该分支及其 Worktree；最终仅保留 `main` 根 Worktree。
+- 当前没有配置 remote。
+- `scripts/new-agent-worktree.sh` 与 `scripts/repo-health.sh` 已完成；可复核命令事实见 `GIT_BOOTSTRAP_VERIFICATION.md`。
+- Git bootstrap 验证工件：`GIT_BOOTSTRAP_VERIFICATION.md`、`GIT_BOOTSTRAP_REVIEW_LOG.md`。
 - `REVIEW_ITERATION_2026-08-08.md` 是状态为 `MODIFY` 的审阅证据，不是现行规范。
+
+可使用以下命令复核最终 Worktree 和分支状态：
+
+```bash
+git worktree list
+git branch --list
+```
+
+前者应仅显示 `main` 根 Worktree；后者不应包含已清理的验证分支。
 
 ## 现有四份规范
 
@@ -49,7 +61,9 @@
 - 执行 Agent 只在所属 Worktree 内修改、测试和原子提交；Reviewer 独立审查；L3 由 Claude Code 最终验收。
 - 大型联调只使用临时 `integration/<dispatch-id>`，不得形成第二条长期主线。
 
-## 下一步
+## 下一次任务执行
 
-1. 使用 `scripts/repo-health.sh` 检查仓库健康状态。
-2. 有新的已授权 Agent 任务时，使用 `scripts/new-agent-worktree.sh` 创建任务分支与独立 Worktree。
+```bash
+./scripts/repo-health.sh
+./scripts/new-agent-worktree.sh <dispatch-id> <agent> <slug>
+```
