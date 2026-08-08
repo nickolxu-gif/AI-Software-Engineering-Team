@@ -40,8 +40,10 @@ def _validate_json_value(value):
         return
     if type(value) is dict:
         for key, item in value.items():
-            if type(key) is not str:
-                raise ContractError("approval parameter keys must be strings")
+            if type(key) is not str or not key.isascii():
+                raise ContractError(
+                    "approval parameter keys must be ASCII strings"
+                )
             _validate_json_value(item)
         return
     raise ContractError("approval parameters must contain only JSON values")
@@ -218,9 +220,12 @@ class ControlPlane:
 
     def consume_approval(self, approval_id, nonce):
         _validated_component(approval_id, "approval-id")
-        task = self.store.approval_task_snapshot(approval_id)
-        actual_sha, _ = self._trusted_actual_head(task)
-        return self.store.consume_approval(approval_id, nonce, actual_sha)
+
+        def head_observer(task):
+            actual_sha, _ = self._trusted_actual_head(task)
+            return actual_sha
+
+        return self.store.consume_approval(approval_id, nonce, head_observer)
 
     def transition(self, dispatch_id, target, reason):
         validate_component(dispatch_id, "dispatch-id")

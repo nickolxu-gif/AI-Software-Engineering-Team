@@ -469,12 +469,12 @@ class ControlStore:
             if parse_approval_expiry(row["expires_at"]) > now
         ]
 
-    def consume_approval(self, approval_id, nonce, actual_sha):
-        validate_approval_nonce(nonce, ApprovalError)
-        if not isinstance(actual_sha, str):
-            raise ApprovalError("approval actual SHA must be a string")
-        supplied_nonce_hash = sha256_text(nonce)
+    def consume_approval(self, approval_id, nonce, head_observer):
+        if not callable(head_observer):
+            raise ApprovalError("approval HEAD observer must be callable")
         with self.mutation() as connection:
+            validate_approval_nonce(nonce, ApprovalError)
+            supplied_nonce_hash = sha256_text(nonce)
             row = connection.execute(
                 "SELECT * FROM approvals WHERE approval_id = ?",
                 (approval_id,),
@@ -488,10 +488,28 @@ class ControlStore:
             if not hmac.compare_digest(row["nonce_hash"], supplied_nonce_hash):
                 raise ApprovalError("approval nonce mismatch")
             expires_at = parse_approval_expiry(row["expires_at"])
+
+            task = connection.execute(
+                "SELECT * FROM tasks WHERE dispatch_id = ?",
+                (row["dispatch_id"],),
+            ).fetchone()
+            if task is None:
+                raise ApprovalError("approval task is missing")
+
+            # Every Task7-controlled Git mutation must hold this same mutation
+            # lock. Non-cooperating external Git processes require Task7
+            # precondition and postcondition checks around execution as well.
+            observed_head = head_observer(dict(task))
+            if not isinstance(observed_head, str):
+                raise ApprovalError("approval observed HEAD must be a string")
             now_datetime = datetime.now(timezone.utc)
             if expires_at <= now_datetime:
                 raise ApprovalError("approval expired")
-            if row["target_sha"] != actual_sha:
+            if not (
+                row["target_sha"]
+                == task["current_head_sha"]
+                == observed_head
+            ):
                 raise ApprovalError("approval target SHA drifted")
 
             now = now_datetime.isoformat()

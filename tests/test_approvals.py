@@ -24,7 +24,7 @@ from team_control.errors import (
 )
 from team_control.git_context import RepoContext
 from team_control.service import ControlPlane
-from team_control.store import ControlStore
+from team_control.store import ControlStore, StoreBusyError
 from tests.helpers import make_repo, run
 
 
@@ -240,6 +240,74 @@ class ApprovalTests(unittest.TestCase):
         persisted = self.store.get_approval(approval["approval_id"])
         self.assertIsNone(persisted["consumed_at"])
 
+    def test_head_observation_and_consume_share_the_control_lock(self):
+        nonce = "locked-observation-nonce"
+        approval = self.request(nonce=nonce)
+        head_observed = threading.Event()
+        writer_done = threading.Event()
+        writer_results = []
+        original_actual_head = self.control._trusted_actual_head
+
+        def observed_actual_head(task):
+            result = original_actual_head(task)
+            head_observed.set()
+            if not writer_done.wait(2.0):
+                raise AssertionError("controlled Git writer did not finish")
+            return result
+
+        def controlled_git_writer():
+            try:
+                if not head_observed.wait(2.0):
+                    raise AssertionError("approval did not observe Git HEAD")
+                with self.store.mutation() as connection:
+                    (self.repo / "check-use-window.txt").write_text(
+                        "new head\n", encoding="utf-8"
+                    )
+                    run(["git", "add", "--", "check-use-window.txt"], self.repo)
+                    run(
+                        ["git", "commit", "-m", "test: exercise check-use window"],
+                        self.repo,
+                    )
+                    changed_head = run(
+                        ["git", "rev-parse", "HEAD"], self.repo
+                    ).stdout.strip()
+                    connection.execute(
+                        "UPDATE tasks SET current_head_sha = ? WHERE dispatch_id = ?",
+                        (changed_head, self.dispatch_id),
+                    )
+                writer_results.append("updated")
+            except BaseException as error:
+                writer_results.append(error)
+            finally:
+                writer_done.set()
+
+        original_timeout = self.store.lock_timeout
+        self.store.lock_timeout = 0.1
+        thread = threading.Thread(target=controlled_git_writer)
+        try:
+            thread.start()
+            with mock.patch.object(
+                self.control,
+                "_trusted_actual_head",
+                side_effect=observed_actual_head,
+            ):
+                operation = self.control.consume_approval(
+                    approval["approval_id"], nonce
+                )
+        finally:
+            self.store.lock_timeout = original_timeout
+            thread.join(2.0)
+
+        self.assertFalse(thread.is_alive(), "controlled Git writer leaked")
+        self.assertEqual(operation["phase"], "PREPARED")
+        self.assertEqual(len(writer_results), 1)
+        self.assertIsInstance(writer_results[0], StoreBusyError)
+        self.assertEqual(
+            self.store.get_task(self.dispatch_id)["current_head_sha"],
+            self.task["current_head_sha"],
+        )
+        self.assertEqual(len(self.operation_rows()), 1)
+
     def test_same_nonce_retries_are_idempotent_and_conflicts_fail_closed(self):
         nonce = "idempotent-request-nonce"
         first = self.request(nonce=nonce)
@@ -410,12 +478,17 @@ class ApprovalTests(unittest.TestCase):
             {"value": -9007199254740992},
             {1: "non-string-key"},
             {"nested": {2: "non-string-key"}},
+            {"\ue000": "private-use-key"},
+            {"nested": {"\U0001f600": "emoji-key"}},
         )
-        for parameters in invalid:
+        for index, parameters in enumerate(invalid):
             with self.subTest(parameters=parameters):
                 before = len(self.approval_rows())
                 with self.assertRaises(ContractError):
-                    self.request(parameters=parameters)
+                    self.request(
+                        nonce="invalid-parameters-%02d" % index,
+                        parameters=parameters,
+                    )
                 self.assertEqual(len(self.approval_rows()), before)
 
         approval = self.request(
