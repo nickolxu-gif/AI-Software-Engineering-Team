@@ -31,6 +31,10 @@ COMMAND_USAGE = {
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        kwargs["allow_abbrev"] = False
+        super().__init__(*args, **kwargs)
+
     def error(self, message):
         raise ContractError("invalid command arguments: %s" % message)
 

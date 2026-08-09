@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import io
 import json
@@ -66,6 +67,37 @@ def make_cli_repo(path):
 
 
 class CliTests(unittest.TestCase):
+    def test_root_and_every_subparser_disable_option_abbreviations(self):
+        from team_control.cli import build_parser
+
+        parser = build_parser()
+        self.assertFalse(parser.allow_abbrev)
+        subparser_action = next(
+            action
+            for action in parser._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        self.assertEqual(
+            set(subparser_action.choices),
+            {"approvals", "doctor", "init", "start", "status", "transition"},
+        )
+        for command, subparser in subparser_action.choices.items():
+            with self.subTest(command=command):
+                self.assertFalse(subparser.allow_abbrev)
+
+    def test_abbreviated_help_is_single_json_error_not_argparse_help(self):
+        result = run(
+            ["python3", "-m", "team_control", "--hel"],
+            PROJECT_ROOT,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        payload = assert_single_json_line(self, result, "stderr")
+        self.assertEqual(payload["error"]["code"], "CONTRACT_ERROR")
+        self.assertNotIn("usage:", result.stderr)
+
     def test_help_is_single_json_line_for_module_and_wrapper_entrypoints(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -107,8 +139,12 @@ class CliTests(unittest.TestCase):
         cases = (
             ("team-control", "split"),
             ("team-control", "equals"),
+            ("team-control", "abbreviated"),
+            ("team-control", "abbreviated_equals"),
             ("worktree-doctor", "split"),
             ("worktree-doctor", "equals"),
+            ("worktree-doctor", "abbreviated"),
+            ("worktree-doctor", "abbreviated_equals"),
         )
         for wrapper_name, form in cases:
             with self.subTest(wrapper=wrapper_name, form=form):
@@ -128,11 +164,14 @@ class CliTests(unittest.TestCase):
                         / "runtime"
                         / "team.db"
                     )
-                    override = (
-                        ["--repo", str(other)]
-                        if form == "split"
-                        else ["--repo=%s" % other]
-                    )
+                    if form == "split":
+                        override = ["--repo", str(other)]
+                    elif form == "equals":
+                        override = ["--repo=%s" % other]
+                    elif form == "abbreviated":
+                        override = ["--rep", str(other)]
+                    else:
+                        override = ["--rep=%s" % other]
                     result = run(
                         [
                             str(bound / "scripts" / wrapper_name),

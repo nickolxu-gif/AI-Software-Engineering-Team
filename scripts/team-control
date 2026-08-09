@@ -3,7 +3,7 @@ set -eu
 
 for argument do
     case "$argument" in
-        --repo|--repo=*)
+        --r|--re|--rep|--repo|--r=*|--re=*|--rep=*|--repo=*)
             printf '%s\n' '{"error":{"code":"WRAPPER_REPO_OVERRIDE","message":"wrapper repository identity cannot be overridden"}}' >&2
             exit 2
             ;;
