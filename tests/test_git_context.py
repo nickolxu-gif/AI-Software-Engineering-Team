@@ -1,6 +1,9 @@
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from team_control.errors import BoundaryError, GitStateError
 from team_control.git_context import RepoContext, canonical_under, run_argv, validate_component
@@ -68,6 +71,82 @@ class GitContextTests(unittest.TestCase):
                 run_argv(["git", "status"], missing_cwd)
 
             self.assertIsInstance(caught.exception.__cause__, OSError)
+
+    def test_run_argv_applies_explicit_environment_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {"DASHBOARD_TEST_FLAG": "parent"},
+        ):
+            completed = run_argv(
+                [
+                    "python3",
+                    "-c",
+                    "import os; print(os.environ['DASHBOARD_TEST_FLAG'])",
+                ],
+                Path(tmp),
+                env_overrides={"DASHBOARD_TEST_FLAG": "readonly"},
+            )
+            self.assertEqual(completed.stdout.strip(), "readonly")
+            self.assertEqual(os.environ["DASHBOARD_TEST_FLAG"], "parent")
+
+    def test_run_argv_can_start_from_a_clean_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(Path(tmp) / "repo")
+            with mock.patch.dict(
+                os.environ,
+                {"DASHBOARD_PARENT_ONLY": "secret"},
+            ):
+                completed = run_argv(
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import os; "
+                            "print(os.environ.get('DASHBOARD_PARENT_ONLY', 'missing')); "
+                            "print(os.environ['DASHBOARD_CHILD_ONLY'])"
+                        ),
+                    ],
+                    repo,
+                    env_overrides={"DASHBOARD_CHILD_ONLY": "visible"},
+                    inherit_env=False,
+                )
+                self.assertEqual(
+                    completed.stdout.splitlines(),
+                    ["missing", "visible"],
+                )
+                self.assertEqual(os.environ["DASHBOARD_PARENT_ONLY"], "secret")
+
+    def test_run_argv_rejects_non_string_environment_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(BoundaryError):
+                run_argv(
+                    ["git", "--version"],
+                    Path(tmp),
+                    env_overrides={"GIT_OPTIONAL_LOCKS": 0},
+                )
+
+    def test_run_argv_rejects_environment_names_containing_equals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(BoundaryError):
+                run_argv(
+                    ["git", "--version"],
+                    Path(tmp),
+                    env_overrides={"INVALID=NAME": "value"},
+                )
+
+    def test_run_argv_rejects_environment_overrides_containing_nul(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for overrides in (
+                {"INVALID\0NAME": "value"},
+                {"INVALID_NAME": "value\0suffix"},
+            ):
+                with self.subTest(overrides=overrides):
+                    with self.assertRaises(BoundaryError):
+                        run_argv(
+                            ["git", "--version"],
+                            Path(tmp),
+                            env_overrides=overrides,
+                        )
 
 
 if __name__ == "__main__":

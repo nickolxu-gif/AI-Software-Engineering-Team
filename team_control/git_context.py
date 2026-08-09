@@ -26,9 +26,36 @@ def canonical_under(root, candidate):
     return resolved_candidate
 
 
-def run_argv(argv, cwd, check=True):
-    if not isinstance(argv, (list, tuple)) or not argv or not all(isinstance(v, str) for v in argv):
-        raise BoundaryError("subprocess arguments must be a non-empty string argv")
+def run_argv(
+    argv,
+    cwd,
+    check=True,
+    env_overrides=None,
+    inherit_env=True,
+):
+    if (
+        not isinstance(argv, (list, tuple))
+        or not argv
+        or not all(isinstance(value, str) for value in argv)
+    ):
+        raise BoundaryError(
+            "subprocess arguments must be a non-empty string argv"
+        )
+    overrides = {} if env_overrides is None else env_overrides
+    if not isinstance(overrides, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in overrides.items()
+    ):
+        raise BoundaryError("environment overrides must be string pairs")
+    if any(
+        "=" in key or "\0" in key or "\0" in value
+        for key, value in overrides.items()
+    ):
+        raise BoundaryError("environment overrides contain invalid characters")
+    if not isinstance(inherit_env, bool):
+        raise BoundaryError("inherit_env must be a boolean")
+    environment = dict(os.environ) if inherit_env else {}
+    environment.update(overrides)
     try:
         completed = subprocess.run(
             list(argv),
@@ -37,12 +64,15 @@ def run_argv(argv, cwd, check=True):
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=dict(os.environ),
+            env=environment,
         )
     except OSError as exc:
         raise GitStateError("command failed to start: %s" % exc) from exc
     if check and completed.returncode != 0:
-        raise GitStateError("command failed (%s): %s" % (completed.returncode, completed.stderr.strip()))
+        raise GitStateError(
+            "command failed (%s): %s"
+            % (completed.returncode, completed.stderr.strip())
+        )
     return completed
 
 

@@ -77,7 +77,7 @@ class SkillContractTests(unittest.TestCase):
             "不会自动删除",
             "GitHub Remote 尚未配置",
             "MVP 1",
-            "尚未实现",
+            "本地只读工作台",
             "threat model",
             "CLI 附录",
             "术语表",
@@ -160,6 +160,34 @@ class SkillContractTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, text)
         self.assertNotIn("读取 `handoff.md` 和五份现行工程协议", text)
+
+    def test_skill_maps_open_dashboard_to_readonly_launcher(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        for required in (
+            "open-team-dashboard",
+            "127.0.0.1",
+            "never initializes a missing database",
+            "browser remains read-only",
+            "return to Codex",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, skill)
+        self.assertIn("ordinary non-dashboard requests", skill)
+        self.assertIn("Dashboard open/view intents", skill)
+
+    def test_guide_documents_mvp1_actual_usage_and_limits(self):
+        guide = GUIDE_PATH.read_text(encoding="utf-8")
+        for required in (
+            "打开软件 AI 工程团队工作台",
+            "scripts/open-team-dashboard",
+            "每 15 秒",
+            "45 秒",
+            "请回到 Codex 处理",
+            "不会配置 GitHub Remote",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, guide)
+        self.assertNotIn("MVP 1 的本地只读前端工作台尚未实现", guide)
 
 
 if __name__ == "__main__":

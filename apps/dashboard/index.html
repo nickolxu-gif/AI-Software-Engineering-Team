@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>软件 AI 工程团队</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="mark">C</span><strong>软件 AI 工程团队</strong><span class="readonly">只读</span></div>
+    <div id="source-meta">正在连接本地控制平面</div>
+  </header>
+  <div class="shell">
+    <nav aria-label="工作台视图">
+      <button data-view="overview" aria-current="page">总览</button>
+      <button data-view="tasks">任务</button>
+      <button data-view="agents">Agents</button>
+      <button data-view="approvals">审批</button>
+      <button data-view="evidence">证据</button>
+    </nav>
+    <main id="content" tabindex="-1"></main>
+  </div>
+  <div id="status-region" role="status" aria-live="polite"></div>
+  <noscript>此工作台需要启用 JavaScript；请回到 Codex 查看状态。</noscript>
+  <script src="/app.js" defer></script>
+</body>
+</html>

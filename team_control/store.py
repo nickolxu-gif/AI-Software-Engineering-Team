@@ -511,10 +511,12 @@ class ControlStore:
     def read_connection(self):
         self._validate_repo_paths()
         uri = self.path.resolve().as_uri() + "?mode=ro"
-        connection = sqlite3.connect(uri, uri=True, timeout=5.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
+        connection = sqlite3.connect(uri, uri=True, timeout=2.0)
         try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA query_only = ON")
+            connection.execute("PRAGMA busy_timeout = 2000")
             yield connection
         finally:
             connection.close()

@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def run_cli(repo, *args, cwd=None, check=True):
     return run(
         [
-            "python3",
+            sys.executable,
             "-m",
             "team_control",
             "--repo",
@@ -87,7 +88,7 @@ class CliTests(unittest.TestCase):
 
     def test_abbreviated_help_is_single_json_error_not_argparse_help(self):
         result = run(
-            ["python3", "-m", "team_control", "--hel"],
+            [sys.executable, "-m", "team_control", "--hel"],
             PROJECT_ROOT,
             check=False,
         )
@@ -106,7 +107,7 @@ class CliTests(unittest.TestCase):
             elsewhere.mkdir()
 
             module_help = run(
-                ["python3", "-m", "team_control", "-h"], PROJECT_ROOT
+                [sys.executable, "-m", "team_control", "-h"], PROJECT_ROOT
             )
             root_payload = assert_json_help(self, module_help)
             self.assertIn("doctor", root_payload["commands"])
