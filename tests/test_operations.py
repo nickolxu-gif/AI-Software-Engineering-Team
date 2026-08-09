@@ -487,7 +487,14 @@ class OperationTests(unittest.TestCase):
         threat_model = operations_module.MVP0_CONTROL_LOCK_THREAT_MODEL
 
         self.assertIn("common-directory control lock", threat_model)
-        self.assertIn("Codex, Agent, and Git mutations", threat_model)
+        self.assertIn("Orchestrator and ControlPlane SQLite writes", threat_model)
+        self.assertIn(
+            "Codex-managed Worktree, branch, and control-plane Git mutations",
+            threat_model,
+        )
+        self.assertIn("ordinary add and commit", threat_model)
+        self.assertIn("one Worktree, one writer", threat_model)
+        self.assertIn("do not use the common-directory control lock", threat_model)
         self.assertIn("same-user filesystem access", threat_model)
         self.assertIn("deliberately bypasses the lock", threat_model)
 

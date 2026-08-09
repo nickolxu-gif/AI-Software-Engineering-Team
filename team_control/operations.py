@@ -15,13 +15,16 @@ from .git_context import (
 
 GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MVP0_CONTROL_LOCK_THREAT_MODEL = (
-    "MVP 0 requires all controlled Codex, Agent, and Git mutations to use "
-    "the repository common-directory control lock. OperationCoordinator "
-    "holds that lock continuously from fresh preflight through PREPARED, "
-    "the Git command, verification, and durable terminal state. This is a "
-    "cooperative-writer guarantee; it does not claim to defend against a "
-    "local process with same-user filesystem access that deliberately "
-    "bypasses the lock."
+    "MVP 0 uses the repository common-directory control lock for "
+    "Orchestrator and ControlPlane SQLite writes and for Codex-managed "
+    "Worktree, branch, and control-plane Git mutations. OperationCoordinator "
+    "holds that lock continuously from fresh preflight through PREPARED, the "
+    "Git command, verification, and durable terminal state. An execution "
+    "Agent's ordinary add and commit inside its assigned Worktree are "
+    "isolated by the one Worktree, one writer rule and do not use the "
+    "common-directory control lock. This is a cooperative-writer guarantee; "
+    "it does not claim to defend against a local process with same-user "
+    "filesystem access that deliberately bypasses the lock."
 )
 ALLOWED_GIT_SUBCOMMANDS = frozenset(
     {

@@ -38,19 +38,31 @@ Codex 为每项工程任务建立 Dispatch Record，并逐项明确：
 
 ## 3. Codex 建立 Worktree
 
-未来统一通过 `scripts/new-agent-worktree.sh` 创建：
+MVP 0 控制面初始化后，Codex 管理的 Worktree 统一通过
+`scripts/team-control start` 创建：
 
 ```bash
 cd "$repo_root"
 git status --short --branch
 git switch main
 git status --porcelain
-./scripts/new-agent-worktree.sh "$dispatch_id" "$agent_name" "$slug"
+./scripts/team-control start \
+  --dispatch-id "$dispatch_id" \
+  --title "<task-title>" \
+  --objective "<task-objective>" \
+  --risk "<L1|L2|L3>" \
+  --agent "$agent_name" \
+  --slug "$slug"
 git worktree list
 git -C "$worktree_path" status --short --branch
 ```
 
-脚本可用前，仅 Codex 可按等价命令创建；必须先确认 `main` 干净、分支和目录不存在：
+`scripts/new-agent-worktree.sh` 只保留给控制面尚未初始化时的兼容流程。
+一旦控制面数据库存在，旧脚本会 fail closed；不得用旧脚本或手工等价命令
+旁路 `scripts/team-control start`、common control lock 和操作日志。
+
+控制面尚未初始化且新入口不可用时，仅 Codex 可按以下兼容等价命令创建；
+必须先确认 `main` 干净、分支和目录不存在：
 
 ```bash
 git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch_name"

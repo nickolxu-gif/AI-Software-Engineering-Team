@@ -84,6 +84,36 @@ fi
 [ "$git_toplevel" = "$repo_root" ] || \
     die "script-derived root $repo_root is not the Git top-level $git_toplevel"
 
+if git_common_raw=$(git -C "$repo_root" rev-parse --git-common-dir 2>/dev/null); then
+    :
+else
+    die "cannot determine the Git common directory"
+fi
+
+case "$git_common_raw" in
+    /*)
+        git_common_candidate=$git_common_raw
+        ;;
+    *)
+        git_common_candidate=$repo_root/$git_common_raw
+        ;;
+esac
+
+if git_common_dir=$(CDPATH= cd "$git_common_candidate" 2>/dev/null && pwd -P); then
+    :
+else
+    die "cannot resolve Git common directory: $git_common_candidate"
+fi
+
+# team/control.db is the stable control-plane marker.  Task 8 stores the
+# current SQLite database at team/runtime/team.db, so recognize both paths
+# during the staged MVP 0 rollout.  This guard must remain before mutations.
+control_db=$git_common_dir/team/control.db
+runtime_db=$git_common_dir/team/runtime/team.db
+if [ -e "$control_db" ] || [ -e "$runtime_db" ]; then
+    die "MVP 0 control plane is initialized; legacy Worktree creation is prohibited; use scripts/team-control start"
+fi
+
 if current_branch=$(git -C "$repo_root" symbolic-ref --quiet --short HEAD 2>/dev/null); then
     :
 else

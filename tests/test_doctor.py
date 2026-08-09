@@ -91,6 +91,90 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(task["branch"], self.branch)
         self.assertEqual(task["worktree_path"], str(self.path))
 
+    def test_initialized_control_plane_prohibits_legacy_worktree_creation(self):
+        legacy_dispatch = "20260808-legacy"
+        legacy_agent = "codex"
+        legacy_slug = "bypass"
+        legacy_branch = "agent/%s/%s-%s" % (
+            legacy_agent,
+            legacy_dispatch,
+            legacy_slug,
+        )
+        legacy_path = self.repo / ".worktrees" / (
+            "%s-%s-%s" % (legacy_dispatch, legacy_agent, legacy_slug)
+        )
+        registrations_before = run(
+            ["git", "worktree", "list", "--porcelain"], self.repo
+        ).stdout
+
+        result = run(
+            [
+                "sh",
+                "scripts/new-agent-worktree.sh",
+                legacy_dispatch,
+                legacy_agent,
+                legacy_slug,
+            ],
+            self.repo,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("scripts/team-control start", result.stderr)
+        self.assertFalse(legacy_path.exists())
+        self.assertEqual(
+            run(
+                [
+                    "git", "show-ref", "--verify", "--quiet",
+                    "refs/heads/%s" % legacy_branch,
+                ],
+                self.repo,
+                check=False,
+            ).returncode,
+            1,
+        )
+        self.assertEqual(
+            run(["git", "worktree", "list", "--porcelain"], self.repo).stdout,
+            registrations_before,
+        )
+        self.assertFalse(
+            (self.context.common_dir / "worktrees" / legacy_path.name).exists()
+        )
+
+    def test_stable_control_db_marker_also_prohibits_legacy_entrypoint(self):
+        marker_repo = make_repo(Path(self.tmp.name) / "marker-repo")
+        marker_common_dir = RepoContext.discover(marker_repo).common_dir
+        marker_db = marker_common_dir / "team" / "control.db"
+        marker_db.parent.mkdir(parents=True)
+        marker_db.write_bytes(b"control-plane-initialized")
+        branch = "agent/codex/20260808-marker-bypass"
+        path = marker_repo / ".worktrees" / "20260808-marker-codex-bypass"
+
+        result = run(
+            [
+                "sh",
+                "scripts/new-agent-worktree.sh",
+                "20260808-marker",
+                "codex",
+                "bypass",
+            ],
+            marker_repo,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("scripts/team-control start", result.stderr)
+        self.assertFalse(path.exists())
+        self.assertEqual(
+            run(
+                ["git", "show-ref", "--verify", "--quiet", "refs/heads/%s" % branch],
+                marker_repo,
+                check=False,
+            ).returncode,
+            1,
+        )
+        self.assertFalse((marker_common_dir / "worktrees" / path.name).exists())
+
     def test_branch_only_at_exact_base_is_the_only_repairable_residue(self):
         run(["git", "branch", self.branch, self.base], self.repo)
         report = self.inspect()
