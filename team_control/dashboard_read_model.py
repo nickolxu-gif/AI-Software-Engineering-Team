@@ -614,10 +614,11 @@ class DashboardReadModel:
                               'BLOCKED', 'PAUSE_REQUESTED', 'PAUSED', 'UNKNOWN'
                           ) THEN 1
                      WHEN has_stale_review OR has_stale_evidence THEN 2
-                     ELSE 3
+                     WHEN t.worktree_path IS NOT NULL THEN 3
+                     ELSE 4
                    END,
                    CASE t.risk_level WHEN 'L3' THEN 0 WHEN 'L2' THEN 1 ELSE 2 END,
-                   t.updated_at, t.dispatch_id LIMIT ?""",
+                   t.updated_at DESC, t.dispatch_id LIMIT ?""",
             (self._now().isoformat(), *parameters),
         ).fetchall()
 
@@ -648,8 +649,7 @@ class DashboardReadModel:
     def _registered_worktree_head(self, row, worktree_heads):
         worktree_path = row["worktree_path"]
         if not worktree_path:
-            root = self.context.root.resolve(strict=True)
-            return worktree_heads.get(root), root in worktree_heads
+            return None, True
         try:
             for field in ("dispatch_id", "agent", "slug"):
                 value = row[field]
@@ -753,7 +753,7 @@ class DashboardReadModel:
             priority,
             risk_order.get(item["risk_level"], 3),
             human_order,
-            timestamp,
+            -timestamp,
             item["dispatch_id"],
         )
 
@@ -805,6 +805,15 @@ class DashboardReadModel:
         return row
 
     @staticmethod
+    def _bounded_detail_rows(rows, label):
+        if len(rows) > DETAIL_SUBRESOURCE_LIMIT:
+            raise DashboardUnavailableError(
+                "%s exceeds the dashboard detail limit" % label,
+                code="DETAIL_LIMIT_EXCEEDED",
+            )
+        return rows
+
+    @staticmethod
     def _event_item(row):
         event_type = row["event_type"]
         details = {}
@@ -830,7 +839,6 @@ class DashboardReadModel:
         worktree_heads = self._worktree_heads()
         with self.snapshot() as connection:
             row = self._task_row(connection, dispatch_id)
-            task_record = dict(row)
             query_row = connection.execute(
                 """SELECT t.*,
                           EXISTS (
@@ -869,6 +877,15 @@ class DashboardReadModel:
                 worktree_heads,
                 observed_head=observed_head,
             )
+            agent_rows = self._bounded_detail_rows(
+                connection.execute(
+                    """SELECT agent_id, role, state, progress, updated_at
+                       FROM agents WHERE dispatch_id = ?
+                       ORDER BY updated_at DESC, agent_id LIMIT ?""",
+                    (dispatch_id, DETAIL_SUBRESOURCE_LIMIT + 1),
+                ).fetchall(),
+                "agents",
+            )
             agents = [
                 {
                     "agent_id": agent["agent_id"],
@@ -877,13 +894,18 @@ class DashboardReadModel:
                     "progress": agent["progress"],
                     "updated_at": agent["updated_at"],
                 }
-                for agent in connection.execute(
-                    """SELECT agent_id, role, state, progress, updated_at
-                       FROM agents WHERE dispatch_id = ?
-                       ORDER BY updated_at DESC, agent_id LIMIT ?""",
-                    (dispatch_id, DETAIL_SUBRESOURCE_LIMIT),
-                ).fetchall()
+                for agent in agent_rows
             ]
+            blocker_rows = self._bounded_detail_rows(
+                connection.execute(
+                    """SELECT blocker_id, reason, owner, status,
+                              resolution_condition, created_at, updated_at
+                       FROM blockers WHERE dispatch_id = ?
+                       ORDER BY created_at, blocker_id LIMIT ?""",
+                    (dispatch_id, DETAIL_SUBRESOURCE_LIMIT + 1),
+                ).fetchall(),
+                "blockers",
+            )
             blockers = [
                 {
                     "blocker_id": blocker["blocker_id"],
@@ -898,22 +920,35 @@ class DashboardReadModel:
                         else None
                     ),
                 }
-                for blocker in connection.execute(
-                    """SELECT blocker_id, reason, owner, status,
-                              resolution_condition, created_at, updated_at
-                       FROM blockers WHERE dispatch_id = ?
-                       ORDER BY created_at, blocker_id LIMIT ?""",
-                    (dispatch_id, DETAIL_SUBRESOURCE_LIMIT),
-                ).fetchall()
+                for blocker in blocker_rows
             ]
-            review_rows = connection.execute(
-                """SELECT review_id, dispatch_id, reviewer, disposition,
-                          source_sha, report_path, report_sha256, created_at
-                   FROM reviews WHERE dispatch_id = ?
-                   ORDER BY created_at DESC, review_id LIMIT ?""",
-                (dispatch_id, DETAIL_SUBRESOURCE_LIMIT),
-            ).fetchall()
-            review_records = [dict(review) for review in review_rows]
+            review_rows = self._bounded_detail_rows(
+                connection.execute(
+                    """SELECT review_id, reviewer, disposition, source_sha,
+                              created_at
+                       FROM reviews WHERE dispatch_id = ?
+                       ORDER BY created_at DESC, review_id LIMIT ?""",
+                    (dispatch_id, DETAIL_SUBRESOURCE_LIMIT + 1),
+                ).fetchall(),
+                "reviews",
+            )
+            reviews = [
+                {
+                    "review_id": review["review_id"],
+                    "reviewer": review["reviewer"],
+                    "disposition": review["disposition"],
+                    "source_sha": review["source_sha"],
+                    "created_at": review["created_at"],
+                    "stale": (
+                        review["source_sha"] != row["current_head_sha"]
+                        or (
+                            actual_head is not None
+                            and review["source_sha"] != actual_head
+                        )
+                    ),
+                }
+                for review in review_rows
+            ]
             pending_count = connection.execute(
                 """SELECT COUNT(*) FROM approvals
                    WHERE dispatch_id = ? AND status = 'PENDING'
@@ -931,27 +966,11 @@ class DashboardReadModel:
                    ORDER BY sequence DESC LIMIT 1""",
                 (dispatch_id,),
             ).fetchone()
-        reviews = []
-        for review in review_records:
-            stale_reasons = ["task Worktree HEAD is unavailable"]
-            if head_available and actual_head is not None:
-                stale_reasons = self.store.review_stale_reasons(
-                    task_record,
-                    review,
-                    actual_head,
-                )
-            reviews.append(
-                {
-                    "review_id": review["review_id"],
-                    "reviewer": review["reviewer"],
-                    "disposition": review["disposition"],
-                    "source_sha": review["source_sha"],
-                    "created_at": review["created_at"],
-                    "stale": bool(stale_reasons),
-                }
-            )
         valid_acceptance = any(
-            review["disposition"] == "ACCEPT" and not review["stale"]
+            review["disposition"] == "ACCEPT"
+            and not review["stale"]
+            and head_available
+            and actual_head is not None
             for review in reviews
         )
         return {

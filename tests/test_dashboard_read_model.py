@@ -500,23 +500,135 @@ class DashboardReadModelTests(unittest.TestCase):
             )
             self.assertEqual(page["items"][0]["dispatch_id"], "old-blocked")
 
-    def test_valid_acceptance_detects_tampered_review_report(self):
+    def test_valid_acceptance_uses_indexed_metadata_without_reading_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, store, model = self.make_model(Path(tmp))
             control = ControlPlane(RepoContext.discover(repo), store)
-            task = control.create_task("20260809-025", "Review", "Verify", "L2")
-            report = repo / "review.md"
+            task = control.start_write_task(
+                "20260809-025",
+                "Review",
+                "Verify",
+                "L2",
+                "codex",
+                "review",
+            )
+            report = Path(task["worktree_path"]) / "review.md"
             report.write_text("accepted\n", encoding="utf-8")
             store.add_review(
                 task["dispatch_id"],
                 "Claude",
                 "ACCEPT",
                 task["current_head_sha"],
-                "review.md",
+                report,
             )
             self.assertTrue(model.task(task["dispatch_id"])["valid_acceptance"])
             report.write_text("tampered\n", encoding="utf-8")
-            self.assertFalse(model.task(task["dispatch_id"])["valid_acceptance"])
+            with patch.object(
+                Path,
+                "read_bytes",
+                side_effect=AssertionError("dashboard must not read report body"),
+            ):
+                self.assertTrue(
+                    model.task(task["dispatch_id"])["valid_acceptance"]
+                )
+
+    def test_invalid_registered_worktree_is_not_hidden_by_normal_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+            now = "2030-01-01T00:00:00+00:00"
+            rows = [
+                (
+                    "normal-%05d" % index,
+                    1,
+                    "Normal",
+                    "Routine",
+                    "L1",
+                    "IN_PROGRESS",
+                    head,
+                    head,
+                    "Codex",
+                    now,
+                    now,
+                )
+                for index in range(10101)
+            ]
+            with store.mutation() as connection:
+                connection.executemany(
+                    """INSERT INTO tasks (
+                           dispatch_id, schema_version, title, objective,
+                           risk_level, state, task_base_sha, current_head_sha,
+                           owner, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    rows,
+                )
+                connection.execute(
+                    """INSERT INTO tasks (
+                           dispatch_id, schema_version, title, objective,
+                           risk_level, state, task_base_sha, current_head_sha,
+                           owner, agent, slug, branch, worktree_path,
+                           created_at, updated_at
+                       ) VALUES (?, 1, ?, ?, 'L2', 'IN_PROGRESS', ?, ?, ?, ?,
+                                 ?, ?, ?, ?, ?)""",
+                    (
+                        "missing-worktree",
+                        "Missing",
+                        "Needs attention",
+                        head,
+                        head,
+                        "Codex",
+                        "codex",
+                        "missing",
+                        "agent/codex/missing-worktree-missing",
+                        str(
+                            repo
+                            / ".worktrees"
+                            / "missing-worktree-codex-missing"
+                        ),
+                        "2020-01-01T00:00:00+00:00",
+                        "2020-01-01T00:00:00+00:00",
+                    ),
+                )
+            page = model.tasks(
+                {"limit": ["1"]},
+                state=None,
+                risk=None,
+                attention=True,
+                search=None,
+            )
+            self.assertEqual(page["items"][0]["dispatch_id"], "missing-worktree")
+            self.assertIn(
+                "WORKTREE_UNAVAILABLE",
+                page["items"][0]["attention_reasons"],
+            )
+
+    def test_detail_limit_fails_closed_instead_of_silently_truncating(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            control = ControlPlane(RepoContext.discover(repo), store)
+            task = control.create_task("20260809-026", "Limit", "Bound", "L2")
+            now = datetime.now(timezone.utc).isoformat()
+            rows = [
+                (
+                    "blocker-%03d" % index,
+                    task["dispatch_id"],
+                    "reason",
+                    "Codex",
+                    "OPEN",
+                    "resolve",
+                    now,
+                    now,
+                )
+                for index in range(201)
+            ]
+            with store.mutation() as connection:
+                connection.executemany(
+                    "INSERT INTO blockers VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+            with self.assertRaises(DashboardUnavailableError) as caught:
+                model.task(task["dispatch_id"])
+            self.assertEqual(caught.exception.code, "DETAIL_LIMIT_EXCEEDED")
 
     def test_unknown_event_payload_is_not_returned(self):
         with tempfile.TemporaryDirectory() as tmp:
