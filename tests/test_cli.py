@@ -38,6 +38,16 @@ def assert_single_json_line(test, result, stream="stdout"):
     return json.loads(value)
 
 
+def assert_json_help(test, result, command=None):
+    test.assertEqual(result.returncode, 0)
+    test.assertEqual(result.stderr, "")
+    payload = assert_single_json_line(test, result)
+    test.assertEqual(payload["status"], "help")
+    if command is not None:
+        test.assertEqual(payload["command"], command)
+    return payload
+
+
 def make_cli_repo(path):
     path.mkdir()
     shutil.copytree(PROJECT_ROOT / "team_control", path / "team_control")
@@ -56,6 +66,92 @@ def make_cli_repo(path):
 
 
 class CliTests(unittest.TestCase):
+    def test_help_is_single_json_line_for_module_and_wrapper_entrypoints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = make_cli_repo(tmp_path / "help repo")
+            elsewhere = tmp_path / "elsewhere"
+            elsewhere.mkdir()
+
+            module_help = run(
+                ["python3", "-m", "team_control", "-h"], PROJECT_ROOT
+            )
+            root_payload = assert_json_help(self, module_help)
+            self.assertIn("doctor", root_payload["commands"])
+
+            module_doctor_help = run_cli(repo, "doctor", "--help")
+            doctor_payload = assert_json_help(
+                self, module_doctor_help, command="doctor"
+            )
+            self.assertEqual(doctor_payload["modes"], ["inspect", "repair"])
+
+            wrapper_help = run(
+                [str(repo / "scripts" / "team-control"), "--help"],
+                elsewhere,
+            )
+            assert_json_help(self, wrapper_help)
+
+            wrapper_doctor_help = run(
+                [str(repo / "scripts" / "team-control"), "doctor", "-h"],
+                elsewhere,
+            )
+            assert_json_help(self, wrapper_doctor_help, command="doctor")
+
+            doctor_wrapper_help = run(
+                [str(repo / "scripts" / "worktree-doctor"), "--help"],
+                elsewhere,
+            )
+            assert_json_help(self, doctor_wrapper_help, command="doctor")
+
+    def test_wrappers_reject_repo_override_before_mutating_either_repo(self):
+        cases = (
+            ("team-control", "split"),
+            ("team-control", "equals"),
+            ("worktree-doctor", "split"),
+            ("worktree-doctor", "equals"),
+        )
+        for wrapper_name, form in cases:
+            with self.subTest(wrapper=wrapper_name, form=form):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = Path(tmp)
+                    bound = make_cli_repo(tmp_path / "bound repo")
+                    other = make_cli_repo(tmp_path / "other repo")
+                    bound_db = (
+                        RepoContext.discover(bound).common_dir
+                        / "team"
+                        / "runtime"
+                        / "team.db"
+                    )
+                    other_db = (
+                        RepoContext.discover(other).common_dir
+                        / "team"
+                        / "runtime"
+                        / "team.db"
+                    )
+                    override = (
+                        ["--repo", str(other)]
+                        if form == "split"
+                        else ["--repo=%s" % other]
+                    )
+                    result = run(
+                        [
+                            str(bound / "scripts" / wrapper_name),
+                            *override,
+                            "init",
+                        ],
+                        tmp_path,
+                        check=False,
+                    )
+
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+                    payload = assert_single_json_line(self, result, "stderr")
+                    self.assertEqual(
+                        payload["error"]["code"], "WRAPPER_REPO_OVERRIDE"
+                    )
+                    self.assertFalse(bound_db.exists())
+                    self.assertFalse(other_db.exists())
+
     def test_init_start_status_transition_and_approvals_emit_single_json_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = make_repo(Path(tmp) / "repo with spaces")

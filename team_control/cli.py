@@ -10,6 +10,26 @@ from .service import ControlPlane
 from .store import ControlStore
 
 
+COMMANDS = ("approvals", "doctor", "init", "start", "status", "transition")
+COMMAND_USAGE = {
+    "approvals": "team-control --repo PATH approvals [--dispatch-id ID]",
+    "doctor": (
+        "team-control --repo PATH doctor {inspect,repair} --dispatch-id ID "
+        "--agent AGENT --slug SLUG --base-sha SHA"
+    ),
+    "init": "team-control --repo PATH init",
+    "start": (
+        "team-control --repo PATH start --dispatch-id ID --title TITLE "
+        "--objective OBJECTIVE --risk {L1,L2,L3} --agent AGENT --slug SLUG"
+    ),
+    "status": "team-control --repo PATH status --dispatch-id ID",
+    "transition": (
+        "team-control --repo PATH transition --dispatch-id ID --to STATE "
+        "--reason REASON"
+    ),
+}
+
+
 class JsonArgumentParser(argparse.ArgumentParser):
     def error(self, message):
         raise ContractError("invalid command arguments: %s" % message)
@@ -63,6 +83,42 @@ def build_parser():
     return parser
 
 
+def _help_scope(argv):
+    index = 0
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "--repo":
+            index += 2
+            continue
+        if argument.startswith("--repo="):
+            index += 1
+            continue
+        if argument in COMMANDS:
+            return argument
+        index += 1
+    return None
+
+
+def help_payload(argv):
+    command = _help_scope(argv)
+    if command is None:
+        return {
+            "commands": list(COMMANDS),
+            "program": "team-control",
+            "status": "help",
+            "usage": "team-control --repo PATH COMMAND [OPTIONS]",
+        }
+    payload = {
+        "command": command,
+        "program": "team-control",
+        "status": "help",
+        "usage": COMMAND_USAGE[command],
+    }
+    if command == "doctor":
+        payload["modes"] = ["inspect", "repair"]
+    return payload
+
+
 def _repo_context(raw_path):
     candidate = Path(raw_path)
     try:
@@ -110,7 +166,11 @@ def execute(args):
 
 def main(argv=None):
     try:
-        args = build_parser().parse_args(argv)
+        arguments = list(sys.argv[1:] if argv is None else argv)
+        if any(argument in ("-h", "--help") for argument in arguments):
+            emit(help_payload(arguments))
+            return 0
+        args = build_parser().parse_args(arguments)
         result = execute(args)
         emit(result)
         return 0
