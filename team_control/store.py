@@ -19,7 +19,7 @@ from .errors import (
     ReconciliationError,
     TeamControlError,
 )
-from .git_context import canonical_under
+from .git_context import canonical_under, run_argv
 from .state_machine import next_state
 
 
@@ -125,6 +125,21 @@ class StoreBusyError(TeamControlError):
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_timestamp(value):
+    normalized = value
+    if normalized.endswith(("Z", "z")):
+        normalized = normalized[:-1] + "+00:00"
+    if normalized[10] == "t":
+        normalized = normalized[:10] + "T" + normalized[11:]
+    leap_second = normalized[17:19] == "60"
+    if leap_second:
+        normalized = normalized[:17] + "59" + normalized[19:]
+    parsed = datetime.fromisoformat(normalized)
+    if leap_second:
+        parsed += timedelta(seconds=1)
+    return parsed.astimezone(timezone.utc).isoformat()
 
 
 def sha256_text(value):
@@ -394,6 +409,12 @@ class ControlStore:
         with self._control_lock():
             with self._transaction() as connection:
                 yield connection
+
+    def observe_status(self, dispatch_id, observer):
+        """Observe one SQLite snapshot and repository HEAD under one lock."""
+        with self._control_lock():
+            snapshot = self.status_snapshot(dispatch_id)
+            return observer(snapshot)
 
     @contextmanager
     def controlled_operation(self):
@@ -1184,6 +1205,99 @@ class ControlStore:
         return task
 
     @staticmethod
+    def _task_row_or_error(connection, dispatch_id):
+        row = connection.execute(
+            "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+        ).fetchone()
+        if row is None:
+            raise ReconciliationError("task is missing: %s" % dispatch_id)
+        return row
+
+    def _validate_source_commit(
+        self, task, source_sha, target_sha=None, require_current=False
+    ):
+        if self._common_dir is None:
+            raise ReconciliationError(
+                "source verification requires a repository-bound store"
+            )
+        if not isinstance(source_sha, str) or GIT_SHA_RE.fullmatch(source_sha) is None:
+            raise ReconciliationError("source SHA must be a 40-character commit SHA")
+        target = target_sha or task["current_head_sha"]
+        if not isinstance(target, str) or GIT_SHA_RE.fullmatch(target) is None:
+            raise ReconciliationError("task current HEAD is invalid")
+        repository_root = self._common_dir.parent
+        source_check = run_argv(
+            ["git", "cat-file", "-e", "%s^{commit}" % source_sha],
+            repository_root,
+            check=False,
+        )
+        if source_check.returncode != 0:
+            raise ReconciliationError("source SHA is not an existing Git commit")
+        target_check = run_argv(
+            ["git", "cat-file", "-e", "%s^{commit}" % target],
+            repository_root,
+            check=False,
+        )
+        if target_check.returncode != 0:
+            raise ReconciliationError("task current HEAD is not an existing commit")
+        ancestry = run_argv(
+            ["git", "merge-base", "--is-ancestor", source_sha, target],
+            repository_root,
+            check=False,
+        )
+        if ancestry.returncode != 0:
+            raise ReconciliationError(
+                "source SHA is not bound to the task current HEAD"
+            )
+        if require_current and source_sha != target:
+            raise ReconciliationError("ACCEPT review must target current head")
+
+    def review_stale_reasons(self, task, review, observed_head_sha):
+        reasons = []
+        try:
+            self._validate_source_commit(
+                task,
+                review["source_sha"],
+                target_sha=observed_head_sha,
+                require_current=review["disposition"] == "ACCEPT",
+            )
+        except TeamControlError as error:
+            reasons.append(str(error))
+        try:
+            from .evidence import _read_approved_regular_file
+
+            relative, _ = _read_approved_regular_file(
+                self._common_dir, review["report_path"]
+            )
+            if relative.as_posix() != review["report_path"]:
+                reasons.append("review report path is not canonical")
+        except TeamControlError as error:
+            reasons.append(str(error))
+        return reasons
+
+    def evidence_stale_reasons(self, task, record, observed_head_sha):
+        reasons = []
+        try:
+            self._validate_source_commit(
+                task, record["source_sha"], target_sha=observed_head_sha
+            )
+        except TeamControlError as error:
+            reasons.append(str(error))
+        try:
+            from .evidence import _read_approved_regular_file
+
+            relative, contents = _read_approved_regular_file(
+                self._common_dir, record["path"]
+            )
+            if relative.as_posix() != record["path"]:
+                reasons.append("evidence path is not canonical")
+            elif hashlib.sha256(contents).hexdigest() != record["sha256"]:
+                reasons.append("evidence hash no longer matches file")
+        except TeamControlError as error:
+            reasons.append(str(error))
+        return reasons
+
+    @staticmethod
     def _agent_status_from_row(row):
         try:
             record = json.loads(row["report_json"])
@@ -1209,30 +1323,55 @@ class ControlStore:
         validate_record("agent_status", record)
         normalized = dict(record)
         normalized.setdefault("progress", 0)
+        normalized["updated_at"] = normalize_timestamp(normalized["updated_at"])
         validate_record("agent_status", normalized)
         report_json = json.dumps(
             normalized, ensure_ascii=False, sort_keys=True, allow_nan=False
         )
         with self.mutation() as connection:
-            connection.execute(
-                """INSERT INTO agents (
-                       dispatch_id, agent_id, role, model, state, progress,
-                       report_json, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(dispatch_id, agent_id) DO UPDATE SET
-                     role = excluded.role,
-                     model = excluded.model,
-                     state = excluded.state,
-                     progress = excluded.progress,
-                     report_json = excluded.report_json,
-                     updated_at = excluded.updated_at""",
-                (
-                    normalized["dispatch_id"], normalized["agent_id"],
-                    normalized["role"], normalized.get("model"),
-                    normalized["state"], normalized["progress"], report_json,
-                    normalized["updated_at"],
-                ),
-            )
+            self._task_row_or_error(connection, normalized["dispatch_id"])
+            existing_row = connection.execute(
+                """SELECT * FROM agents
+                   WHERE dispatch_id = ? AND agent_id = ?""",
+                (normalized["dispatch_id"], normalized["agent_id"]),
+            ).fetchone()
+            if existing_row is not None:
+                existing = self._agent_status_from_row(existing_row)
+                existing_at = normalize_timestamp(existing["updated_at"])
+                incoming_at = normalized["updated_at"]
+                if incoming_at < existing_at:
+                    raise ReconciliationError("agent status is stale")
+                if incoming_at == existing_at:
+                    if normalized == existing:
+                        return existing
+                    raise ReconciliationError(
+                        "agent status conflict at same timestamp"
+                    )
+                connection.execute(
+                    """UPDATE agents
+                       SET role = ?, model = ?, state = ?, progress = ?,
+                           report_json = ?, updated_at = ?
+                       WHERE dispatch_id = ? AND agent_id = ?""",
+                    (
+                        normalized["role"], normalized.get("model"),
+                        normalized["state"], normalized["progress"],
+                        report_json, normalized["updated_at"],
+                        normalized["dispatch_id"], normalized["agent_id"],
+                    ),
+                )
+            else:
+                connection.execute(
+                    """INSERT INTO agents (
+                           dispatch_id, agent_id, role, model, state, progress,
+                           report_json, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        normalized["dispatch_id"], normalized["agent_id"],
+                        normalized["role"], normalized.get("model"),
+                        normalized["state"], normalized["progress"], report_json,
+                        normalized["updated_at"],
+                    ),
+                )
         return normalized
 
     def list_agent_status(self, dispatch_id):
@@ -1254,12 +1393,16 @@ class ControlStore:
             "status": row["status"],
             "resolution_condition": row["resolution_condition"],
             "created_at": row["created_at"],
+            "resolved_at": (
+                row["updated_at"] if row["status"] == "RESOLVED" else None
+            ),
         }
         validate_record("blocker", record)
         return record
 
     def add_blocker(self, dispatch_id, reason, owner, resolution_condition):
         with self.mutation() as connection:
+            self._task_row_or_error(connection, dispatch_id)
             now = utc_now()
             record = {
                 "schema_version": 1,
@@ -1270,6 +1413,7 @@ class ControlStore:
                 "status": "OPEN",
                 "resolution_condition": resolution_condition,
                 "created_at": now,
+                "resolved_at": None,
             }
             validate_record("blocker", record)
             connection.execute(
@@ -1284,6 +1428,35 @@ class ControlStore:
                 ),
             )
         return record
+
+    def resolve_blocker(self, dispatch_id, blocker_id):
+        with self.mutation() as connection:
+            self._task_row_or_error(connection, dispatch_id)
+            row = connection.execute(
+                """SELECT * FROM blockers
+                   WHERE dispatch_id = ? AND blocker_id = ?""",
+                (dispatch_id, blocker_id),
+            ).fetchone()
+            if row is None:
+                raise ReconciliationError(
+                    "blocker is missing: %s" % blocker_id
+                )
+            if row["status"] == "RESOLVED":
+                return self._blocker_from_row(row)
+            if row["status"] != "OPEN":
+                raise ReconciliationError("blocker status cannot be resolved")
+            resolved_at = utc_now()
+            cursor = connection.execute(
+                """UPDATE blockers SET status = 'RESOLVED', updated_at = ?
+                   WHERE dispatch_id = ? AND blocker_id = ? AND status = 'OPEN'""",
+                (resolved_at, dispatch_id, blocker_id),
+            )
+            if cursor.rowcount != 1:
+                raise ReconciliationError("blocker resolution conflict")
+            row = connection.execute(
+                "SELECT * FROM blockers WHERE blocker_id = ?", (blocker_id,)
+            ).fetchone()
+            return self._blocker_from_row(row)
 
     def list_blockers(self, dispatch_id):
         with self.read_connection() as connection:
@@ -1313,6 +1486,13 @@ class ControlStore:
         self, dispatch_id, reviewer, disposition, source_sha, report_path
     ):
         with self.mutation() as connection:
+            task = self._task_row_or_error(connection, dispatch_id)
+            if self._common_dir is None:
+                raise ReconciliationError(
+                    "review verification requires a repository-bound store"
+                )
+            if not isinstance(report_path, (str, Path)):
+                raise ContractError("report_path must be a string or path")
             record = {
                 "schema_version": 1,
                 "review_id": str(uuid.uuid4()),
@@ -1320,10 +1500,22 @@ class ControlStore:
                 "reviewer": reviewer,
                 "disposition": disposition,
                 "source_sha": source_sha,
-                "report_path": report_path,
+                "report_path": str(report_path),
                 "created_at": utc_now(),
             }
             validate_record("review", record)
+            from .evidence import _read_approved_regular_file
+
+            relative, _ = _read_approved_regular_file(
+                self._common_dir, report_path
+            )
+            record["report_path"] = relative.as_posix()
+            validate_record("review", record)
+            self._validate_source_commit(
+                task,
+                record["source_sha"],
+                require_current=record["disposition"] == "ACCEPT",
+            )
             connection.execute(
                 """INSERT INTO reviews (
                        review_id, dispatch_id, reviewer, disposition,
@@ -1368,19 +1560,20 @@ class ControlStore:
             raise ReconciliationError(
                 "evidence verification requires a repository-bound store"
             )
-        from .evidence import _read_regular_file
-
-        repository_root = self._common_dir.parent
-        relative, contents = _read_regular_file(
-            repository_root, record["path"]
-        )
-        if record["path"] != relative.as_posix():
-            raise BoundaryError("evidence path must be repository-relative")
-        if hashlib.sha256(contents).hexdigest() != record["sha256"]:
-            raise ReconciliationError(
-                "evidence hash does not match file: %s" % record["path"]
-            )
         with self.mutation() as connection:
+            task = self._task_row_or_error(connection, record["dispatch_id"])
+            from .evidence import _read_approved_regular_file
+
+            relative, contents = _read_approved_regular_file(
+                self._common_dir, record["path"]
+            )
+            if record["path"] != relative.as_posix():
+                raise BoundaryError("evidence path must be repository-relative")
+            if hashlib.sha256(contents).hexdigest() != record["sha256"]:
+                raise ReconciliationError(
+                    "evidence hash does not match file: %s" % record["path"]
+                )
+            self._validate_source_commit(task, record["source_sha"])
             connection.execute(
                 """INSERT INTO evidence (
                        evidence_id, dispatch_id, kind, path, sha256,

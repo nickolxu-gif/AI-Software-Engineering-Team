@@ -15,6 +15,7 @@ from .errors import (
     TransitionError,
 )
 from .git_context import RepoContext, canonical_under, run_argv, validate_component
+from .store import utc_now
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
@@ -343,29 +344,68 @@ class ControlPlane:
 
     def status(self, dispatch_id):
         _validated_component(dispatch_id, "dispatch-id")
-        (
-            task,
-            events,
-            approvals,
-            agents,
-            blockers,
-            reviews,
-            evidence,
-        ) = self.store.status_snapshot(dispatch_id)
-        if task is None:
-            raise ReconciliationError("task is missing: %s" % dispatch_id)
-        actual_head_sha, _ = self._trusted_actual_head(task)
-        return {
-            "task": task,
-            "events": events,
-            "agents": agents,
-            "blockers": blockers,
-            "reviews": reviews,
-            "evidence": evidence,
-            "pending_approvals": approvals,
-            "effective_state": (
-                "NEEDS_HUMAN_APPROVAL" if approvals else task["state"]
-            ),
-            "actual_head_sha": actual_head_sha,
-            "head_drift": actual_head_sha != task["current_head_sha"],
-        }
+
+        def observe(snapshot):
+            (
+                task,
+                events,
+                approvals,
+                agents,
+                blockers,
+                reviews,
+                evidence,
+            ) = snapshot
+            if task is None:
+                raise ReconciliationError("task is missing: %s" % dispatch_id)
+            actual_head_sha, _ = self._trusted_actual_head(task)
+
+            observed_reviews = []
+            stale_reviews = []
+            for original in reviews:
+                review = dict(original)
+                reasons = self.store.review_stale_reasons(
+                    task, review, actual_head_sha
+                )
+                review["stale"] = bool(reasons)
+                review["stale_reasons"] = reasons
+                review["effective"] = not reasons
+                if reasons:
+                    stale_reviews.append(review["review_id"])
+                observed_reviews.append(review)
+
+            observed_evidence = []
+            stale_evidence = []
+            for original in evidence:
+                record = dict(original)
+                reasons = self.store.evidence_stale_reasons(
+                    task, record, actual_head_sha
+                )
+                record["stale"] = bool(reasons)
+                record["stale_reasons"] = reasons
+                if reasons:
+                    stale_evidence.append(record["evidence_id"])
+                observed_evidence.append(record)
+
+            return {
+                "task": task,
+                "events": events,
+                "agents": agents,
+                "blockers": blockers,
+                "reviews": observed_reviews,
+                "evidence": observed_evidence,
+                "pending_approvals": approvals,
+                "effective_state": (
+                    "NEEDS_HUMAN_APPROVAL" if approvals else task["state"]
+                ),
+                "actual_head_sha": actual_head_sha,
+                "head_drift": actual_head_sha != task["current_head_sha"],
+                "review_stale": stale_reviews,
+                "evidence_stale": stale_evidence,
+                "valid_acceptance": any(
+                    review["disposition"] == "ACCEPT" and review["effective"]
+                    for review in observed_reviews
+                ),
+                "observed_at": utc_now(),
+            }
+
+        return self.store.observe_status(dispatch_id, observe)

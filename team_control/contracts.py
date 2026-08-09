@@ -19,6 +19,7 @@ BLOCKER_STATUSES = frozenset({"OPEN", "RESOLVED"})
 
 DISPATCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
+COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 RFC3339_RE = re.compile(
     r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt]"
@@ -30,9 +31,9 @@ REQUIRED = {
     "task": ("schema_version", "dispatch_id", "title", "objective", "risk_level", "state", "task_base_sha", "owner"),
     "event": ("schema_version", "dispatch_id", "sequence", "event_type", "created_at"),
     "approval": ("schema_version", "approval_id", "dispatch_id", "action", "target_sha", "request_hash", "expires_at", "consumed_at", "idempotency_key"),
-    "evidence": ("schema_version", "evidence_id", "dispatch_id", "kind", "path", "sha256", "created_at"),
+    "evidence": ("schema_version", "evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha", "created_at"),
     "agent_status": ("schema_version", "dispatch_id", "agent_id", "role", "state", "updated_at"),
-    "review": ("schema_version", "review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "created_at"),
+    "review": ("schema_version", "review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "report_path", "created_at"),
     "blocker": ("schema_version", "blocker_id", "dispatch_id", "reason", "owner", "status", "created_at"),
 }
 
@@ -40,18 +41,16 @@ STRING_FIELDS = {
     "task": ("dispatch_id", "title", "objective", "risk_level", "state", "task_base_sha", "owner"),
     "event": ("dispatch_id", "event_type", "created_at"),
     "approval": ("approval_id", "dispatch_id", "action", "target_sha", "request_hash", "expires_at", "idempotency_key"),
-    "evidence": ("evidence_id", "dispatch_id", "kind", "path", "sha256", "created_at"),
+    "evidence": ("evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha", "created_at"),
     "agent_status": ("dispatch_id", "agent_id", "role", "state", "updated_at"),
-    "review": ("review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "created_at"),
+    "review": ("review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "report_path", "created_at"),
     "blocker": ("blocker_id", "dispatch_id", "reason", "owner", "status", "created_at"),
 }
 
 NULLABLE_STRING_FIELDS = {
     "approval": ("consumed_at",),
-    "evidence": ("source_sha",),
     "agent_status": ("model",),
-    "review": ("report_path",),
-    "blocker": ("resolution_condition",),
+    "blocker": ("resolution_condition", "resolved_at"),
 }
 
 NON_EMPTY_FIELDS = {
@@ -60,7 +59,7 @@ NON_EMPTY_FIELDS = {
     "approval": ("expires_at", "idempotency_key"),
     "evidence": ("path", "created_at"),
     "agent_status": ("updated_at",),
-    "review": ("created_at",),
+    "review": ("report_path", "created_at"),
     "blocker": ("reason", "owner", "created_at"),
 }
 
@@ -70,8 +69,13 @@ DATE_TIME_FIELDS = {
     "evidence": ("created_at",),
     "agent_status": ("updated_at",),
     "review": ("created_at",),
-    "blocker": ("created_at",),
+    "blocker": ("created_at", "resolved_at"),
 }
+
+AGENT_STATUS_FIELDS = frozenset({
+    "schema_version", "dispatch_id", "agent_id", "role", "model", "state",
+    "progress", "updated_at",
+})
 
 
 def _validate_string(record, field, nullable=False):
@@ -139,7 +143,9 @@ def validate_record(kind, record):
         if not record[field]:
             raise ContractError("%s must not be empty" % field)
     for field in DATE_TIME_FIELDS.get(kind, ()):
-        nullable = kind == "approval" and field == "consumed_at"
+        if field not in record:
+            continue
+        nullable = field in NULLABLE_STRING_FIELDS.get(kind, ())
         _validate_datetime(record, field, nullable=nullable)
 
     if kind == "task":
@@ -168,7 +174,21 @@ def validate_record(kind, record):
         if record["kind"] not in EVIDENCE_KINDS:
             raise ContractError("unknown evidence kind: %s" % record["kind"])
         _validate_pattern(record, "sha256", HASH_RE, "a 64-character hexadecimal hash")
+        _validate_pattern(record, "source_sha", COMMIT_SHA_RE, "a 40-character commit SHA")
     elif kind == "agent_status":
+        unknown = set(record) - AGENT_STATUS_FIELDS
+        if unknown:
+            raise ContractError(
+                "unknown agent_status fields: %s" % ", ".join(sorted(unknown))
+            )
+        for field in ("dispatch_id", "agent_id", "role"):
+            if not record[field] or len(record[field]) > 128:
+                raise ContractError("%s must contain 1 to 128 characters" % field)
+        if record.get("model") is not None and (
+            not record["model"] or len(record["model"]) > 128
+        ):
+            raise ContractError("model must contain 1 to 128 characters")
+        _validate_pattern(record, "dispatch_id", DISPATCH_RE, "a valid dispatch identifier")
         if record["state"] not in AGENT_STATES:
             raise ContractError("unknown agent state: %s" % record["state"])
         if "progress" in record:
@@ -176,7 +196,7 @@ def validate_record(kind, record):
     elif kind == "review":
         if record["disposition"] not in REVIEW_DISPOSITIONS:
             raise ContractError("unknown review disposition: %s" % record["disposition"])
-        _validate_pattern(record, "source_sha", SHA_RE, "a full hexadecimal SHA")
+        _validate_pattern(record, "source_sha", COMMIT_SHA_RE, "a 40-character commit SHA")
     elif kind == "blocker":
         if record["status"] not in BLOCKER_STATUSES:
             raise ContractError("unknown blocker status: %s" % record["status"])

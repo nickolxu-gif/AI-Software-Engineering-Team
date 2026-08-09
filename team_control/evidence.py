@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .contracts import validate_record
 from .errors import BoundaryError, ReconciliationError
+from .git_context import run_argv
 from .store import utc_now
 
 
@@ -83,6 +84,49 @@ def _read_regular_file(root, candidate):
             os.close(descriptor)
 
 
+def _main_repository_root(common_dir):
+    return Path(common_dir).resolve(strict=True).parent
+
+
+def _registered_worktree_roots(main_root):
+    output = run_argv(
+        ["git", "worktree", "list", "--porcelain"], main_root
+    ).stdout
+    roots = []
+    for line in output.splitlines():
+        if line.startswith("worktree "):
+            try:
+                roots.append(Path(line[9:]).resolve(strict=True))
+            except OSError as error:
+                raise BoundaryError("registered worktree is unavailable") from error
+    return tuple(roots)
+
+
+def _read_approved_regular_file(common_dir, candidate):
+    main_root = _main_repository_root(common_dir)
+    _, relative = _relative_path(main_root, candidate)
+    if relative.parts[0] == ".git":
+        raise BoundaryError("Git metadata is not an approved artifact path")
+    if relative.parts[0] == ".worktrees":
+        absolute = main_root / relative
+        approved = False
+        for worktree_root in _registered_worktree_roots(main_root):
+            if worktree_root == main_root:
+                continue
+            try:
+                remainder = absolute.relative_to(worktree_root)
+            except ValueError:
+                continue
+            if remainder.parts:
+                approved = True
+                break
+        if not approved:
+            raise BoundaryError(
+                "artifact path is not inside a registered linked worktree"
+            )
+    return _read_regular_file(main_root, relative)
+
+
 def _write_regular_file(root, relative_parent, filename, payload):
     root = Path(root).resolve(strict=True)
     descriptors = []
@@ -150,7 +194,12 @@ class EvidenceManager:
     def record(self, dispatch_id, kind, path, source_sha=None):
         if self.store.get_task(dispatch_id) is None:
             raise ReconciliationError("task is missing: %s" % dispatch_id)
-        relative, contents = _read_regular_file(self.context.root, path)
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = self.context.root / candidate
+        relative, contents = _read_approved_regular_file(
+            self.context.common_dir, candidate
+        )
         record = {
             "schema_version": 1,
             "evidence_id": str(uuid.uuid4()),
@@ -170,7 +219,9 @@ class EvidenceManager:
         evidence = self.store.list_evidence(dispatch_id)
         for record in evidence:
             validate_record("evidence", record)
-            _, contents = _read_regular_file(self.context.root, record["path"])
+            _, contents = _read_approved_regular_file(
+                self.context.common_dir, record["path"]
+            )
             digest = hashlib.sha256(contents).hexdigest()
             if digest != record["sha256"]:
                 raise ReconciliationError(
@@ -187,8 +238,9 @@ class EvidenceManager:
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
             + "\n"
         ).encode("utf-8")
+        root = _main_repository_root(self.context.common_dir)
         parent = Path("artifacts") / "dispatches" / dispatch_id
         _write_regular_file(
-            self.context.root, parent, "evidence-index.json", encoded
+            root, parent, "evidence-index.json", encoded
         )
-        return Path(self.context.root) / parent / "evidence-index.json"
+        return root / parent / "evidence-index.json"

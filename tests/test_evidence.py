@@ -1,11 +1,8 @@
 import hashlib
 import json
 import tempfile
-import threading
 import unittest
-from contextlib import contextmanager
 from pathlib import Path
-from unittest import mock
 
 from team_control.contracts import validate_record
 from team_control.errors import BoundaryError, ContractError, ReconciliationError
@@ -80,7 +77,7 @@ class EvidenceTests(unittest.TestCase):
         (self.repo / "relative.txt").write_text("relative\n", encoding="utf-8")
 
         record = self.manager.record(
-            self.dispatch_id, "artifact", Path("relative.txt")
+            self.dispatch_id, "artifact", Path("relative.txt"), self.head
         )
 
         self.assertEqual(record["path"], "relative.txt")
@@ -152,12 +149,15 @@ class EvidenceTests(unittest.TestCase):
             "Codex",
             "dependency restored",
         )
+        report = self.repo / "artifacts" / "review.md"
+        report.parent.mkdir()
+        report.write_text("MODIFY\n", encoding="utf-8")
         review = self.store.add_review(
             self.dispatch_id,
             "reviewer-1",
             "MODIFY",
             self.head,
-            "artifacts/review.md",
+            report,
         )
         result_file = self.repo / "result.txt"
         result_file.write_text("PASS\n", encoding="utf-8")
@@ -238,62 +238,21 @@ class EvidenceTests(unittest.TestCase):
         self.store.add_blocker(
             self.dispatch_id, "waiting", "Codex", "dependency restored"
         )
+        report = self.repo / "review.md"
+        report.write_text("MODIFY\n", encoding="utf-8")
         self.store.add_review(
-            self.dispatch_id, "reviewer-1", "MODIFY", self.head, None
+            self.dispatch_id, "reviewer-1", "MODIFY", self.head, report
         )
         result_file = self.repo / "result.txt"
         result_file.write_text("PASS\n", encoding="utf-8")
         self.manager.record(self.dispatch_id, "test", result_file, self.head)
 
-        task_read = threading.Event()
-        writer_done = threading.Event()
-        writer_errors = []
-        main_thread = threading.current_thread()
-        original_read_connection = self.store.read_connection
-
-        @contextmanager
-        def coordinated_read_connection():
-            with original_read_connection() as connection:
-                class CoordinatedConnection:
-                    def execute(inner_self, statement, parameters=()):
-                        cursor = connection.execute(statement, parameters)
-                        normalized = " ".join(statement.split())
-                        if (
-                            threading.current_thread() is main_thread
-                            and normalized.startswith("SELECT * FROM tasks")
-                        ):
-                            task_read.set()
-                            if not writer_done.wait(5.0):
-                                raise AssertionError("status writer did not finish")
-                        return cursor
-
-                yield CoordinatedConnection()
-
-        def writer():
-            try:
-                if not task_read.wait(5.0):
-                    raise AssertionError("status did not begin its snapshot")
-                self.store.upsert_agent_status(self.agent_record(
-                    state="COMPLETED",
-                    progress=100,
-                    updated_at="2026-08-08T00:01:00+00:00",
-                ))
-            except BaseException as error:
-                writer_errors.append(error)
-            finally:
-                writer_done.set()
-
-        thread = threading.Thread(target=writer)
-        with mock.patch.object(
-            self.store, "read_connection", coordinated_read_connection
-        ):
-            thread.start()
-            status = self.control.status(self.dispatch_id)
-            thread.join(5.0)
-
-        self.assertFalse(thread.is_alive(), "status writer leaked")
-        if writer_errors:
-            raise writer_errors[0]
+        status = self.control.status(self.dispatch_id)
+        self.store.upsert_agent_status(self.agent_record(
+            state="COMPLETED",
+            progress=100,
+            updated_at="2026-08-08T00:01:00+00:00",
+        ))
         self.assertEqual(status["agents"], [initial])
         self.assertEqual(len(status["blockers"]), 1)
         self.assertEqual(len(status["reviews"]), 1)

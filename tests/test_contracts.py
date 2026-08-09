@@ -45,7 +45,7 @@ VALID_RECORDS = {
         "kind": "test",
         "path": "artifacts/test.txt",
         "sha256": "e" * 64,
-        "source_sha": None,
+        "source_sha": "d" * 40,
         "created_at": CREATED_AT,
     },
     "agent_status": {
@@ -65,7 +65,7 @@ VALID_RECORDS = {
         "reviewer": "reviewer-1",
         "disposition": "ACCEPT",
         "source_sha": "f" * 40,
-        "report_path": None,
+        "report_path": "artifacts/review.md",
         "created_at": CREATED_AT,
     },
     "blocker": {
@@ -77,6 +77,7 @@ VALID_RECORDS = {
         "status": "OPEN",
         "resolution_condition": None,
         "created_at": CREATED_AT,
+        "resolved_at": None,
     },
 }
 
@@ -84,18 +85,16 @@ STRING_FIELDS = {
     "task": ("dispatch_id", "title", "objective", "risk_level", "state", "task_base_sha", "owner"),
     "event": ("dispatch_id", "event_type", "created_at"),
     "approval": ("approval_id", "dispatch_id", "action", "target_sha", "request_hash", "expires_at", "idempotency_key"),
-    "evidence": ("evidence_id", "dispatch_id", "kind", "path", "sha256", "created_at"),
+    "evidence": ("evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha", "created_at"),
     "agent_status": ("dispatch_id", "agent_id", "role", "state", "updated_at"),
-    "review": ("review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "created_at"),
+    "review": ("review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "report_path", "created_at"),
     "blocker": ("blocker_id", "dispatch_id", "reason", "owner", "status", "created_at"),
 }
 
 NULLABLE_STRING_FIELDS = {
     "approval": ("consumed_at",),
-    "evidence": ("source_sha",),
     "agent_status": ("model",),
-    "review": ("report_path",),
-    "blocker": ("resolution_condition",),
+    "blocker": ("resolution_condition", "resolved_at"),
 }
 
 DATE_TIME_FIELDS = {
@@ -104,7 +103,7 @@ DATE_TIME_FIELDS = {
     "evidence": ("created_at",),
     "agent_status": ("updated_at",),
     "review": ("created_at",),
-    "blocker": ("created_at",),
+    "blocker": ("created_at", "resolved_at"),
 }
 
 
@@ -191,6 +190,7 @@ class ContractTests(unittest.TestCase):
             ("evidence kind enum", "evidence", changed("evidence", kind="log")),
             ("evidence empty path", "evidence", changed("evidence", path="")),
             ("evidence hash", "evidence", changed("evidence", sha256="E" * 64)),
+            ("evidence source SHA", "evidence", changed("evidence", source_sha="d" * 39)),
             ("evidence empty timestamp", "evidence", changed("evidence", created_at="")),
             ("agent state enum", "agent_status", changed("agent_status", state="PAUSED")),
             ("agent progress below range", "agent_status", changed("agent_status", progress=-1)),
@@ -267,7 +267,7 @@ class ContractTests(unittest.TestCase):
             "review source SHA pattern": (
                 loaded["review.schema.json"]["properties"]["source_sha"],
                 "pattern",
-                "^[0-9a-f]{40,64}$",
+                "^[0-9a-f]{40}$",
             ),
         }
         for label, (schema_property, keyword, expected_value) in schema_constraints.items():
