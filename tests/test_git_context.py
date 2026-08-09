@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -68,6 +69,29 @@ class GitContextTests(unittest.TestCase):
                 run_argv(["git", "status"], missing_cwd)
 
             self.assertIsInstance(caught.exception.__cause__, OSError)
+
+    def test_run_argv_applies_explicit_environment_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            completed = run_argv(
+                [
+                    "python3",
+                    "-c",
+                    "import os; print(os.environ['DASHBOARD_TEST_FLAG'])",
+                ],
+                Path(tmp),
+                env_overrides={"DASHBOARD_TEST_FLAG": "readonly"},
+            )
+            self.assertEqual(completed.stdout.strip(), "readonly")
+            self.assertNotIn("DASHBOARD_TEST_FLAG", os.environ)
+
+    def test_run_argv_rejects_non_string_environment_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(BoundaryError):
+                run_argv(
+                    ["git", "--version"],
+                    Path(tmp),
+                    env_overrides={"GIT_OPTIONAL_LOCKS": 0},
+                )
 
 
 if __name__ == "__main__":

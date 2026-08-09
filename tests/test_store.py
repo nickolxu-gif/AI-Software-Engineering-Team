@@ -275,6 +275,33 @@ class StoreTests(unittest.TestCase):
             with self.assertRaises(sqlite3.ProgrammingError):
                 connection.execute("SELECT 1")
 
+    def test_read_connection_is_query_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(Path(tmp) / "repo")
+            store = ControlStore.for_repo(RepoContext.discover(repo))
+            store.initialize()
+
+            with store.read_connection() as connection:
+                self.assertEqual(
+                    connection.execute("PRAGMA query_only").fetchone()[0],
+                    1,
+                )
+                with self.assertRaises(sqlite3.OperationalError):
+                    connection.execute(
+                        "UPDATE tasks SET title = 'changed' WHERE 1 = 0"
+                    )
+
+    def test_read_connection_uses_two_second_busy_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(Path(tmp) / "repo")
+            store = ControlStore.for_repo(RepoContext.discover(repo))
+            store.initialize()
+            with store.read_connection() as connection:
+                self.assertEqual(
+                    connection.execute("PRAGMA busy_timeout").fetchone()[0],
+                    2000,
+                )
+
     def test_paths_are_absolute_normalized_path_objects(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Path(tmp) / "nested" / ".." / "runtime"
