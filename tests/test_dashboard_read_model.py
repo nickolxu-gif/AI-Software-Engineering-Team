@@ -367,6 +367,157 @@ class DashboardReadModelTests(unittest.TestCase):
                         model.tasks({}, **arguments)
                     self.assertEqual(caught.exception.code, "INVALID_FILTER")
 
+    def test_expired_offset_approval_is_not_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            control = ControlPlane(RepoContext.discover(repo), store)
+            task = control.create_task("20260809-022", "Expiry", "Offset", "L2")
+            with store.mutation() as connection:
+                connection.execute(
+                    """INSERT INTO approvals VALUES (
+                           ?, ?, ?, ?, ?, ?, ?, NULL, 'PENDING', ?
+                       )""",
+                    (
+                        "approval-offset",
+                        task["dispatch_id"],
+                        "external_action",
+                        task["current_head_sha"],
+                        "a" * 64,
+                        "b" * 64,
+                        "2026-08-09T19:30:00+08:00",
+                        "approval-offset-key",
+                    ),
+                )
+            observed_now = datetime(
+                2026,
+                8,
+                9,
+                12,
+                0,
+                tzinfo=timezone.utc,
+            )
+            with patch.object(model, "_now", return_value=observed_now):
+                item = model.tasks(
+                    {},
+                    state=None,
+                    risk=None,
+                    attention=None,
+                    search=None,
+                )["items"][0]
+                self.assertEqual(item["effective_state"], "PLANNED")
+                self.assertEqual(model.project()["counts"]["pending_approvals"], 0)
+
+    def test_schema_validation_covers_task3_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            with store.mutation() as connection:
+                connection.execute("DROP TABLE agents")
+                connection.execute(
+                    """CREATE TABLE agents (
+                           dispatch_id TEXT,
+                           agent_id TEXT,
+                           role TEXT,
+                           state TEXT,
+                           report_json TEXT,
+                           updated_at TEXT
+                       )"""
+                )
+            with self.assertRaises(DashboardUnavailableError) as caught:
+                model.health()
+            self.assertEqual(caught.exception.code, "SCHEMA_UNSUPPORTED")
+
+    def test_task_listing_observes_git_worktrees_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            control = ControlPlane(RepoContext.discover(repo), store)
+            control.create_task("20260809-023", "One", "One", "L1")
+            control.create_task("20260809-024", "Two", "Two", "L2")
+            with patch.object(model, "_git", wraps=model._git) as observed:
+                model.tasks(
+                    {},
+                    state=None,
+                    risk=None,
+                    attention=None,
+                    search=None,
+                )
+            worktree_calls = [
+                call
+                for call in observed.call_args_list
+                if call.args[0] == ("worktree", "list", "--porcelain")
+            ]
+            self.assertEqual(len(worktree_calls), 1)
+
+    def test_bounded_candidates_do_not_hide_an_old_blocked_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+            rows = [
+                (
+                    "old-blocked",
+                    1,
+                    "Blocked",
+                    "Needs attention",
+                    "L3",
+                    "BLOCKED",
+                    head,
+                    head,
+                    "Codex",
+                    "2020-01-01T00:00:00+00:00",
+                    "2020-01-01T00:00:00+00:00",
+                )
+            ]
+            rows.extend(
+                (
+                    "normal-%05d" % index,
+                    1,
+                    "Normal",
+                    "Routine",
+                    "L1",
+                    "IN_PROGRESS",
+                    head,
+                    head,
+                    "Codex",
+                    "2030-01-01T00:00:00+00:00",
+                    "2030-01-01T00:00:00+00:00",
+                )
+                for index in range(10101)
+            )
+            with store.mutation() as connection:
+                connection.executemany(
+                    """INSERT INTO tasks (
+                           dispatch_id, schema_version, title, objective,
+                           risk_level, state, task_base_sha, current_head_sha,
+                           owner, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    rows,
+                )
+            page = model.tasks(
+                {"limit": ["1"]},
+                state=None,
+                risk=None,
+                attention=True,
+                search=None,
+            )
+            self.assertEqual(page["items"][0]["dispatch_id"], "old-blocked")
+
+    def test_valid_acceptance_detects_tampered_review_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            control = ControlPlane(RepoContext.discover(repo), store)
+            task = control.create_task("20260809-025", "Review", "Verify", "L2")
+            report = repo / "review.md"
+            report.write_text("accepted\n", encoding="utf-8")
+            store.add_review(
+                task["dispatch_id"],
+                "Claude",
+                "ACCEPT",
+                task["current_head_sha"],
+                "review.md",
+            )
+            self.assertTrue(model.task(task["dispatch_id"])["valid_acceptance"])
+            report.write_text("tampered\n", encoding="utf-8")
+            self.assertFalse(model.task(task["dispatch_id"])["valid_acceptance"])
+
     def test_unknown_event_payload_is_not_returned(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, store, model = self.make_model(Path(tmp))

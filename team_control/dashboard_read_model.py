@@ -10,9 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from pathlib import PurePosixPath
 
-from .contracts import RISK_LEVELS, TASK_STATES
+from .contracts import RISK_LEVELS, SHA_RE, TASK_STATES
 from .errors import BoundaryError, GitStateError, TeamControlError
-from .git_context import canonical_under, run_argv
+from .git_context import canonical_under, run_argv, validate_component
 
 
 class DashboardError(TeamControlError):
@@ -73,7 +73,14 @@ REQUIRED_SCHEMA = {
         "objective",
         "risk_level",
         "state",
+        "owner",
+        "agent",
+        "slug",
+        "branch",
+        "worktree_path",
+        "task_base_sha",
         "current_head_sha",
+        "updated_at",
     },
     "events": {
         "dispatch_id",
@@ -87,12 +94,26 @@ REQUIRED_SCHEMA = {
         "dispatch_id",
         "action",
         "target_sha",
+        "expires_at",
+        "consumed_at",
         "status",
     },
-    "agents": {"dispatch_id", "agent_id", "role", "state", "report_json"},
-    "reviews": {"review_id", "dispatch_id", "disposition", "source_sha"},
-    "blockers": {"blocker_id", "dispatch_id", "reason", "status"},
-    "evidence": {"evidence_id", "dispatch_id", "kind", "path", "source_sha"},
+    "agents": {
+        "dispatch_id", "agent_id", "role", "state", "progress",
+        "report_json", "updated_at",
+    },
+    "reviews": {
+        "review_id", "dispatch_id", "reviewer", "disposition", "source_sha",
+        "report_path", "report_sha256", "created_at",
+    },
+    "blockers": {
+        "blocker_id", "dispatch_id", "reason", "owner", "status",
+        "resolution_condition", "created_at", "updated_at",
+    },
+    "evidence": {
+        "evidence_id", "dispatch_id", "kind", "path", "sha256",
+        "source_sha", "created_at",
+    },
 }
 SQLITE_BUSY_CODES = frozenset(
     {
@@ -132,6 +153,7 @@ ATTENTION_STATES = frozenset(
     }
 )
 MAX_TASK_CANDIDATES = 10101
+DETAIL_SUBRESOURCE_LIMIT = 200
 
 
 def _page(rows, limit, offset):
@@ -431,9 +453,14 @@ class DashboardReadModel:
             if line
         ]
         worktrees = self._git(("worktree", "list", "--porcelain")).stdout
+        worktree_heads = self._parse_worktree_heads(worktrees)
         with self.snapshot() as connection:
             counts = self._counts(connection)
-            attention = self._attention_items(connection, limit=20)
+            attention = self._attention_items(
+                connection,
+                limit=20,
+                worktree_heads=worktree_heads,
+            )
         return {
             "repository_name": self.context.common_dir.parent.name,
             "branch": branch or "DETACHED",
@@ -481,7 +508,7 @@ class DashboardReadModel:
         pending = connection.execute(
             """SELECT COUNT(*) FROM approvals
                WHERE status = 'PENDING' AND consumed_at IS NULL
-                 AND expires_at > ?""",
+                 AND julianday(expires_at) > julianday(?)""",
             (now,),
         ).fetchone()[0]
         stale_reviews = connection.execute(
@@ -558,7 +585,7 @@ class DashboardReadModel:
                           WHERE a.dispatch_id = t.dispatch_id
                             AND a.status = 'PENDING'
                             AND a.consumed_at IS NULL
-                            AND a.expires_at > ?
+                            AND julianday(a.expires_at) > julianday(?)
                       ) AS has_pending_approval,
                       EXISTS (
                           SELECT 1 FROM blockers b
@@ -578,44 +605,97 @@ class DashboardReadModel:
                       ) AS has_stale_evidence
                FROM tasks t"""
             + where
-            + " ORDER BY t.updated_at DESC, t.dispatch_id LIMIT ?",
+            + """ ORDER BY
+                   CASE
+                     WHEN has_pending_approval THEN 0
+                     WHEN has_open_blocker
+                          OR t.state IN (
+                              'NEEDS_CLARIFICATION', 'NEEDS_DIRECTION',
+                              'BLOCKED', 'PAUSE_REQUESTED', 'PAUSED', 'UNKNOWN'
+                          ) THEN 1
+                     WHEN has_stale_review OR has_stale_evidence THEN 2
+                     ELSE 3
+                   END,
+                   CASE t.risk_level WHEN 'L3' THEN 0 WHEN 'L2' THEN 1 ELSE 2 END,
+                   t.updated_at, t.dispatch_id LIMIT ?""",
             (self._now().isoformat(), *parameters),
         ).fetchall()
 
-    def _registered_worktree_head(self, row):
+    @staticmethod
+    def _parse_worktree_heads(output):
+        heads = {}
+        path = None
+        for line in output.splitlines():
+            if line.startswith("worktree "):
+                path = line[len("worktree ") :]
+            elif line.startswith("HEAD ") and path is not None:
+                head = line[len("HEAD ") :]
+                if SHA_RE.fullmatch(head):
+                    try:
+                        resolved = Path(path).resolve(strict=True)
+                    except (OSError, RuntimeError):
+                        pass
+                    else:
+                        heads[resolved] = head
+            elif not line:
+                path = None
+        return heads
+
+    def _worktree_heads(self):
+        output = self._git(("worktree", "list", "--porcelain")).stdout
+        return self._parse_worktree_heads(output)
+
+    def _registered_worktree_head(self, row, worktree_heads):
         worktree_path = row["worktree_path"]
         if not worktree_path:
-            return None
+            root = self.context.root.resolve(strict=True)
+            return worktree_heads.get(root), root in worktree_heads
         try:
-            worktree_root = (
-                self.context.common_dir.parent / ".worktrees"
-            ).resolve(strict=True)
-            candidate = Path(worktree_path)
-            if not candidate.is_absolute():
-                return None
-            info = candidate.lstat()
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-                return None
-            resolved = canonical_under(worktree_root, candidate)
-            if resolved != candidate.resolve(strict=True):
-                return None
-            common_output = self._execute_git(
-                ("rev-parse", "--git-common-dir"),
-                resolved,
-            ).stdout.strip()
-            observed_common = Path(common_output)
-            if not observed_common.is_absolute():
-                observed_common = resolved / observed_common
-            if observed_common.resolve(strict=True) != self.context.common_dir:
-                return None
-            return self._execute_git(
-                ("rev-parse", "HEAD"),
-                resolved,
-            ).stdout.strip()
-        except (BoundaryError, GitStateError, OSError, RuntimeError):
-            return None
+            for field in ("dispatch_id", "agent", "slug"):
+                value = row[field]
+                if not isinstance(value, str):
+                    return None, False
+                validate_component(value, "task-" + field)
+            expected_branch = "agent/%s/%s-%s" % (
+                row["agent"],
+                row["dispatch_id"],
+                row["slug"],
+            )
+            if row["branch"] != expected_branch:
+                return None, False
+            lexical_root = self.context.common_dir.parent / ".worktrees"
+            root_info = lexical_root.lstat()
+            if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(
+                root_info.st_mode
+            ):
+                return None, False
+            worktree_root = lexical_root.resolve(strict=True)
+            expected = worktree_root / (
+                "%s-%s-%s"
+                % (row["dispatch_id"], row["agent"], row["slug"])
+            )
+            stored = Path(worktree_path)
+            if not stored.is_absolute():
+                return None, False
+            stored_info = stored.lstat()
+            if stat.S_ISLNK(stored_info.st_mode) or not stat.S_ISDIR(
+                stored_info.st_mode
+            ):
+                return None, False
+            resolved = canonical_under(worktree_root, stored)
+            if resolved != expected.resolve(strict=True):
+                return None, False
+            return worktree_heads.get(resolved), resolved in worktree_heads
+        except (
+            BoundaryError,
+            GitStateError,
+            OSError,
+            RuntimeError,
+            TypeError,
+        ):
+            return None, False
 
-    def _task_item(self, row):
+    def _task_item(self, row, worktree_heads, observed_head=None):
         reasons = []
         if row["has_pending_approval"]:
             reasons.append("PENDING_APPROVAL")
@@ -627,7 +707,15 @@ class DashboardReadModel:
             reasons.append("STALE_REVIEW")
         if row["has_stale_evidence"]:
             reasons.append("STALE_EVIDENCE")
-        actual_head = self._registered_worktree_head(row)
+        if observed_head is None:
+            actual_head, head_available = self._registered_worktree_head(
+                row,
+                worktree_heads,
+            )
+        else:
+            actual_head, head_available = observed_head
+        if not head_available:
+            reasons.append("WORKTREE_UNAVAILABLE")
         if actual_head is not None and actual_head != row["current_head_sha"]:
             reasons.append("HEAD_DRIFT")
         item = {field: row[field] for field in TASK_FIELDS}
@@ -652,17 +740,26 @@ class DashboardReadModel:
             "STALE_REVIEW": 4,
             "STALE_EVIDENCE": 4,
             "HEAD_DRIFT": 5,
+            "WORKTREE_UNAVAILABLE": 0,
         }
         priority = min(
             (reason_order.get(reason, 9) for reason in item["attention_reasons"]),
             default=9,
         )
+        risk_order = {"L3": 0, "L2": 1, "L1": 2}
+        human_order = 0 if "PENDING_APPROVAL" in item["attention_reasons"] else 1
         timestamp = self._parse_timestamp(item["updated_at"]).timestamp()
-        return (priority, -timestamp, item["dispatch_id"])
+        return (
+            priority,
+            risk_order.get(item["risk_level"], 3),
+            human_order,
+            timestamp,
+            item["dispatch_id"],
+        )
 
-    def _attention_items(self, connection, limit):
+    def _attention_items(self, connection, limit, worktree_heads):
         items = [
-            self._task_item(row)
+            self._task_item(row, worktree_heads)
             for row in self._task_rows(connection)
         ]
         items = [item for item in items if item["attention_reasons"]]
@@ -677,9 +774,10 @@ class DashboardReadModel:
             attention,
             search,
         )
+        worktree_heads = self._worktree_heads()
         with self.snapshot() as connection:
             items = [
-                self._task_item(row)
+                self._task_item(row, worktree_heads)
                 for row in self._task_rows(
                     connection,
                     state=state,
@@ -729,8 +827,10 @@ class DashboardReadModel:
         }
 
     def task(self, dispatch_id):
+        worktree_heads = self._worktree_heads()
         with self.snapshot() as connection:
             row = self._task_row(connection, dispatch_id)
+            task_record = dict(row)
             query_row = connection.execute(
                 """SELECT t.*,
                           EXISTS (
@@ -738,7 +838,7 @@ class DashboardReadModel:
                               WHERE a.dispatch_id = t.dispatch_id
                                 AND a.status = 'PENDING'
                                 AND a.consumed_at IS NULL
-                                AND a.expires_at > ?
+                                AND julianday(a.expires_at) > julianday(?)
                           ) AS has_pending_approval,
                           EXISTS (
                               SELECT 1 FROM blockers b
@@ -759,8 +859,16 @@ class DashboardReadModel:
                    FROM tasks t WHERE t.dispatch_id = ?""",
                 (self._now().isoformat(), dispatch_id),
             ).fetchone()
-            item = self._task_item(query_row)
-            actual_head = self._registered_worktree_head(row)
+            observed_head = self._registered_worktree_head(
+                row,
+                worktree_heads,
+            )
+            actual_head, head_available = observed_head
+            item = self._task_item(
+                query_row,
+                worktree_heads,
+                observed_head=observed_head,
+            )
             agents = [
                 {
                     "agent_id": agent["agent_id"],
@@ -772,8 +880,8 @@ class DashboardReadModel:
                 for agent in connection.execute(
                     """SELECT agent_id, role, state, progress, updated_at
                        FROM agents WHERE dispatch_id = ?
-                       ORDER BY updated_at DESC, agent_id""",
-                    (dispatch_id,),
+                       ORDER BY updated_at DESC, agent_id LIMIT ?""",
+                    (dispatch_id, DETAIL_SUBRESOURCE_LIMIT),
                 ).fetchall()
             ]
             blockers = [
@@ -794,31 +902,23 @@ class DashboardReadModel:
                     """SELECT blocker_id, reason, owner, status,
                               resolution_condition, created_at, updated_at
                        FROM blockers WHERE dispatch_id = ?
-                       ORDER BY created_at, blocker_id""",
-                    (dispatch_id,),
+                       ORDER BY created_at, blocker_id LIMIT ?""",
+                    (dispatch_id, DETAIL_SUBRESOURCE_LIMIT),
                 ).fetchall()
             ]
-            reviews = [
-                {
-                    "review_id": review["review_id"],
-                    "reviewer": review["reviewer"],
-                    "disposition": review["disposition"],
-                    "source_sha": review["source_sha"],
-                    "created_at": review["created_at"],
-                    "stale": review["source_sha"] != row["current_head_sha"],
-                }
-                for review in connection.execute(
-                    """SELECT review_id, reviewer, disposition, source_sha,
-                              created_at
-                       FROM reviews WHERE dispatch_id = ?
-                       ORDER BY created_at DESC, review_id""",
-                    (dispatch_id,),
-                ).fetchall()
-            ]
+            review_rows = connection.execute(
+                """SELECT review_id, dispatch_id, reviewer, disposition,
+                          source_sha, report_path, report_sha256, created_at
+                   FROM reviews WHERE dispatch_id = ?
+                   ORDER BY created_at DESC, review_id LIMIT ?""",
+                (dispatch_id, DETAIL_SUBRESOURCE_LIMIT),
+            ).fetchall()
+            review_records = [dict(review) for review in review_rows]
             pending_count = connection.execute(
                 """SELECT COUNT(*) FROM approvals
                    WHERE dispatch_id = ? AND status = 'PENDING'
-                     AND consumed_at IS NULL AND expires_at > ?""",
+                     AND consumed_at IS NULL
+                     AND julianday(expires_at) > julianday(?)""",
                 (dispatch_id, self._now().isoformat()),
             ).fetchone()[0]
             evidence_count = connection.execute(
@@ -831,6 +931,25 @@ class DashboardReadModel:
                    ORDER BY sequence DESC LIMIT 1""",
                 (dispatch_id,),
             ).fetchone()
+        reviews = []
+        for review in review_records:
+            stale_reasons = ["task Worktree HEAD is unavailable"]
+            if head_available and actual_head is not None:
+                stale_reasons = self.store.review_stale_reasons(
+                    task_record,
+                    review,
+                    actual_head,
+                )
+            reviews.append(
+                {
+                    "review_id": review["review_id"],
+                    "reviewer": review["reviewer"],
+                    "disposition": review["disposition"],
+                    "source_sha": review["source_sha"],
+                    "created_at": review["created_at"],
+                    "stale": bool(stale_reasons),
+                }
+            )
         valid_acceptance = any(
             review["disposition"] == "ACCEPT" and not review["stale"]
             for review in reviews
