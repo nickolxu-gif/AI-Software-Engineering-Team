@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -87,6 +88,33 @@ class GitContextTests(unittest.TestCase):
             )
             self.assertEqual(completed.stdout.strip(), "readonly")
             self.assertEqual(os.environ["DASHBOARD_TEST_FLAG"], "parent")
+
+    def test_run_argv_can_start_from_a_clean_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(Path(tmp) / "repo")
+            with mock.patch.dict(
+                os.environ,
+                {"DASHBOARD_PARENT_ONLY": "secret"},
+            ):
+                completed = run_argv(
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import os; "
+                            "print(os.environ.get('DASHBOARD_PARENT_ONLY', 'missing')); "
+                            "print(os.environ['DASHBOARD_CHILD_ONLY'])"
+                        ),
+                    ],
+                    repo,
+                    env_overrides={"DASHBOARD_CHILD_ONLY": "visible"},
+                    inherit_env=False,
+                )
+                self.assertEqual(
+                    completed.stdout.splitlines(),
+                    ["missing", "visible"],
+                )
+                self.assertEqual(os.environ["DASHBOARD_PARENT_ONLY"], "secret")
 
     def test_run_argv_rejects_non_string_environment_overrides(self):
         with tempfile.TemporaryDirectory() as tmp:

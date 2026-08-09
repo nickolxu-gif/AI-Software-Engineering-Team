@@ -26,7 +26,13 @@ def canonical_under(root, candidate):
     return resolved_candidate
 
 
-def run_argv(argv, cwd, check=True, env_overrides=None):
+def run_argv(
+    argv,
+    cwd,
+    check=True,
+    env_overrides=None,
+    inherit_env=True,
+):
     if (
         not isinstance(argv, (list, tuple))
         or not argv
@@ -46,7 +52,9 @@ def run_argv(argv, cwd, check=True, env_overrides=None):
         for key, value in overrides.items()
     ):
         raise BoundaryError("environment overrides contain invalid characters")
-    environment = dict(os.environ)
+    if not isinstance(inherit_env, bool):
+        raise BoundaryError("inherit_env must be a boolean")
+    environment = dict(os.environ) if inherit_env else {}
     environment.update(overrides)
     try:
         completed = subprocess.run(

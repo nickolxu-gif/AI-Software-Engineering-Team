@@ -1,9 +1,13 @@
 import hashlib
+import os
 import sqlite3
+import stat
+import sys
+from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
-from .errors import TeamControlError
+from .errors import BoundaryError, GitStateError, TeamControlError
 from .git_context import canonical_under, run_argv
 
 
@@ -13,6 +17,11 @@ class DashboardError(TeamControlError):
 
 class DashboardInputError(DashboardError):
     code = "INVALID_REQUEST"
+
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        if code is not None:
+            self.code = code
 
 
 class DashboardNotFoundError(DashboardError):
@@ -81,19 +90,49 @@ REQUIRED_SCHEMA = {
     "blockers": {"blocker_id", "dispatch_id", "reason", "status"},
     "evidence": {"evidence_id", "dispatch_id", "kind", "path", "source_sha"},
 }
+SQLITE_BUSY_CODES = frozenset(
+    {
+        getattr(sqlite3, "SQLITE_BUSY", 5),
+        getattr(sqlite3, "SQLITE_LOCKED", 6),
+    }
+)
 
 
 def parse_pagination(query, default_limit, maximum_limit):
+    def invalid(message, error=None):
+        pagination_error = DashboardInputError(
+            message,
+            code="INVALID_PAGINATION",
+        )
+        if error is None:
+            raise pagination_error
+        raise pagination_error from error
+
+    if not isinstance(query, Mapping):
+        invalid("pagination must be a mapping")
     unknown = set(query) - {"limit", "offset"}
     if unknown:
-        raise DashboardInputError("unknown pagination parameter")
+        invalid("unknown pagination parameter")
+    values = {}
+    for name, fallback in (
+        ("limit", str(default_limit)),
+        ("offset", "0"),
+    ):
+        supplied = query.get(name, [fallback])
+        if (
+            not isinstance(supplied, list)
+            or len(supplied) != 1
+            or not isinstance(supplied[0], str)
+        ):
+            invalid("pagination parameters must occur exactly once")
+        values[name] = supplied[0]
     try:
-        limit = int(query.get("limit", [str(default_limit)])[0])
-        offset = int(query.get("offset", ["0"])[0])
+        limit = int(values["limit"])
+        offset = int(values["offset"])
     except (TypeError, ValueError, IndexError) as error:
-        raise DashboardInputError("pagination must use integers") from error
+        invalid("pagination must use integers", error)
     if limit < 0 or limit > maximum_limit or offset < 0 or offset > 10000:
-        raise DashboardInputError("pagination is outside the allowed range")
+        invalid("pagination is outside the allowed range")
     return limit, offset
 
 
@@ -106,11 +145,29 @@ class DashboardReadModel:
         command = tuple(command)
         if command not in ALLOWED_GIT_COMMANDS:
             raise DashboardInputError("Git command is not allowlisted")
+        target = self.context.root
+        if cwd is not None:
+            try:
+                requested = Path(cwd).resolve(strict=True)
+            except OSError as error:
+                raise DashboardInputError("Git cwd is unavailable") from error
+            if requested != self.context.root:
+                raise DashboardInputError("Git cwd is not registered")
+            target = requested
         return run_argv(
             [*READONLY_GIT_PREFIX, *command],
-            self.context.root if cwd is None else cwd,
+            target,
             check=check,
-            env_overrides={"GIT_OPTIONAL_LOCKS": "0"},
+            env_overrides={
+                "PATH": os.defpath,
+                "LC_ALL": "C",
+                "LANG": "C",
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_TERMINAL_PROMPT": "0",
+            },
+            inherit_env=False,
         )
 
     def source_head_sha(self):
@@ -120,18 +177,99 @@ class DashboardReadModel:
         encoded = str(self.context.common_dir).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
-    def _validate_wal_sidecars(self):
-        database = canonical_under(self.context.common_dir, self.store.path)
+    def _validated_file(self, candidate, required, code, readable=True):
+        candidate = Path(candidate)
+        try:
+            info = candidate.lstat()
+        except FileNotFoundError as error:
+            if not required:
+                return None
+            raise DashboardUnavailableError(
+                "dashboard storage file is unavailable",
+                code=code,
+            ) from error
+        except OSError as error:
+            raise DashboardUnavailableError(
+                "dashboard storage file is unavailable",
+                code=code,
+            ) from error
+        try:
+            canonical_under(self.context.common_dir, candidate)
+        except (BoundaryError, OSError) as error:
+            raise DashboardUnavailableError(
+                "dashboard storage path is invalid",
+                code=code,
+            ) from error
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise DashboardUnavailableError(
+                "dashboard storage file is not a regular file",
+                code=code,
+            )
+        if readable and not os.access(candidate, os.R_OK):
+            raise DashboardUnavailableError(
+                "dashboard storage file is not readable",
+                code=code,
+            )
+        return (
+            info.st_dev,
+            info.st_ino,
+            info.st_mode,
+            info.st_size,
+            info.st_mtime_ns,
+        )
+
+    def _validate_storage_files(self):
+        database = Path(self.store.path)
+        database_identity = self._validated_file(
+            database,
+            required=True,
+            code="DATABASE_UNAVAILABLE",
+        )
         wal = Path(str(database) + "-wal")
         shm = Path(str(database) + "-shm")
-        if wal.is_file() and wal.stat().st_size > 0:
-            for candidate in (wal, shm):
-                if candidate.is_symlink() or not candidate.is_file():
-                    raise DashboardUnavailableError(
-                        "active WAL sidecars are unavailable",
-                        code="WAL_SIDECAR_UNAVAILABLE",
-                    )
-                canonical_under(self.context.common_dir, candidate)
+        wal_identity = self._validated_file(
+            wal,
+            required=False,
+            code="WAL_SIDECAR_UNAVAILABLE",
+        )
+        shm_identity = self._validated_file(
+            shm,
+            required=False,
+            code="WAL_SIDECAR_UNAVAILABLE",
+        )
+        if wal_identity is not None and wal_identity[3] > 0:
+            if shm_identity is None:
+                raise DashboardUnavailableError(
+                    "active WAL sidecars are unavailable",
+                    code="WAL_SIDECAR_UNAVAILABLE",
+                )
+        return {
+            "database": database_identity,
+            "wal": wal_identity,
+            "shm": shm_identity,
+        }
+
+    def _validate_wal_sidecars(self):
+        return self._validate_storage_files()
+
+    def _verify_storage_identity(self, expected):
+        observed = self._validate_storage_files()
+        def identity(value):
+            return None if value is None else value[:3]
+
+        if identity(observed["database"]) != identity(expected["database"]):
+            raise DashboardUnavailableError(
+                "control database changed during snapshot setup",
+                code="DATABASE_UNAVAILABLE",
+            )
+        if (
+            identity(observed["wal"]) != identity(expected["wal"])
+            or identity(observed["shm"]) != identity(expected["shm"])
+        ):
+            raise DashboardUnavailableError(
+                "WAL sidecars changed during snapshot setup",
+                code="WAL_SIDECAR_UNAVAILABLE",
+            )
 
     def _validate_schema(self, connection):
         for table, required in REQUIRED_SCHEMA.items():
@@ -145,26 +283,56 @@ class DashboardReadModel:
 
     @contextmanager
     def snapshot(self):
-        self._validate_wal_sidecars()
+        expected_storage = self._validate_storage_files()
+        manager = self.store.read_connection()
+        connection = None
+        entered = False
         try:
-            with self.store.read_connection() as connection:
-                connection.execute("BEGIN")
-                try:
-                    self._validate_schema(connection)
-                    yield connection
-                finally:
-                    if connection.in_transaction:
-                        connection.rollback()
+            connection = manager.__enter__()
+            entered = True
+            connection.execute("BEGIN")
+            self._validate_schema(connection)
+            self._verify_storage_identity(expected_storage)
         except sqlite3.OperationalError as error:
+            if entered:
+                manager.__exit__(*sys.exc_info())
+            error_code = getattr(error, "sqlite_errorcode", None)
+            error_text = str(error).lower()
+            is_busy = error_code in SQLITE_BUSY_CODES or any(
+                marker in error_text for marker in ("busy", "locked")
+            )
+            unavailable_code = (
+                "DATABASE_BUSY"
+                if is_busy
+                else "DATABASE_UNAVAILABLE"
+            )
             raise DashboardUnavailableError(
-                "control database is busy or unavailable",
-                code="DATABASE_BUSY",
+                "control database is unavailable",
+                code=unavailable_code,
             ) from error
+        except BaseException:
+            if entered:
+                manager.__exit__(*sys.exc_info())
+            raise
+        try:
+            yield connection
+        finally:
+            try:
+                if connection.in_transaction:
+                    connection.rollback()
+            finally:
+                manager.__exit__(None, None, None)
 
     def health(self):
-        self._validate_wal_sidecars()
         with self.snapshot() as connection:
             connection.execute("SELECT 1").fetchone()
+        try:
+            self.source_head_sha()
+        except (BoundaryError, GitStateError, OSError) as error:
+            raise DashboardUnavailableError(
+                "Git state is unavailable",
+                code="GIT_UNAVAILABLE",
+            ) from error
         return {
             "status": "HEALTHY",
             "database": "AVAILABLE",
