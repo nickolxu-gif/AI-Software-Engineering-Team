@@ -1009,6 +1009,21 @@ class ControlStore:
             ).fetchone()
         return self._approval_from_row(row)
 
+    def list_approvals(self, dispatch_id=None):
+        with self.read_connection() as connection:
+            if dispatch_id is None:
+                rows = connection.execute(
+                    "SELECT * FROM approvals ORDER BY expires_at, approval_id"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT * FROM approvals
+                       WHERE dispatch_id = ?
+                       ORDER BY expires_at, approval_id""",
+                    (dispatch_id,),
+                ).fetchall()
+        return [self._approval_from_row(row) for row in rows]
+
     def approval_task_snapshot(self, approval_id):
         with self.read_connection() as connection:
             connection.execute("BEGIN")
