@@ -95,4 +95,3 @@ Claude Code 提供 L2 独立 `ACCEPT / MODIFY / BLOCK / ESCALATE` 意见，Codex
 ## 同步节奏
 
 Codex 在设计提交、计划完成、实现阶段门、独立 Review 和整合后提供摘要。普通低风险实现细节不打断 Human；权限、外部、敏感、不可逆或战略范围变化才请求确认。
-
