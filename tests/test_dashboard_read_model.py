@@ -1,20 +1,24 @@
 import hashlib
+import json
 import os
 import sqlite3
 import tempfile
 import unittest
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from team_control.dashboard_read_model import (
     DashboardInputError,
+    DashboardNotFoundError,
     DashboardReadModel,
     DashboardUnavailableError,
     parse_pagination,
 )
 from team_control.errors import GitStateError
 from team_control.git_context import RepoContext
+from team_control.service import ControlPlane
 from team_control.store import ControlStore
 from tests.helpers import make_repo, run
 
@@ -223,6 +227,241 @@ class DashboardReadModelTests(unittest.TestCase):
                 before_hash,
             )
             self.assertEqual(index.stat().st_mtime_ns, before_mtime)
+
+    def test_tasks_are_exception_first_and_field_allowlisted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            control = ControlPlane(RepoContext.discover(repo), store)
+            control.create_task("20260809-010", "Normal", "Normal task", "L1")
+            control.create_task("20260809-011", "Blocked", "Blocked task", "L2")
+            store.transition("20260809-011", "DISPATCHED", "dispatch")
+            store.transition("20260809-011", "IN_PROGRESS", "start")
+            store.add_blocker(
+                "20260809-011",
+                "test blocker",
+                "Codex",
+                "fix test",
+            )
+
+            result = model.tasks(
+                {},
+                state=None,
+                risk=None,
+                attention=None,
+                search=None,
+            )
+            self.assertEqual(result["items"][0]["dispatch_id"], "20260809-011")
+            self.assertEqual(
+                set(result["items"][0]),
+                {
+                    "dispatch_id",
+                    "title",
+                    "objective",
+                    "risk_level",
+                    "state",
+                    "effective_state",
+                    "owner",
+                    "agent",
+                    "updated_at",
+                    "current_head_sha",
+                    "attention_reasons",
+                },
+            )
+
+    def test_approvals_expose_only_the_public_allowlist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            control = ControlPlane(RepoContext.discover(repo), store)
+            task = control.create_task(
+                "20260809-012",
+                "Approval",
+                "Approval task",
+                "L2",
+            )
+            control.request_approval(
+                task["dispatch_id"],
+                "external_action",
+                task["current_head_sha"],
+                {"scope": "test"},
+                "dashboard-test-nonce-000001",
+                10,
+            )
+            item = model.approvals({})["items"][0]
+            self.assertEqual(
+                set(item),
+                {
+                    "approval_id",
+                    "dispatch_id",
+                    "action",
+                    "target_sha",
+                    "expires_at",
+                    "consumed_at",
+                    "status",
+                },
+            )
+            task_item = model.tasks(
+                {},
+                state=None,
+                risk=None,
+                attention=None,
+                search=task["dispatch_id"],
+            )["items"][0]
+            self.assertEqual(
+                task_item["effective_state"],
+                "NEEDS_HUMAN_APPROVAL",
+            )
+            self.assertIn("PENDING_APPROVAL", task_item["attention_reasons"])
+            project = model.project()
+            self.assertEqual(
+                set(project),
+                {
+                    "repository_name",
+                    "branch",
+                    "head_sha",
+                    "remote_configured",
+                    "worktree_count",
+                    "health",
+                    "counts",
+                    "attention_items",
+                },
+            )
+            self.assertEqual(project["counts"]["pending_approvals"], 1)
+
+    def test_task_filters_pagination_and_search_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            control = ControlPlane(RepoContext.discover(repo), store)
+            control.create_task("20260809-020", "Alpha", "One", "L1")
+            control.create_task("20260809-021", "Beta", "Two", "L2")
+            page = model.tasks(
+                {"limit": ["1"]},
+                state=None,
+                risk=None,
+                attention=None,
+                search=None,
+            )
+            self.assertEqual(len(page["items"]), 1)
+            self.assertTrue(page["has_more"])
+            injected = model.tasks(
+                {},
+                state=None,
+                risk=None,
+                attention=None,
+                search="' OR 1=1 --",
+            )
+            self.assertEqual(injected["items"], [])
+            for filters in (
+                {"state": "NOT_A_STATE"},
+                {"risk": "L9"},
+                {"attention": 1},
+            ):
+                arguments = {
+                    "state": None,
+                    "risk": None,
+                    "attention": None,
+                    "search": None,
+                }
+                arguments.update(filters)
+                with self.subTest(filters=filters):
+                    with self.assertRaises(DashboardInputError) as caught:
+                        model.tasks({}, **arguments)
+                    self.assertEqual(caught.exception.code, "INVALID_FILTER")
+
+    def test_unknown_event_payload_is_not_returned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            with store.mutation() as connection:
+                now = datetime.now(timezone.utc).isoformat()
+                connection.execute(
+                    """INSERT INTO tasks VALUES (
+                           ?, 1, ?, ?, 'L1', 'PLANNED', NULL, ?, ?, 'Codex',
+                           NULL, NULL, NULL, NULL, ?, ?
+                       )""",
+                    (
+                        "20260809-013",
+                        "Unknown event",
+                        "Test",
+                        "a" * 40,
+                        "a" * 40,
+                        now,
+                        now,
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO events VALUES (?, 1, ?, ?, ?)",
+                    (
+                        "20260809-013",
+                        "UNKNOWN_PRIVATE",
+                        json.dumps({"secret": "hidden"}),
+                        now,
+                    ),
+                )
+            item = model.events("20260809-013", {})["items"][0]
+            self.assertEqual(item["summary"], "未识别事件")
+            self.assertEqual(item["details"], {})
+            self.assertNotIn("hidden", json.dumps(item))
+
+    def test_task_detail_and_evidence_use_fixed_shapes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            control = ControlPlane(RepoContext.discover(repo), store)
+            task = control.create_task("20260809-014", "Detail", "Inspect", "L2")
+            now = datetime.now(timezone.utc).isoformat()
+            with store.mutation() as connection:
+                connection.execute(
+                    "INSERT INTO evidence VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "evidence-1",
+                        task["dispatch_id"],
+                        "test",
+                        "artifacts/dispatches/20260809-014/result.txt",
+                        "b" * 64,
+                        task["current_head_sha"],
+                        now,
+                    ),
+                )
+            detail = model.task(task["dispatch_id"])
+            self.assertEqual(
+                set(detail),
+                {
+                    "task",
+                    "actual_head_sha",
+                    "head_drift",
+                    "valid_acceptance",
+                    "agents",
+                    "blockers",
+                    "reviews",
+                    "pending_approval_count",
+                    "evidence_count",
+                    "latest_event",
+                },
+            )
+            evidence = model.evidence(task["dispatch_id"], {})["items"][0]
+            self.assertEqual(
+                set(evidence),
+                {
+                    "evidence_id",
+                    "kind",
+                    "relative_path",
+                    "sha256",
+                    "source_sha",
+                    "created_at",
+                    "stale",
+                },
+            )
+            self.assertFalse(evidence["stale"])
+
+    def test_unknown_task_is_not_found_for_all_subresources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            for operation in (
+                lambda: model.task("missing"),
+                lambda: model.events("missing", {}),
+                lambda: model.evidence("missing", {}),
+            ):
+                with self.subTest(operation=operation):
+                    with self.assertRaises(DashboardNotFoundError):
+                        operation()
 
 
 if __name__ == "__main__":
