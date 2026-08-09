@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -151,6 +152,30 @@ class DashboardReadModelTests(unittest.TestCase):
                 with self.assertRaises(DashboardUnavailableError) as caught:
                     model.health()
             self.assertEqual(caught.exception.code, "WAL_SIDECAR_UNAVAILABLE")
+
+    def test_reader_may_create_a_regular_shm_coordination_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            expected = model._validate_storage_files()
+            expected["wal"] = None
+            expected["shm"] = None
+            observed = dict(expected)
+            observed["wal"] = (1, 3, stat.S_IFREG | 0o600, 0, 1)
+            observed["shm"] = (1, 2, stat.S_IFREG | 0o600, 32768, 1)
+            with patch.object(
+                model,
+                "_validate_storage_files",
+                return_value=observed,
+            ):
+                model._verify_storage_identity(expected)
+            observed["wal"] = (1, 3, stat.S_IFREG | 0o600, 1, 1)
+            with patch.object(
+                model,
+                "_validate_storage_files",
+                return_value=observed,
+            ):
+                with self.assertRaises(DashboardUnavailableError):
+                    model._verify_storage_identity(expected)
 
     def test_snapshot_reports_real_sqlite_busy_as_busy(self):
         with tempfile.TemporaryDirectory() as tmp:

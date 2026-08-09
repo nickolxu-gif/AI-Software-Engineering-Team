@@ -2,6 +2,7 @@ import hashlib
 import http.client
 import json
 import os
+import stat
 import subprocess
 import tempfile
 import threading
@@ -54,9 +55,12 @@ def readonly_git(arguments, repo):
 def repository_snapshot(repo, database):
     index = repo / ".git" / "index"
     wal = Path(str(database) + "-wal")
+    shm = Path(str(database) + "-shm")
     return {
         "database_sha256": file_sha256(database),
-        "wal_sha256": file_sha256(wal) if wal.exists() else None,
+        "wal_sha256": hashlib.sha256(
+            wal.read_bytes() if wal.exists() else b""
+        ).hexdigest(),
         "index_sha256": file_sha256(index),
         "index_mtime_ns": index.stat().st_mtime_ns,
         "head": readonly_git(["rev-parse", "HEAD"], repo).stdout.strip(),
@@ -65,12 +69,27 @@ def repository_snapshot(repo, database):
             [
                 "status",
                 "--porcelain=v1",
-                "--untracked-files=no",
                 "--ignore-submodules=all",
             ],
             repo,
         ).stdout,
+        "sidecars": {
+            "wal_exists": wal.exists(),
+            "wal_size": wal.stat().st_size if wal.exists() else 0,
+            "shm": ({
+                "exists": True,
+                "is_symlink": shm.is_symlink(),
+                "is_regular": stat.S_ISREG(shm.lstat().st_mode),
+                "size": shm.lstat().st_size,
+            }
+            if shm.exists() or shm.is_symlink()
+            else {"exists": False, "is_symlink": False, "is_regular": False, "size": 0}),
+        },
     }
+
+
+def business_snapshot(snapshot):
+    return {key: value for key, value in snapshot.items() if key != "sidecars"}
 
 
 class DashboardEndToEndTests(unittest.TestCase):
@@ -196,9 +215,16 @@ class DashboardEndToEndTests(unittest.TestCase):
                 self.server.shutdown()
                 self.server.server_close()
                 thread.join(timeout=5)
-
-            after = repository_snapshot(repo, store.path)
-            self.assertEqual(after, before)
+                after = repository_snapshot(repo, store.path)
+                self.assertEqual(
+                    business_snapshot(after),
+                    business_snapshot(before),
+                )
+                self.assertFalse(after["sidecars"]["shm"]["is_symlink"])
+                if after["sidecars"]["shm"]["exists"]:
+                    self.assertTrue(after["sidecars"]["shm"]["is_regular"])
+                if not before["sidecars"]["wal_exists"]:
+                    self.assertEqual(after["sidecars"]["wal_size"], 0)
 
 
 if __name__ == "__main__":

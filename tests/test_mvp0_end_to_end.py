@@ -1,4 +1,5 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def run_cli(repo, *args, check=True):
     return run(
         [
-            "python3",
+            sys.executable,
             "-m",
             "team_control",
             "--repo",

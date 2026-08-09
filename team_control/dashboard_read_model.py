@@ -352,9 +352,19 @@ class DashboardReadModel:
                 "control database changed during snapshot setup",
                 code="DATABASE_UNAVAILABLE",
             )
+        wal_changed = identity(observed["wal"]) != identity(expected["wal"])
+        reader_created_empty_wal = (
+            expected["wal"] is None
+            and observed["wal"] is not None
+            and observed["wal"][3] == 0
+        )
+        shm_changed = identity(observed["shm"]) != identity(expected["shm"])
+        reader_created_shm = (
+            expected["shm"] is None and observed["shm"] is not None
+        )
         if (
-            identity(observed["wal"]) != identity(expected["wal"])
-            or identity(observed["shm"]) != identity(expected["shm"])
+            (wal_changed and not reader_created_empty_wal)
+            or (shm_changed and not reader_created_shm)
         ):
             raise DashboardUnavailableError(
                 "WAL sidecars changed during snapshot setup",

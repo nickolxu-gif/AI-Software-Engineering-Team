@@ -157,8 +157,8 @@ MVP 0 数据库使用 WAL。Dashboard 的“只读”指不改变任何业务表
 
 - `team.db`、`team.db-wal` 和 `team.db-shm` 必须经过 canonical path 与非符号链接检查；
 - 当 `team.db-wal` 非空时，`-wal` 与 `-shm` 必须同时存在、是普通文件且当前用户可读，否则返回 `503 WAL_SIDECAR_UNAVAILABLE`；
-- 不复制数据库、不使用 `immutable=1` 绕过 WAL、不自动创建或修复 sidecar；
-- 无并发 writer 的测试中，读取前后业务表快照、主数据库与 WAL 的 SHA-256 必须一致；`-shm` 的锁区字节不作为业务状态哈希。
+- 不复制数据库、不使用 `immutable=1` 绕过 WAL、不主动创建或修复 sidecar；SQLite 运行库自身在只读 URI 连接时可以创建空的 `-wal` 与 `-shm` 协调文件，空 WAL 与不存在的 WAL 视为相同业务内容；
+- 无并发 writer 的测试中，读取前后业务表快照、主数据库与 WAL 内容的 SHA-256 必须一致；`-shm` 的存在性、锁区字节和空 WAL 文件的存在性单独记录，不作为业务状态哈希。
 
 ### 7.3 API 输出白名单
 
