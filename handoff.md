@@ -53,6 +53,7 @@
 - 使用手册：`USER_OPERATING_GUIDE.md`；项目 Skill：`.agents/skills/ai-software-engineering-team/SKILL.md`。
 - 验收工件：`artifacts/dispatches/20260809-001/`，包含派活单、设计审查、实现审查、验证记录、MiMo 盘点和 Codex 盘点审阅。
 - 已知边界：任务 `current_head_sha` 尚无受控推进入口，因此真实任务可能显示 `HEAD_DRIFT`；该状态不会被伪装成有效验收。并发 writer 回归、真实浏览器自动化和 HTTP 线程限制属于后续改进。
+- 收尾修复任务 `20260810-001` 已整合于 `8e91a6e98e8b706980904776153d8e6ee63bda3c`：`CLOSED` 任务完成 Worktree 生命周期后不再因 Worktree 缺失或漂移把项目升级为 `ATTENTION`；任务详情仍可保留历史 `head_drift` 事实。活跃任务继续失败关闭。
 - MVP 2 前不得从浏览器直接执行状态变更、调 Agent、审批、merge、push 或发布；所有工程动作继续回到 Codex 控制平面。
 
 可使用以下命令复核最终 Worktree 和分支状态：
