@@ -1,7 +1,11 @@
 import hashlib
 import http.client
 import json
+import os
+import shutil
 import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -12,11 +16,19 @@ from team_control.dashboard_read_model import (
     DashboardReadModel,
     DashboardUnavailableError,
 )
+from team_control.dashboard_main import (
+    DashboardMainError,
+    _default_port,
+    _probe_existing,
+)
 from team_control.dashboard_server import create_server
 from team_control.git_context import RepoContext
 from team_control.service import ControlPlane
 from team_control.store import ControlStore
 from tests.helpers import make_repo
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class DashboardServerTests(unittest.TestCase):
@@ -264,6 +276,124 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(response.status, 500)
         self.assertEqual(payload["error"]["code"], "INTERNAL_ERROR")
         self.assertNotIn("secret-internal-detail", body.decode("utf-8"))
+
+
+class DashboardLauncherTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        root = Path(self.temporary.name)
+        self.repo = make_repo(root / "repo")
+        shutil.copytree(PROJECT_ROOT / "apps", self.repo / "apps")
+        self.context = RepoContext.discover(self.repo)
+        self.store = ControlStore.for_repo(self.context)
+        self.store.initialize()
+        self.model = DashboardReadModel(self.context, self.store)
+
+    def start_dashboard(self, *arguments, repo=None):
+        environment = dict(os.environ)
+        environment["PYTHONPATH"] = str(PROJECT_ROOT)
+        return subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "team_control.dashboard_main",
+                "--repo",
+                str(repo or self.repo),
+                *arguments,
+            ],
+            cwd=str(PROJECT_ROOT),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+        )
+
+    def test_dashboard_main_emits_one_structured_startup_line(self):
+        process = self.start_dashboard("--no-open", "--port", "0")
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+        payload = json.loads(process.stdout.readline())
+        self.assertEqual(payload["status"], "started")
+        self.assertEqual(payload["host"], "127.0.0.1")
+        self.assertRegex(payload["url"], r"^http://127\.0\.0\.1:\d+$")
+        self.assertNotIn("database", payload)
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", payload["port"], timeout=5
+        )
+        connection.request(
+            "GET",
+            "/api/health",
+            headers={"Host": "127.0.0.1:%d" % payload["port"]},
+        )
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        response.read()
+        connection.close()
+        process.terminate()
+        self.assertEqual(process.wait(timeout=5), 0)
+        self.assertEqual(process.stdout.read(), "")
+        self.assertEqual(process.stderr.read(), "")
+        process.stdout.close()
+        process.stderr.close()
+
+    def test_non_loopback_host_argument_is_rejected(self):
+        process = self.start_dashboard("--host", "0.0.0.0", "--no-open")
+        stdout, stderr = process.communicate(timeout=5)
+        self.assertEqual(process.returncode, 2)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "INVALID_ARGUMENTS")
+
+    def test_missing_database_is_not_initialized(self):
+        missing_repo = make_repo(Path(self.temporary.name) / "missing")
+        shutil.copytree(PROJECT_ROOT / "apps", missing_repo / "apps")
+        context = RepoContext.discover(missing_repo)
+        database = context.common_dir / "team" / "runtime" / "team.db"
+        process = self.start_dashboard("--no-open", "--port", "0", repo=missing_repo)
+        stdout, stderr = process.communicate(timeout=5)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "DATABASE_UNAVAILABLE")
+        self.assertFalse(database.exists())
+
+    def test_repository_wrapper_rejects_repo_override(self):
+        wrapper = PROJECT_ROOT / "scripts" / "open-team-dashboard"
+        result = subprocess.run(
+            [str(wrapper), "--repo", str(self.repo)],
+            cwd=str(PROJECT_ROOT),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("WRAPPER_REPO_OVERRIDE", result.stderr)
+
+    def test_default_port_and_existing_service_identity_are_deterministic(self):
+        port = _default_port(self.context.common_dir)
+        self.assertGreaterEqual(port, 49152)
+        self.assertLessEqual(port, 65534)
+        self.assertEqual(port, _default_port(self.context.common_dir))
+        server = create_server(
+            self.model,
+            self.repo / "apps" / "dashboard",
+            port=0,
+        )
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            actual_port = server.server_address[1]
+            self.assertTrue(
+                _probe_existing(actual_port, self.model.repository_id())
+            )
+            with self.assertRaises(DashboardMainError) as caught:
+                _probe_existing(actual_port, "0" * 64)
+            self.assertEqual(caught.exception.code, "PORT_IN_USE")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
 
 if __name__ == "__main__":
