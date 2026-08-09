@@ -8,13 +8,15 @@
 
 > 进入软件工程团队，帮我实现登录功能。先做七问派活和风险判断，再开始执行。
 
-Codex 会在后台读取项目规则、检查 Git、初始化或读取本地状态、创建隔离 Worktree、调度 Agent、组织测试和 Review，并把真正需要你决定的事项单独列出来。
+Codex 会在后台读取项目规则、检查 Git，并使用 MVP 0 已实现的稳定 CLI 或现有受控内部 API 组织任务。不能通过当前接口完成的全局查询或编排，Codex 必须明确说“当前不可用”，不能假装已有命令。
 
 当前必须准确区分三件事：
 
 - MVP 0 的交互界面是 Codex；底层命令是 Codex 使用的可复现接口，不是你的日常入口。
 - 本手册和项目 Skill 属于 MVP 0 实现分支；整个 MVP 0 仍需完成 Task 12 的端到端验收和整合，不能仅凭本文声称已经合并到 `main`。
 - GitHub Remote 尚未配置；MVP 1 的本地只读前端工作台尚未实现。两者都需要后续 Human 明确确认。
+
+MVP 0 稳定 CLI 只有：`init`、`start`、针对已知 `dispatch_id` 的 `status`、`transition`、`approvals` 列表，以及 `doctor inspect/repair`。全局任务/Blocker 汇总和其他协作实体写入不是当前稳定 CLI。
 
 现行依据：
 
@@ -27,22 +29,28 @@ Codex 会在后台读取项目规则、检查 Git、初始化或读取本地状�
 
 ## 2. 首次使用或项目扫描后怎么说
 
-第一次进入项目，直接复制下面这句话：
+普通模式下第一次进入项目，直接复制下面这句话：
 
-> 进入软件工程团队。先读取 handoff 和现行协议，检查仓库健康与控制平面状态；如果本地状态库还不存在，请安全初始化。然后告诉我当前阶段、已有任务、阻塞、待审批事项和建议的下一步，不要执行超出当前授权阶段的工作。
+> 进入软件工程团队。先读取 handoff 和现行协议，检查仓库健康与控制平面状态；如果本地状态库还不存在，请安全初始化。我要启动新任务，或查询已知任务 20260809-001；不要执行超出当前授权阶段的工作。
+
+如果你要求完全不写入，则必须明确说：
+
+> 严格只读，不要创建或修改任何文件、数据库、锁或 Git 状态。只盘点 Git 和现有文件；如果控制状态库不存在，请报告状态库不可用，不要初始化。
+
+严格只读时不得初始化。普通状态请求可以在核对仓库后安全 `init`；“严格只读/不要任何写入”优先级更高，只能做 Git 与文件的只读盘点。
 
 Codex 应自动完成：
 
-1. 读取 `handoff.md` 和五份现行工程协议。
+1. 读取 `handoff.md`，以及列出的四份工程文档：七问派活协议、角色矩阵、软件工程工作流和 Git 工作流。
 2. 从主仓库运行健康检查，核对 `main`、Worktree、分支和脏文件。
-3. 检查 Git common directory 下的控制数据库；数据库不存在时安全初始化，而不是只回复“尚未初始化”。
-4. 在任何新写入前，核对并 reconcile 未完成的 `PREPARED` 操作。
-5. 读取 Git 事实、任务状态、Agent、Blocker、Review、Evidence 和 Approval。
+3. 检查 Git common directory 下的控制数据库；普通请求可安全初始化，严格只读请求不得初始化。
+4. 任何新写入前检查 `PREPARED`。当前没有通用 reconcile CLI，只能由 Codex 使用已有测试覆盖的内部 `OperationCoordinator` API；无法完成时转为 `BLOCKED`，不得直接修改 SQLite。
+5. 已知 `dispatch_id` 时读取该任务的 Git 事实、Agent、Blocker、Review、Evidence 和待审批项。
 6. 把已验证事实、尚未验证判断和建议下一步分开报告。
 
 如果项目刚刚被 Codex 扫描，也可以说：
 
-> 项目扫描完成后，进入软件工程团队模式。只做只读盘点并告诉我是否适合启动新任务；发现不一致先 BLOCKED，不要清理现场。
+> 项目扫描完成后，进入软件工程团队模式。严格只读，不要初始化状态库；只盘点 Git 和文件并告诉我是否适合启动新任务。发现不一致先 BLOCKED，不要清理现场。
 
 ## 3. 可直接复制的自然语言指令
 
@@ -52,30 +60,49 @@ Codex 应自动完成：
 2. “进入软件工程团队，帮我实现这个需求：……；先完成七问派活，再开始。”
 3. “把这个想法整理成可验收的派活单，先不要写代码。”
 4. “开始任务 20260809-001，按 L1/L2/L3 判断风险并说明验收门。”
-5. “继续上次未完成的任务；先核对 handoff、Git、锁、Blocker 和恢复点。”
-6. “查看当前任务状态，按事实、证据、风险和下一步汇报。”
-7. “查看当前任务状态，并告诉我分支、Worktree、HEAD 和最近一次测试结果。”
+5. “继续任务 20260809-001；先核对 handoff、Git、锁、Blocker 和恢复点。”
+6. “查看当前任务状态：任务 20260809-001；按事实、证据、风险和下一步汇报。”
+7. “查看当前任务状态：任务 20260809-001；告诉我分支、Worktree、HEAD 和最近一次测试结果。”
 8. “哪些事项等我批准？逐项说明动作、风险、目标 SHA 和不批准的影响。”
 9. “暂停任务 20260809-001；先让写入 Agent 到达安全检查点。”
 10. “继续任务 20260809-001；恢复前重新检查 Git、锁和原阻塞条件。”
-11. “列出当前所有阻塞，说明负责人、解除条件、证据和下一步。”
-12. “请解决这个 Blocker；如果需要扩大权限，先转为 NEEDS_HUMAN_APPROVAL。”
-13. “让独立 Reviewer 审查当前结果，执行者不能自我放行。”
+11. “列出任务 20260809-001 的阻塞，说明负责人、解除条件、证据和下一步。”
+12. “请处理任务 20260809-001 的这个 Blocker；如果需要扩大权限，先请求 Human 审批。”
+13. “让独立 Reviewer 审查任务 20260809-001 的当前结果；当前没有登记 Review 的稳定 CLI，只能由 Codex 受控编排。”
 14. “Claude 是否已经完成最终验收？如果没有，请明确写成待验收，不要降级。”
-15. “把本轮测试、Review、提交 SHA 和残余风险登记为证据。”
+15. “把任务 20260809-001 的测试、Review、提交 SHA 和残余风险登记为证据；没有稳定 CLI 时只使用受控内部 API。”
 16. “检查当前结果是否满足 Definition of Done；缺任何证据都不要标记完成。”
 17. “完成这个任务，但整合前先给我看 Review 结论和待审批项。”
-18. “盘点本次项目，交给 Mimo 形成总结，再由 Codex 审阅知识候选。”
+18. “为任务 20260809-001 准备 Mimo 盘点输入；当前没有 Mimo 稳定入口，请先说明可用的受控方式或标记后续。”
 19. “Worktree 创建失败了。按 Minor 流程先做 Doctor inspect，不要删除任何目录或分支。”
 20. “查看 Minor 检查结果；只有明确可修分类才 repair，否则保持 BLOCKED。”
-21. “检查是否存在未完成的 PREPARED 操作；先 reconcile，再决定是否继续写入。”
-22. “给我一份今天的软件工程团队摘要：进行中、Review 中、阻塞和待批准。”
-23. “给我一份本周工程盘点：交付证据、质量问题、返工原因和可沉淀规则。”
-24. “先暂停，不要 merge、push、删除 Worktree 或配置 GitHub，等我下一步指令。”
+21. “检查任务 20260809-001 是否关联未完成的 PREPARED 操作；仅使用 OperationCoordinator 内部 API，失败则 BLOCKED，不得改 SQLite。”
+22. “给我任务 20260809-001 的今日摘要；当前不提供全局任务列表，不要推测其他任务。”
+23. “给我任务 20260809-001 的本周盘点；跨任务汇总当前不可用，除非我提供其他已知任务 ID。”
+24. “暂停任务 20260809-001；不要 merge、push、删除 Worktree 或配置 GitHub，等我下一步指令。”
 
 ## 4. Codex 在后台自动执行的完整闭环
 
-### 4.1 七问派活与风险判断
+### 4.1 稳定 CLI 与 Codex 内部受控编排
+
+MVP 0 稳定 CLI 只有以下能力：
+
+| 稳定入口 | 当前能力 |
+|---|---|
+| `init` | 初始化本地控制状态；严格只读时禁用 |
+| `start` | 创建一个指定 ID 的写入任务和 Worktree |
+| `status` | 查询一个已知 `dispatch_id` |
+| `transition` | 对一个已知任务执行合法状态转换 |
+| `approvals` | 列出审批；不负责 approval create/consume |
+| `doctor inspect/repair` | 检查 Minor；仅明确可修分类允许 repair |
+
+以下能力当前**没有稳定 CLI**：全局 list tasks、全局 Blocker 或 daily summary、批量暂停、Agent/Blocker/Review/Evidence 登记、approval create/consume、通用 `PREPARED` reconcile，以及 Mimo 入口。
+
+这些动作只有在已有测试覆盖的 Python 内部 API 可用、身份和 SHA 已校验、且 Codex 能保持控制锁与事务边界时，才可作为“Codex 内部受控编排”执行。例如通用 operation 恢复必须调用 `OperationCoordinator.reconcile_one/reconcile_all` 并提供匹配 verifier。不得直接修改 SQLite，也不得把内部方法描述成用户可依赖的稳定 CLI。内部 API 不可用、参数不足或恢复事实不唯一时，任务转为 `BLOCKED`。
+
+在 MVP 1 提供任务列表前，用户需要保留或提供已知任务 ID；Codex不能通过当前 CLI 自动发现所有任务。
+
+### 4.2 七问派活与风险判断
 
 Codex 在开始前形成七问 Dispatch Record：
 
@@ -95,7 +122,7 @@ Codex 在开始前形成七问 Dispatch Record：
 | L2 | 模块、API、数据结构、中等重构 | 独立 Reviewer、适用测试、Codex 复核 |
 | L3 | 架构、安全、权限、生产数据、大迁移或发布 | Claude Code 最终独立验收；缺席时不得伪装成已验收 |
 
-### 4.2 Worktree、Agent 和 Review
+### 4.3 Worktree、Agent 和 Review
 
 一个写入任务对应：一个短分支、一个独立 Worktree、一个写入 Agent。Codex 独占 `main`、合并、冲突处理、Worktree 生命周期和交接更新；Agent 只能在自己的 Worktree 内改动和提交。
 
@@ -106,11 +133,11 @@ Codex 在开始前形成七问 Dispatch Record：
 - `BLOCK`：保留现场和证据，停止整合。
 - `ESCALATE`：提交 Human 或更高等级 Reviewer 决策。
 
-### 4.3 验收、证据和知识闭环
+### 4.4 验收、证据和知识闭环
 
 “完成”必须有：实际文件路径、提交 SHA、测试命令与结果、Review 结论、必要审批、残余风险和整合后验证。进度百分比不能代替这些证据。
 
-长期保留的是蒸馏后的报告与索引，不是密码、Token、私钥或敏感原文。结束时由 Mimo 做项目盘点，Codex 审阅后才形成知识候选；不会把聊天全文自动当成正式知识。
+长期目标是只保留蒸馏后的报告与索引。Mimo 目前没有稳定入口；只有 Codex 能通过当前会话中实际可用的受控 Agent 路由完成盘点时才执行，否则标记为后续事项，不能声称已经自动完成。
 
 ## 5. 你会看到哪些状态和字段
 
@@ -118,20 +145,25 @@ Codex 在开始前形成七问 Dispatch Record：
 
 | 字段 | 你应如何理解 |
 |---|---|
-| `dispatch_id` | 任务唯一编号，用于查询、暂停、继续和审批 |
-| `title` / `objective` | 标题与可验收目标 |
-| `risk_level` | L1/L2/L3 风险等级 |
-| `state` | 当前生命周期状态 |
-| `owner` | 工程控制 Owner，固定为 Codex |
-| `task_base_sha` | 任务开始时的基线提交 |
-| `head_sha` | 当前任务分支实际提交 |
-| `branch` / `worktree_path` | 隔离分支和工作目录 |
-| `agents` | 执行者、角色、状态、最后汇报时间 |
-| `blockers` | 原因、责任人、解除条件和下一步 |
-| `reviews` | Reviewer、结论、严重级别和绑定 SHA |
-| `evidence` | 证据路径、摘要、哈希和来源 SHA |
-| `approvals` | 待审批或已消费审批及其目标 |
-| `head_drift` | 数据库记录与实际 Git HEAD 是否漂移 |
+| `task.dispatch_id` | 任务唯一编号，用于查询、暂停、继续和审批 |
+| `task.title` / `task.objective` | 标题与可验收目标 |
+| `task.risk_level` | L1/L2/L3 风险等级 |
+| `task.state` | 底层生命周期状态 |
+| `effective_state` | 状态展示 overlay；有有效待审批时显示 `NEEDS_HUMAN_APPROVAL` |
+| `task.owner` | 工程控制 Owner，固定为 Codex |
+| `task.task_base_sha` | 任务开始时的基线提交 |
+| `task.current_head_sha` | 控制库记录的任务 HEAD |
+| `actual_head_sha` | 状态查询时从 Git 观察到的实际 HEAD |
+| `head_drift` | `task.current_head_sha` 与 `actual_head_sha` 是否漂移 |
+| `task.branch` / `task.worktree_path` | 隔离分支和工作目录 |
+| `agents[]` | 执行者、角色、状态、进度和最后汇报时间 |
+| `blockers[].resolution_condition`（简称 `blocker.resolution_condition`） | Blocker 的正式解除条件 |
+| `reviews[].disposition`（简称 `review.disposition`） | `ACCEPT / MODIFY / BLOCK / ESCALATE` |
+| `reviews[].report_sha256`（简称 `review.report_sha256`） | Review 报告内容哈希 |
+| `reviews[].stale` / `reviews[].effective`（简称 `review.stale` / `review.effective`） | Review 是否漂移，以及当前是否有效 |
+| `evidence[].path` / `evidence[].sha256`（简称 `evidence.path` / `evidence.sha256`） | Evidence 受控路径及内容哈希 |
+| `evidence[].source_sha` / `evidence[].stale`（简称 `evidence.source_sha` / `evidence.stale`） | Evidence 绑定提交及当前漂移状态 |
+| `pending_approvals` | 当前仍有效且未消费的审批 |
 
 ### 5.2 生命周期解释
 
@@ -145,7 +177,6 @@ Codex 在开始前形成七问 Dispatch Record：
 | `PAUSED` | 已安全暂停，只允许只读检查、停止确认、审批记录和证据归档 |
 | `BLOCKED` | 依赖、权限、测试、资源或安全状态不满足 |
 | `NEEDS_DIRECTION` | 发现需求或技术方向风险，需要 Codex 纠偏 |
-| `NEEDS_HUMAN_APPROVAL` | 某个动作命中人工门禁，动作不得执行 |
 | `REVIEWING` | 执行完成，正在等待独立审查 |
 | `ACCEPTED` | 质量门通过，等待 Codex 安全整合 |
 | `INTEGRATED` | 已整合，仍需整合后验证 |
@@ -155,7 +186,7 @@ Codex 在开始前形成七问 Dispatch Record：
 
 暂停是两阶段动作：先进入 `PAUSE_REQUESTED`，所有写入者确认安全后才是 `PAUSED`。继续任务也不是简单“开机”，Codex 必须重查 Git、锁、Blocker 和保存的恢复状态。
 
-`NEEDS_HUMAN_APPROVAL` 是动作门禁：它可以出现在任何阶段，不等同于任务已经失败或已经验收。
+`NEEDS_HUMAN_APPROVAL` 不是普通 lifecycle transition。当前实现把它作为 `effective_state` overlay：只要存在有效待审批项，`effective_state` 显示 `NEEDS_HUMAN_APPROVAL`，而底层 `task.state` 保留原生命周期状态。审批消费、过期或失效后，展示恢复为 `task.state`。
 
 ## 6. 哪些事情需要你审批，应该怎么回复
 
@@ -258,10 +289,13 @@ SQLite 是本地运行状态索引，不是唯一不可替代事实源。Git 是
 
 ### 10.2 隐私边界
 
-- 密码、Token、私钥和敏感原文不得写入状态库、事件、Evidence 或仓库。
-- Evidence 保存受控路径、摘要、哈希、时间和关联 SHA，而不是任意复制原始内容。
-- Agent 只得到完成任务所需的最小上下文。
-- 本地优先；MVP 0 不要求云服务或 GitHub。
+当前没有自动秘密检测或自动脱敏。MVP 0 的 schema、路径和长度校验能限制部分结构化字段，但不是覆盖所有日志、文件和文本的秘密扫描器，不能把“政策禁止”误写成“技术已保证”。
+
+- 不要把含 Token 的日志交给系统，也不要提交密码、Cookie、私钥、恢复码、完整凭据文件或敏感原文。
+- Codex 在持久化前必须先人工检查或使用明确规则式最小化，只保留完成任务所需的字段、摘要、路径和哈希。
+- 发现疑似秘密、凭据或无法判断的敏感内容时，Codex必须停止登记，请求用户提供脱敏材料；不得先保存再清理。
+- Evidence 的目标格式是受控路径、摘要、哈希、时间和关联 SHA，但这不代表源文件内容已经自动脱敏。
+- Agent 只应得到完成任务所需的最小上下文；本地优先，MVP 0 不要求云服务或 GitHub。
 
 ### 10.3 threat model（威胁模型）
 
@@ -277,11 +311,11 @@ SQLite 是本地运行状态索引，不是唯一不可替代事实源。Git 是
 
 ### Q2：Codex 说数据库不存在，我该怎么办？
 
-你可以说：“安全初始化控制平面，然后继续查看当前任务状态。”Codex 不应因为数据库不存在就停止状态请求；它应先核对仓库，再安全初始化。
+普通请求可以说：“安全初始化控制平面，然后查看已知任务 20260809-001。”Codex 应先核对仓库，再安全初始化。若你已经说“严格只读/不要任何写入”，则不得 init，只能盘点 Git 和文件，并明确报告状态库不可用。
 
 ### Q3：出现 `PREPARED` 是失败了吗？
 
-不一定。它表示 Git 与 SQLite 跨系统操作已登记但还没完成确认。Codex 必须先 reconcile：事实证明已完成就补记，证明未发生才安全处理，无法判断则 `BLOCKED`，绝不能直接重放未知 Git 动作。
+不一定。它表示 Git 与 SQLite 跨系统操作已登记但还没完成确认。当前没有通用 `PREPARED` reconcile 稳定 CLI；Codex只能调用已有测试覆盖的内部 `OperationCoordinator.reconcile_one/reconcile_all` 和匹配 verifier。事实无法唯一确认、内部 API 不可用或执行失败时必须 `BLOCKED`；严禁直接修改 SQLite 或盲目重放 Git 动作。
 
 ### Q4：状态显示完成，但没有测试或 Review，算完成吗？
 
@@ -311,13 +345,17 @@ Codex 要求各 Reviewer 提交假设、证据、验证方法和风险，区分�
 
 因为它属于 MVP 1，尚未实现。当前从 Codex 查看状态；完成 MVP 0 验收后，再由你决定是否启动只读工作台。
 
+### Q11：为什么不能直接列出全部任务或生成全局日报？
+
+因为 MVP 0 当前不提供全局任务列表、全局 Blocker 汇总、批量暂停或 daily summary 的稳定 CLI。请提供已知任务 ID 逐项查询；跨任务自动发现和只读总览属于后续工作台能力。
+
 ## 12. 如何验证 Codex 的汇报是否可信
 
 你不需要自己运行命令，但可以要求 Codex提供下列证据：
 
 1. 当前主线、任务分支、Worktree 路径和实际 HEAD。
 2. 工作区是否干净，是否存在范围外改动。
-3. 当前任务状态、最近事件、Agent、Blocker 和待审批项。
+3. 已知任务 ID 的状态、最近事件、Agent、Blocker 和待审批项。
 4. 测试命令、测试数量、通过/失败结果和未覆盖区域。
 5. Review 报告路径、Reviewer 身份、结论和绑定 SHA。
 6. Evidence 路径、SHA-256、来源 SHA 和是否发生漂移。
@@ -327,9 +365,11 @@ Codex 要求各 Reviewer 提交假设、证据、验证方法和风险，区分�
 
 > 不要只给结论。请给我当前状态的 Git SHA、文件路径、测试数量、Review disposition、待审批项和残余风险，并区分已验证事实与建议。
 
+Task 11 已做人工前向验证：两份独立审阅用实际自然语言场景检查手册并返回 `MODIFY`，本版按其可复现意见修正。`tests/test_skill_contract.py` 是文字契约自动化测试，不等于 Agent 行为已经被自动化端到端验证。
+
 ## 13. CLI 附录（仅供 Codex 和故障复现；本人不需执行）
 
-以下命令是底层确定性接口。你本人不需要执行，也不需要记忆；它们用于 Codex 自动操作、测试或故障复现。
+以下是 MVP 0 稳定 CLI 的完整范围。你本人不需要执行，也不需要记忆；它们用于 Codex 自动操作、测试或故障复现。
 
 ```bash
 # 仓库健康
@@ -341,7 +381,7 @@ scripts/team-control init
 # 启动任务
 scripts/team-control start --dispatch-id ID --title TITLE --objective OBJECTIVE --risk L1 --agent AGENT --slug SLUG
 
-# 查询任务与待审批项
+# 查询一个已知任务；approvals 只提供列表
 scripts/team-control status --dispatch-id ID
 scripts/team-control approvals --dispatch-id ID
 
@@ -353,7 +393,9 @@ scripts/worktree-doctor inspect --dispatch-id ID --agent AGENT --slug SLUG --bas
 scripts/worktree-doctor repair --dispatch-id ID --agent AGENT --slug SLUG --base-sha SHA
 ```
 
-这些 wrapper 已绑定所属仓库，输出机器可读 JSON。即使如此，Codex仍必须先读 `handoff.md`、检查健康、reconcile `PREPARED`，并遵守审批门禁；命令存在不等于动作已获授权。
+这些 wrapper 已绑定所属仓库，输出机器可读 JSON。它们不提供全局 list tasks/blockers、批量暂停、Agent/Blocker/Review/Evidence 登记、approval create/consume、通用 `PREPARED` reconcile 或 Mimo 入口。
+
+Codex仍必须先读 `handoff.md` 并检查健康。需要处理 `PREPARED` 时只能使用已有测试覆盖的内部 `OperationCoordinator` API；不得直接修改 SQLite。内部 API 不是用户稳定接口，命令或方法存在也不等于动作已获授权。
 
 ## 14. 术语表
 
@@ -380,7 +422,7 @@ scripts/worktree-doctor repair --dispatch-id ID --agent AGENT --slug SLUG --base
 
 早上：
 
-> 进入软件工程团队。给我今天的任务状态：进行中、Review 中、阻塞、待批准和建议优先级；先做只读检查。
+> 进入软件工程团队。严格只读，查看任务 20260809-001 的状态、Review、阻塞和待批准事项；状态库不存在时不要初始化。
 
 准备开始新工作：
 
@@ -388,13 +430,13 @@ scripts/worktree-doctor repair --dispatch-id ID --agent AGENT --slug SLUG --base
 
 结束工作：
 
-> 暂停所有未完成写入任务到安全检查点，汇总今天的提交、测试、Review、Blocker 和明天恢复条件。
+> 暂停任务 20260809-001 到安全检查点，汇总该任务今天的提交、测试、Review、Blocker 和明天恢复条件。
 
 ### 每周推荐用法
 
 每周盘点：
 
-> 汇总本周任务：已交付、返工、阻塞、Review 发现、测试缺口和残余风险。由 Mimo 盘点，Codex 审阅后只输出可复用知识候选，不自动写入长期事实源。
+> 盘点任务 20260809-001 本周的交付、返工、阻塞、Review 发现、测试缺口和残余风险。Mimo 当前没有稳定入口；可用时由 Codex 受控调度，否则明确标记后续。
 
 路线图检查：
 

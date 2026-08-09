@@ -92,6 +92,75 @@ class SkillContractTests(unittest.TestCase):
         prompts = re.findall(r'^\d+\. “.+”$', text, re.MULTILINE)
         self.assertGreaterEqual(len(prompts), 15)
 
+    def test_strict_read_only_never_initializes_missing_control_state(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        guide = GUIDE_PATH.read_text(encoding="utf-8")
+        for required in (
+            "If the user explicitly requires strictly read-only",
+            "do not initialize",
+            "read-only Git and file inventory",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, skill)
+        self.assertIn("严格只读时不得初始化", guide)
+        self.assertIn("状态库不可用", guide)
+
+    def test_docs_distinguish_stable_cli_from_internal_or_unavailable_flows(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        guide = GUIDE_PATH.read_text(encoding="utf-8")
+        for required in (
+            "known dispatch ID",
+            "no stable CLI",
+            "OperationCoordinator",
+            "Never edit SQLite directly",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, skill)
+        for required in (
+            "稳定 CLI 只有",
+            "已知 `dispatch_id`",
+            "当前不提供全局任务列表",
+            "Agent/Blocker/Review/Evidence 登记",
+            "approval create/consume",
+            "通用 `PREPARED` reconcile",
+            "Mimo 入口",
+            "OperationCoordinator",
+            "不得直接修改 SQLite",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, guide)
+        self.assertNotIn("暂停所有未完成写入任务", guide)
+
+    def test_docs_state_current_secret_handling_limit(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        guide = GUIDE_PATH.read_text(encoding="utf-8")
+        self.assertIn("No automatic secret scanning or redaction exists", skill)
+        self.assertIn("当前没有自动秘密检测或自动脱敏", guide)
+        self.assertIn("不要把含 Token 的日志交给系统", guide)
+        self.assertIn("持久化前", guide)
+        self.assertIn("请求用户提供脱敏材料", guide)
+
+    def test_guide_documents_real_status_field_names_and_overlay(self):
+        text = GUIDE_PATH.read_text(encoding="utf-8")
+        for required in (
+            "task.current_head_sha",
+            "actual_head_sha",
+            "blocker.resolution_condition",
+            "review.disposition",
+            "review.report_sha256",
+            "review.stale",
+            "review.effective",
+            "evidence.path",
+            "evidence.sha256",
+            "evidence.source_sha",
+            "evidence.stale",
+            "effective_state",
+            "overlay",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, text)
+        self.assertNotIn("读取 `handoff.md` 和五份现行工程协议", text)
+
 
 if __name__ == "__main__":
     unittest.main()
