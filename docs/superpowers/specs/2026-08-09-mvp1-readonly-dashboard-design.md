@@ -143,14 +143,22 @@ flowchart LR
 
 ### 7.2 数据库访问
 
-工作台不得实例化会执行 schema 初始化或写事务的 MVP 0 `Store`。只读查询层必须：
+工作台可以复用 `Store.from_repo(...).read_connection()` 的受控路径解析，但不得调用 `initialize()`、`mutation()`、状态转换或任何写接口。实施时要加固 `read_connection()`，并满足：
 
-- 使用 SQLite URI `mode=ro` 打开既有数据库；
-- 启用 `PRAGMA query_only = ON`；
-- 不执行 `CREATE`、迁移、补写、修复或缓存；
+- 使用 SQLite URI `mode=ro` 打开既有数据库，不使用可能忽略 WAL 和锁的 `immutable=1`；
+- 启用 `PRAGMA query_only = ON`，每个 API 请求建立独立连接和一个 `BEGIN` 只读快照，请求结束立即关闭；
+- `ThreadingHTTPServer` 不共享 connection/cursor；连接和 busy timeout 均为 2 秒，超时返回 `503 DATABASE_BUSY`；
+- 不执行 `CREATE`、迁移、补写、修复、缓存、checkpoint 或 journal mode 变更；
 - 数据库不存在时返回结构化 `503 DATABASE_UNAVAILABLE`；
 - schema 不兼容时返回 `503 SCHEMA_UNSUPPORTED`；
 - 查询失败时关闭连接并返回错误，不降级为猜测数据。
+
+MVP 0 数据库使用 WAL。Dashboard 的“只读”指不改变任何业务表、主数据库、WAL 内容、Git 或项目工件；SQLite reader 可以使用现有 `team.db-shm` 的瞬时锁协调区。为避免静默读取陈旧数据：
+
+- `team.db`、`team.db-wal` 和 `team.db-shm` 必须经过 canonical path 与非符号链接检查；
+- 当 `team.db-wal` 非空时，`-wal` 与 `-shm` 必须同时存在、是普通文件且当前用户可读，否则返回 `503 WAL_SIDECAR_UNAVAILABLE`；
+- 不复制数据库、不使用 `immutable=1` 绕过 WAL、不自动创建或修复 sidecar；
+- 无并发 writer 的测试中，读取前后业务表快照、主数据库与 WAL 的 SHA-256 必须一致；`-shm` 的锁区字节不作为业务状态哈希。
 
 ### 7.3 API 输出白名单
 
@@ -193,6 +201,32 @@ GET /api/health
 
 `HEAD` 仅返回对应资源头；`OPTIONS` 只声明允许的只读方法。`POST`、`PUT`、`PATCH`、`DELETE` 和其他业务方法统一返回 `405 READ_ONLY`，且不能产生数据库、Git 或文件变化。
 
+### 8.1 字段级响应契约
+
+`data` 只允许包含以下字段；未列出的数据库列和内部 payload 不得透传：
+
+| 端点 | `data` 字段 |
+|---|---|
+| `/api/project` | `repository_name`、`branch`、`head_sha`、`remote_configured`、`worktree_count`、`health`、`counts`、`attention_items` |
+| `/api/tasks` | `items[]`、`limit`、`offset`、`has_more`；item 为 `dispatch_id`、`title`、`objective`、`risk_level`、`state`、`effective_state`、`owner`、`agent`、`updated_at`、`current_head_sha`、`attention_reasons[]` |
+| `/api/tasks/:id` | `task`、`actual_head_sha`、`head_drift`、`valid_acceptance`、`agents[]`、`blockers[]`、`reviews[]`、`pending_approval_count`、`evidence_count`、`latest_event` |
+| `/api/tasks/:id/events` | `items[]`、`limit`、`offset`、`has_more`；item 为 `sequence`、`event_type`、`created_at`、`summary`、`details` |
+| `/api/tasks/:id/evidence` | `items[]`、`limit`、`offset`、`has_more`；item 为 `evidence_id`、`kind`、`relative_path`、`sha256`、`source_sha`、`created_at`、`stale` |
+| `/api/approvals` | `items[]`、`limit`、`offset`、`has_more`；item 为 `approval_id`、`dispatch_id`、`action`、`target_sha`、`expires_at`、`consumed_at`、`status` |
+| `/api/health` | `status`、`database`、`schema`、`git`、`warnings[]` |
+
+`counts` 只包含 `active_tasks`、`blocked_tasks`、`pending_approvals`、`stale_reviews` 和 `stale_evidence`。Agent、Blocker 和 Review 子对象同样使用显式白名单，禁止返回原始 JSON 文本。
+
+事件 `payload_json` 不直接返回。已知事件类型转换为固定 `summary` 和 allowlisted `details`；未知事件只返回 `sequence`、`event_type`、`created_at` 和空 `details`。
+
+### 8.2 查询上限
+
+- 列表端点接受整数 `limit` 和 `offset`；默认 `limit=50`，最大 `100`，`offset` 最大 `10000`；
+- events 默认 `limit=100`，最大 `200`；
+- 非整数、负数或超上限参数返回 `400 INVALID_PAGINATION`；
+- `has_more` 通过多取一条计算，不执行无上限全表返回；
+- 首页 `attention_items` 最多 20 条，普通计数使用聚合 SQL。
+
 ## 9. 刷新、过期与不一致
 
 - 页面加载后立即获取快照，之后每 15 秒刷新一次；
@@ -206,14 +240,31 @@ GET /api/health
 ## 10. 本机和浏览器安全边界
 
 - 服务默认且仅绑定 `127.0.0.1`；首版不提供 `--host 0.0.0.0`；
-- 不配置通配 CORS；带 `Origin` 的 API 请求必须与当前本机 origin 精确匹配；
+- 不配置通配 CORS；带 `Origin` 的请求必须与启动时的本机 origin 精确匹配，不匹配返回 `403 ORIGIN_REJECTED`；
+- 无 `Origin` 的 `GET/HEAD` 只有在 Host 校验通过时允许，以支持同源导航、curl 和健康检查；`OPTIONS` 必须携带并通过 Origin 校验；
 - 校验 Host，只接受启动时声明的 localhost/127.0.0.1 与端口；
 - 返回 `Content-Security-Policy`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer` 和禁止嵌入的 frame 策略；
-- 静态文件使用固定映射，不接受任意文件路径；
+- 静态文件只允许 `/`、`/index.html`、`/styles.css` 和 `/app.js` 四个固定映射；其他路径一律 `404`，包含 `..`、编码斜杠或反斜杠的路径在映射前直接拒绝；
 - 服务器不把访问日志写入项目或状态库；
 - `scripts/open-team-dashboard` 不读取、打印或持久化敏感环境变量。
 
 本机绑定不是认证系统。若未来需要局域网或远程访问，必须作为新的高风险设计处理，不能仅改变 host 参数。
+
+### 10.1 Git 只读白名单
+
+Dashboard 只能通过 `run_argv` 执行以下精确 Git argv，不允许 shell、alias、任意子命令或用户提供的参数：
+
+```text
+git rev-parse --show-toplevel
+git rev-parse --git-common-dir
+git rev-parse HEAD
+git symbolic-ref --quiet --short HEAD
+git status --porcelain=v1 --untracked-files=no --ignore-submodules=all
+git worktree list --porcelain
+git remote
+```
+
+所有调用设置 `GIT_OPTIONAL_LOCKS=0`，并通过命令行配置禁用 `core.fsmonitor` 和 `maintenance.auto`。工作台只返回 `remote_configured` 布尔值，不返回远端 URL。任务 Worktree HEAD 只可在数据库已登记、canonical 后位于本仓库 `.worktrees/` 的路径上执行同一 `rev-parse HEAD`。测试必须证明 `.git/index` 的 SHA-256 与 mtime、HEAD、refs 和 Git status 在请求前后不变。
 
 ## 11. 启动与使用体验
 
@@ -263,10 +314,13 @@ MVP 1 不承诺服务器永久后台运行。服务不可用时，用户回到 C
 ### 14.1 自动化测试
 
 - 查询层：空库、完整任务、异常排序、审批过滤、过期 Review/Evidence、HEAD 漂移；
-- 数据库只读：数据库文件哈希和 Git 状态在请求前后不变；
+- 数据库只读：无并发 writer 的 fixture 中，业务表快照、主数据库和 WAL 哈希在请求前后不变；允许 `-shm` 锁区参与 SQLite reader 协调；
 - API：七个端点的 schema、状态码、过滤、未知参数和错误结构；
 - 方法边界：`POST/PUT/PATCH/DELETE` 返回 `405`，没有副作用；
-- 安全：localhost 绑定、Host/Origin 拒绝、安全响应头、静态路径穿越拒绝；
+- 安全：localhost 绑定、Host/Origin 缺失与拒绝、安全响应头、静态固定映射和路径穿越拒绝；
+- 并发：多个请求各自使用独立只读连接和快照，busy timeout 可预测；
+- 上限：分页默认值、最大值、非法参数和 `has_more`；
+- Git 只读：仅白名单 argv，`GIT_OPTIONAL_LOCKS=0`，请求前后 index hash/mtime、HEAD、refs 和 status 不变；
 - UI 契约：五个视图、只读标识、刷新时间、来源 SHA、空态和错误态；
 - 回归：现有 MVP 0 全量测试继续通过。
 
@@ -286,7 +340,7 @@ MVP 1 只有同时满足以下条件才可进入 `ACCEPTED`：
 - 七个只读 API 和五类视图均已实现；
 - Codex 一句话启动入口可用；
 - 所有受影响测试在任务 Worktree 通过；
-- 只读副作用测试证明请求前后数据库哈希和 Git 状态不变；
+- 只读副作用测试证明业务表、主数据库、WAL、Git index/HEAD/refs/status 和项目工件不变，并单独记录 `-shm` 仅用于读锁协调的边界；
 - 数据过期、数据库异常、状态不一致和空态均有明确表现；
 - 关键安全边界经过测试；
 - 独立 Reviewer 给出 `ACCEPT`；
