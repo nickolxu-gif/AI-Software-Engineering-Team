@@ -627,6 +627,46 @@ class DashboardReadModelTests(unittest.TestCase):
                 page["items"][0]["attention_reasons"],
             )
 
+    def test_closed_task_does_not_require_a_live_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+            now = "2030-01-01T00:00:00+00:00"
+            with store.mutation() as connection:
+                connection.execute(
+                    """INSERT INTO tasks (
+                           dispatch_id, schema_version, title, objective,
+                           risk_level, state, task_base_sha, current_head_sha,
+                           owner, agent, slug, branch, worktree_path,
+                           created_at, updated_at
+                       ) VALUES (?, 1, ?, ?, 'L1', 'CLOSED', ?, ?, ?, ?,
+                                 ?, ?, ?, ?, ?)""",
+                    (
+                        "closed-task",
+                        "Closed",
+                        "Worktree lifecycle is complete",
+                        head,
+                        head,
+                        "Codex",
+                        "codex",
+                        "closed",
+                        "agent/codex/closed-task-closed",
+                        str(repo / ".worktrees" / "closed-task-codex-closed"),
+                        now,
+                        now,
+                    ),
+                )
+
+            task = model.tasks(
+                {},
+                state=None,
+                risk=None,
+                attention=None,
+                search="closed-task",
+            )["items"][0]
+            self.assertEqual(task["attention_reasons"], [])
+            self.assertEqual(model.project()["health"], "HEALTHY")
+
     def test_detail_limit_fails_closed_instead_of_silently_truncating(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, store, model = self.make_model(Path(tmp))
