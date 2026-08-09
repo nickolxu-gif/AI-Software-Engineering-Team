@@ -699,6 +699,25 @@ class DashboardReadModelTests(unittest.TestCase):
                     "latest_event",
                 },
             )
+            self.assertEqual(
+                set(detail["task"]),
+                {
+                    "dispatch_id",
+                    "title",
+                    "objective",
+                    "risk_level",
+                    "state",
+                    "effective_state",
+                    "owner",
+                    "agent",
+                    "updated_at",
+                    "task_base_sha",
+                    "current_head_sha",
+                    "branch",
+                    "worktree_path",
+                    "attention_reasons",
+                },
+            )
             evidence = model.evidence(task["dispatch_id"], {})["items"][0]
             self.assertEqual(
                 set(evidence),

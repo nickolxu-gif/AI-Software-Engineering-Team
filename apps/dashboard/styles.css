@@ -36,6 +36,17 @@ h2 { margin: 0 0 14px; font-size: 17px; }
 .task-link { border: 0; padding: 0; color: #155e91; background: transparent; text-decoration: underline; cursor: pointer; }
 .filters { display: flex; gap: 14px; margin: 0 0 14px; }
 .filters input, .filters select { padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); }
+.facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin: 18px 0; }
+.facts > div { min-width: 0; padding-bottom: 7px; border-bottom: 1px solid var(--border); }
+.facts .wide { grid-column: 1 / -1; }
+.facts dt { color: var(--muted); font-size: 12px; }
+.facts dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.cards.compact { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.cards.compact .metric { font-size: 22px; }
+.task-detail h2 { margin-top: 22px; }
+.task-detail .row-head h2 { margin-top: 0; }
+.timeline { margin: 0; padding-left: 24px; }
+.timeline li { padding: 7px 4px; }
 #status-region { position: fixed; right: 18px; bottom: 16px; max-width: 420px; padding: 9px 13px; color: white; background: #26332f; border-radius: 8px; font-size: 12px; }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 @media (max-width: 1024px) {
@@ -47,3 +58,4 @@ h2 { margin: 0 0 14px; font-size: 17px; }
   main { padding: 20px 14px; }
 }
 @media (max-width: 620px) { .topbar { flex-direction: column; align-items: stretch; gap: 8px; padding: 12px 14px; } #source-meta { text-align: left; overflow-wrap: anywhere; } .brand { flex-wrap: wrap; } .cards { grid-template-columns: 1fr; } .filters { flex-direction: column; } }
+@media (max-width: 620px) { .facts { grid-template-columns: 1fr; } .facts .wide { grid-column: auto; } .cards.compact { grid-template-columns: repeat(2, 1fr); } }

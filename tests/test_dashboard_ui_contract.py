@@ -42,6 +42,30 @@ class DashboardUiContractTests(unittest.TestCase):
         self.assertIn("请回到 Codex 处理", javascript)
         self.assertIn("escapeHtml", javascript)
 
+    def test_task_detail_uses_events_and_rebinds_fresh_snapshot(self):
+        javascript = JS.read_text(encoding="utf-8")
+        self.assertIn("/events?limit=100&offset=0", javascript)
+        self.assertIn("state.selectedDetail = selectedDetail", javascript)
+        for field in (
+            "task_base_sha",
+            "current_head_sha",
+            "actual_head_sha",
+            "worktree_path",
+            "pending_approval_count",
+            "evidence_count",
+        ):
+            self.assertIn(field, javascript)
+
+    def test_all_secondary_responses_keep_the_source_head_envelope(self):
+        javascript = JS.read_text(encoding="utf-8")
+        self.assertIn("assertSourceHead", javascript)
+        self.assertRegex(
+            javascript,
+            r"assertSourceHead\(payload,\s*state\.sourceHeadSha\)",
+        )
+        self.assertIn("detailPayloads", javascript)
+        self.assertIn("eventPayload", javascript)
+
 
 if __name__ == "__main__":
     unittest.main()

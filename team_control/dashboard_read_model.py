@@ -877,6 +877,13 @@ class DashboardReadModel:
                 worktree_heads,
                 observed_head=observed_head,
             )
+            item.update(
+                {
+                    "task_base_sha": row["task_base_sha"],
+                    "branch": row["branch"],
+                    "worktree_path": row["worktree_path"],
+                }
+            )
             agent_rows = self._bounded_detail_rows(
                 connection.execute(
                     """SELECT agent_id, role, state, progress, updated_at
