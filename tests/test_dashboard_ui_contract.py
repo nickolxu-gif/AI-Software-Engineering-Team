@@ -77,6 +77,10 @@ class DashboardUiContractTests(unittest.TestCase):
         ):
             self.assertIn(field, javascript)
         self.assertIn("reloadSelectedTask", javascript)
+        self.assertGreaterEqual(
+            javascript.count("expectedHead !== state.sourceHeadSha) return"),
+            4,
+        )
 
     def test_timeline_discloses_bounded_results_and_unknown_state(self):
         javascript = JS.read_text(encoding="utf-8")

@@ -194,7 +194,7 @@ async function loadTaskDetail(taskId) {
     state.selectedEventsSourceHead = expectedHead;
     state.error = null; renderTasks();
   } catch (error) {
-    if (generation !== state.taskGeneration || taskId !== state.selectedTask) return;
+    if (generation !== state.taskGeneration || taskId !== state.selectedTask || expectedHead !== state.sourceHeadSha) return;
     state.error = error; renderError(error);
   }
 }
@@ -208,7 +208,7 @@ async function loadEvidence() {
     state.evidence = payload.data.items; state.evidenceTaskId = taskId;
     state.evidenceSourceHead = expectedHead; state.error = null;
   } catch (error) {
-    if (generation !== state.evidenceGeneration) return;
+    if (generation !== state.evidenceGeneration || taskId !== state.selectedTask || expectedHead !== state.sourceHeadSha) return;
     state.error = error; return renderError(error);
   }
   renderEvidence();
