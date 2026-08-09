@@ -41,6 +41,11 @@ def run_argv(argv, cwd, check=True, env_overrides=None):
         for key, value in overrides.items()
     ):
         raise BoundaryError("environment overrides must be string pairs")
+    if any(
+        "=" in key or "\0" in key or "\0" in value
+        for key, value in overrides.items()
+    ):
+        raise BoundaryError("environment overrides contain invalid characters")
     environment = dict(os.environ)
     environment.update(overrides)
     try:

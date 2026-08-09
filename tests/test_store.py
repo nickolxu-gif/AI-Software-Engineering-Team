@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from team_control import store as store_module
 from team_control.errors import BoundaryError
@@ -301,6 +302,29 @@ class StoreTests(unittest.TestCase):
                     connection.execute("PRAGMA busy_timeout").fetchone()[0],
                     2000,
                 )
+
+    def test_read_connection_closes_when_setup_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+            connection = mock.Mock()
+            connection.execute.side_effect = sqlite3.OperationalError(
+                "pragma failed"
+            )
+
+            with mock.patch.object(
+                store_module.sqlite3,
+                "connect",
+                return_value=connection,
+            ):
+                with self.assertRaisesRegex(
+                    sqlite3.OperationalError,
+                    "pragma failed",
+                ):
+                    with store.read_connection():
+                        self.fail("setup failure unexpectedly yielded")
+
+            connection.close.assert_called_once_with()
 
     def test_paths_are_absolute_normalized_path_objects(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from team_control.errors import BoundaryError, GitStateError
 from team_control.git_context import RepoContext, canonical_under, run_argv, validate_component
@@ -71,7 +72,10 @@ class GitContextTests(unittest.TestCase):
             self.assertIsInstance(caught.exception.__cause__, OSError)
 
     def test_run_argv_applies_explicit_environment_overrides(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {"DASHBOARD_TEST_FLAG": "parent"},
+        ):
             completed = run_argv(
                 [
                     "python3",
@@ -82,7 +86,7 @@ class GitContextTests(unittest.TestCase):
                 env_overrides={"DASHBOARD_TEST_FLAG": "readonly"},
             )
             self.assertEqual(completed.stdout.strip(), "readonly")
-            self.assertNotIn("DASHBOARD_TEST_FLAG", os.environ)
+            self.assertEqual(os.environ["DASHBOARD_TEST_FLAG"], "parent")
 
     def test_run_argv_rejects_non_string_environment_overrides(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -92,6 +96,29 @@ class GitContextTests(unittest.TestCase):
                     Path(tmp),
                     env_overrides={"GIT_OPTIONAL_LOCKS": 0},
                 )
+
+    def test_run_argv_rejects_environment_names_containing_equals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(BoundaryError):
+                run_argv(
+                    ["git", "--version"],
+                    Path(tmp),
+                    env_overrides={"INVALID=NAME": "value"},
+                )
+
+    def test_run_argv_rejects_environment_overrides_containing_nul(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for overrides in (
+                {"INVALID\0NAME": "value"},
+                {"INVALID_NAME": "value\0suffix"},
+            ):
+                with self.subTest(overrides=overrides):
+                    with self.assertRaises(BoundaryError):
+                        run_argv(
+                            ["git", "--version"],
+                            Path(tmp),
+                            env_overrides=overrides,
+                        )
 
 
 if __name__ == "__main__":
