@@ -667,6 +667,54 @@ class DashboardReadModelTests(unittest.TestCase):
             self.assertEqual(task["attention_reasons"], [])
             self.assertEqual(model.project()["health"], "HEALTHY")
 
+    def test_closed_task_head_drift_is_historical_not_attention(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            control = ControlPlane(RepoContext.discover(repo), store)
+            task = control.start_write_task(
+                "20260810-002",
+                "Drift lifecycle",
+                "Close after implementation",
+                "L1",
+                "codex",
+                "drift-lifecycle",
+            )
+            worktree = Path(task["worktree_path"])
+            (worktree / "drift.txt").write_text("drift\n", encoding="utf-8")
+            run(["git", "add", "drift.txt"], worktree)
+            run(["git", "commit", "-m", "advance task head"], worktree)
+            store.transition(task["dispatch_id"], "IN_PROGRESS", "started")
+
+            active = model.tasks(
+                {},
+                state=None,
+                risk=None,
+                attention=None,
+                search=task["dispatch_id"],
+            )["items"][0]
+            self.assertIn("HEAD_DRIFT", active["attention_reasons"])
+            self.assertEqual(model.project()["health"], "ATTENTION")
+
+            for target in (
+                "REVIEWING",
+                "ACCEPTED",
+                "INTEGRATED",
+                "RELEASED",
+                "CLOSED",
+            ):
+                store.transition(task["dispatch_id"], target, target.lower())
+
+            closed = model.tasks(
+                {},
+                state=None,
+                risk=None,
+                attention=None,
+                search=task["dispatch_id"],
+            )["items"][0]
+            self.assertNotIn("HEAD_DRIFT", closed["attention_reasons"])
+            self.assertEqual(model.project()["health"], "HEALTHY")
+            self.assertTrue(model.task(task["dispatch_id"])["head_drift"])
+
     def test_detail_limit_fails_closed_instead_of_silently_truncating(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, store, model = self.make_model(Path(tmp))
