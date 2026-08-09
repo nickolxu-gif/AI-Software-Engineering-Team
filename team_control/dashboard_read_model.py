@@ -193,6 +193,11 @@ class DashboardReadModel:
                 "dashboard storage file is unavailable",
                 code=code,
             ) from error
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise DashboardUnavailableError(
+                "dashboard storage file is not a regular file",
+                code=code,
+            )
         try:
             canonical_under(self.context.common_dir, candidate)
         except (BoundaryError, OSError) as error:
@@ -200,11 +205,6 @@ class DashboardReadModel:
                 "dashboard storage path is invalid",
                 code=code,
             ) from error
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-            raise DashboardUnavailableError(
-                "dashboard storage file is not a regular file",
-                code=code,
-            )
         if readable and not os.access(candidate, os.R_OK):
             raise DashboardUnavailableError(
                 "dashboard storage file is not readable",
@@ -219,12 +219,27 @@ class DashboardReadModel:
         )
 
     def _validate_storage_files(self):
-        database = Path(self.store.path)
+        database = (
+            self.context.common_dir / "team" / "runtime" / "team.db"
+        )
         database_identity = self._validated_file(
             database,
             required=True,
             code="DATABASE_UNAVAILABLE",
         )
+        try:
+            store_database = Path(self.store.path).resolve(strict=True)
+            lexical_database = database.resolve(strict=True)
+        except OSError as error:
+            raise DashboardUnavailableError(
+                "control database path is unavailable",
+                code="DATABASE_UNAVAILABLE",
+            ) from error
+        if store_database != lexical_database:
+            raise DashboardUnavailableError(
+                "control store points at an unexpected database",
+                code="DATABASE_UNAVAILABLE",
+            )
         wal = Path(str(database) + "-wal")
         shm = Path(str(database) + "-shm")
         wal_identity = self._validated_file(

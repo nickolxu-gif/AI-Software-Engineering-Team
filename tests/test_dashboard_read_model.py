@@ -105,6 +105,27 @@ class DashboardReadModelTests(unittest.TestCase):
                         model.health()
                     self.assertEqual(caught.exception.code, expected)
 
+    def test_preexisting_database_symlink_is_not_hidden_by_store_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            lexical_database = (
+                model.context.common_dir / "team" / "runtime" / "team.db"
+            )
+            connection = sqlite3.connect(str(lexical_database))
+            try:
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                connection.execute("PRAGMA journal_mode=DELETE")
+            finally:
+                connection.close()
+            target = lexical_database.with_name("team-target.db")
+            lexical_database.replace(target)
+            lexical_database.symlink_to(target)
+            resolved_store = ControlStore.for_repo(model.context)
+            resolved_model = DashboardReadModel(model.context, resolved_store)
+            with self.assertRaises(DashboardUnavailableError) as caught:
+                resolved_model.health()
+            self.assertEqual(caught.exception.code, "DATABASE_UNAVAILABLE")
+
     def test_active_wal_sidecars_must_be_readable(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, store, model = self.make_model(Path(tmp))
