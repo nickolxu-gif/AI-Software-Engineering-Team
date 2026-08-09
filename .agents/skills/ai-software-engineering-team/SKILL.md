@@ -11,7 +11,7 @@ Codex is the only engineering authority. Human controls strategy, external actio
 
 1. Read `handoff.md`, `CODEX_AGENT_DISPATCH_PROTOCOL.md`, `AGENT_ROLE_AND_MODEL_MATRIX.md`, `SOFTWARE_ENGINEERING_WORKFLOW.md`, and `GIT_WORKFLOW.md`.
 2. Run `scripts/repo-health.sh` from the main repository root. Stop writes if health or ownership cannot be proven.
-3. For ordinary requests, If the control database is absent, initialize it safely with `scripts/team-control init`, then continue. If the user explicitly requires strictly read-only or no writes, do not initialize; perform a read-only Git and file inventory and report control-state unavailability.
+3. For ordinary non-dashboard requests, If the control database is absent, initialize it safely with `scripts/team-control init`. If the user explicitly requires strictly read-only or sends Dashboard open/view intents, do not initialize; perform a read-only Git and file inventory and report control-state unavailability.
 4. Convert the request into the seven-question Dispatch Record, classify L1/L2/L3 risk, and define evidence and acceptance before dispatch.
 
 ## Open the MVP 1 dashboard

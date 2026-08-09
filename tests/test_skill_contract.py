@@ -172,6 +172,8 @@ class SkillContractTests(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, skill)
+        self.assertIn("ordinary non-dashboard requests", skill)
+        self.assertIn("Dashboard open/view intents", skill)
 
     def test_guide_documents_mvp1_actual_usage_and_limits(self):
         guide = GUIDE_PATH.read_text(encoding="utf-8")
