@@ -375,6 +375,34 @@ class WorktreeDoctor:
             )
         return operation
 
+    def reconcile_prepared_create(self, report):
+        """Safely terminalize this dispatch's interrupted create before routing."""
+        fresh = self._fresh_report(report)
+        request_report = self._historical_report(fresh, "NO_RESIDUE")
+        request_hash = self._request_hash(request_report)
+        prepared = [
+            operation
+            for operation in self.store.prepared_operations()
+            if operation["dispatch_id"] == fresh["dispatch_id"]
+            and operation["action"] == "create-worktree"
+        ]
+        reconciled = []
+        for operation in prepared:
+            if (
+                operation["request_hash"] != request_hash
+                or operation["target_sha"] != fresh["task_base_sha"]
+            ):
+                raise ReconciliationError(
+                    "prepared create operation belongs to another request"
+                )
+            reconciled.append(
+                self.operations.reconcile_one(
+                    operation["operation_id"],
+                    lambda ignored: self._verified(fresh),
+                )
+            )
+        return reconciled
+
     def _verified(self, report):
         inspected = self.inspect(
             report["dispatch_id"],

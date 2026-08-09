@@ -480,8 +480,16 @@ class OperationTests(unittest.TestCase):
                     preflight=reject_fresh_state,
                 )
 
-        self.assertEqual(observed, [])
+        self.assertEqual(observed, [["git", "rev-parse", "HEAD"]])
         self.assertEqual(self.operation_rows(), [])
+
+    def test_mvp0_control_lock_threat_model_is_explicit_and_reusable(self):
+        threat_model = operations_module.MVP0_CONTROL_LOCK_THREAT_MODEL
+
+        self.assertIn("common-directory control lock", threat_model)
+        self.assertIn("Codex, Agent, and Git mutations", threat_model)
+        self.assertIn("same-user filesystem access", threat_model)
+        self.assertIn("deliberately bypasses the lock", threat_model)
 
     def test_git_subcommand_allowlist_is_explicit_for_mvp_operations(self):
         self.assertEqual(

@@ -548,6 +548,74 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(operation["phase"], "COMMITTED")
         self.assertEqual(operation["result"]["callback_status"], "COMPLETED")
 
+    def test_start_retry_fails_prepared_create_then_repairs_branch_only(self):
+        control = ControlPlane(self.context, self.store)
+        arguments = (
+            "20260808-020", "Partial create", "Recover branch-only residue", "L1",
+            "codex", "partial-create",
+        )
+        branch = "agent/codex/20260808-020-partial-create"
+        original_run_argv = operations_module.run_argv
+
+        def leave_branch_only(argv, cwd, check=True):
+            if list(argv[:4]) == ["git", "worktree", "add", "-b"]:
+                run(["git", "branch", argv[4], argv[6]], cwd)
+                return SimpleNamespace(
+                    stdout="", stderr="simulated partial add", returncode=1
+                )
+            return original_run_argv(argv, cwd, check=check)
+
+        with mock.patch(
+            "team_control.operations.run_argv", side_effect=leave_branch_only
+        ), mock.patch.object(
+            WorktreeDoctor,
+            "_verified",
+            side_effect=RuntimeError("simulated verifier crash after branch"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "after branch"):
+                control.start_write_task(*arguments)
+
+        prepared = self.store.prepared_operations()
+        self.assertEqual(len(prepared), 1)
+        self.assertEqual(prepared[0]["action"], "create-worktree")
+        task = self.store.get_task(arguments[0])
+        report = WorktreeDoctor(self.context, self.store).inspect(
+            arguments[0], arguments[4], arguments[5], task["task_base_sha"]
+        )
+        self.assertEqual(report["classification"], "REPAIRABLE_BRANCH_ONLY")
+
+        with mock.patch(
+            "team_control.operations.run_argv", wraps=original_run_argv
+        ) as command:
+            recovered = control.start_write_task(*arguments)
+
+        self.assertEqual(recovered["state"], "DISPATCHED")
+        self.assertEqual(recovered["branch"], branch)
+        self.assertTrue(Path(recovered["worktree_path"]).is_dir())
+        self.assertEqual(
+            sum(
+                list(call.args[0][:4]) == ["git", "worktree", "add", "-b"]
+                for call in command.call_args_list
+            ),
+            0,
+        )
+        create_operation = self.store.get_operation(prepared[0]["operation_id"])
+        self.assertEqual(create_operation["phase"], "FAILED")
+        self.assertIs(create_operation["result"]["verified"], False)
+        with self.store.read_connection() as connection:
+            rows = connection.execute(
+                """SELECT action, phase FROM operations
+                   WHERE dispatch_id = ? ORDER BY created_at""",
+                (arguments[0],),
+            ).fetchall()
+        self.assertEqual(
+            [(row["action"], row["phase"]) for row in rows],
+            [
+                ("create-worktree", "FAILED"),
+                ("doctor-reconstruct-worktree", "COMMITTED"),
+            ],
+        )
+
     def test_concurrent_identical_starts_are_idempotent(self):
         arguments = (
             "20260808-018", "Concurrent", "Create exactly once", "L1",

@@ -1,3 +1,5 @@
+"""Durable Git operations and the reusable MVP 0 control-lock boundary."""
+
 import re
 from copy import deepcopy
 from pathlib import Path
@@ -12,6 +14,15 @@ from .git_context import (
 
 
 GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+MVP0_CONTROL_LOCK_THREAT_MODEL = (
+    "MVP 0 requires all controlled Codex, Agent, and Git mutations to use "
+    "the repository common-directory control lock. OperationCoordinator "
+    "holds that lock continuously from fresh preflight through PREPARED, "
+    "the Git command, verification, and durable terminal state. This is a "
+    "cooperative-writer guarantee; it does not claim to defend against a "
+    "local process with same-user filesystem access that deliberately "
+    "bypasses the lock."
+)
 ALLOWED_GIT_SUBCOMMANDS = frozenset(
     {
         "status",
@@ -294,13 +305,11 @@ class OperationCoordinator:
                 if task is None:
                     raise KeyError(dispatch_id)
                 cwd = self._trusted_git_cwd(task)
-                # This closes inspect-to-mutation races between controlled
-                # writers that obey this repository control lock. It does not
-                # claim to stop arbitrary filesystem or Git mutation by an
-                # external actor that ignores the lock.
+                actual_sha = self._trusted_head(cwd)
+                # Keep fresh preflight as close as durable PREPARED permits to
+                # the command. See MVP0_CONTROL_LOCK_THREAT_MODEL.
                 if preflight is not None:
                     preflight(deepcopy(task))
-                actual_sha = self._trusted_head(cwd)
                 if not (
                     target_sha == task["current_head_sha"] == actual_sha
                 ):

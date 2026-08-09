@@ -219,6 +219,10 @@ class ControlPlane:
                 )
             return task
         try:
+            doctor.reconcile_prepared_create(report)
+            report = doctor.inspect(
+                dispatch_id, agent, slug, task["task_base_sha"]
+            )
             if report["classification"] == "REPAIRABLE_BRANCH_ONLY":
                 doctor.repair(report)
             else:
