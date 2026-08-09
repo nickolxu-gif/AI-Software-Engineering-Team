@@ -6,11 +6,12 @@
 
 ## 当前状态
 
-**Git 治理与 MVP 0 控制平面均已完成并整合到 `main`。**
+**Git 治理、MVP 0 控制平面与 MVP 1 本地只读工作台均已完成并整合到 `main`。**
 
 - `main` 是唯一稳定主线；Git bootstrap 历史基线 SHA 为 `cd459565b8bb24156f92e400a11769d254eccda9`。
 - MVP 0 任务分支已 fast-forward 整合到 `main`；MVP 0 集成 SHA 为 `f4b60ab4a4f3112912641fd8b56667b27d6fb819`。
-- MVP 0 任务 Worktree 在最终主线复验和本 handoff 提交完成前保留；只有 Codex 可以在确认干净且已整合后清理。
+- MVP 1 任务分支已通过 no-ff merge 整合到 `main`；MVP 1 集成 SHA 为 `a0d11656b7dd0fbdc2cd6114eed70adc06ebd1b2`。
+- MVP 0 任务 Worktree 已清理；MVP 1 任务 Worktree 只在本 handoff 提交、状态闭环和最终复验完成前保留。
 - 当前没有配置 remote。
 - `scripts/new-agent-worktree.sh` 与 `scripts/repo-health.sh` 已完成；可复核命令事实见 `GIT_BOOTSTRAP_VERIFICATION.md`。
 - Git bootstrap 验证工件：`GIT_BOOTSTRAP_VERIFICATION.md`、`GIT_BOOTSTRAP_REVIEW_LOG.md`。
@@ -22,7 +23,7 @@
 - 控制平面设计：`docs/superpowers/specs/2026-08-08-ai-engineering-team-control-plane-design.md`。
 - MVP 0 实施计划：`docs/superpowers/plans/2026-08-08-mvp0-control-plane.md`。
 - 这里的 `Minor` 指 `git worktree add` 失败后可能残留目录、分支或 Worktree metadata；不是对象存储。Codex 必须先检查实际 Git 状态，再决定安全重建或转为 `BLOCKED`，不得自动强删未知数据。
-- 当前授权阶段：MVP 0 已完成；MVP 1、2、3 和 GitHub Remote 尚未进入实施。
+- 当前授权阶段：MVP 0、MVP 1 已完成；MVP 2、MVP 3 和 GitHub Remote 尚未进入实施。
 
 ### MVP 0 Control Plane
 
@@ -38,7 +39,21 @@
 - 已知任务状态示例：`./scripts/team-control status --dispatch-id 20260808-009`。仅在该任务已经登记时有效；MVP 0 没有稳定的全局任务列表接口。
 - Minor 规则：先运行 Doctor `inspect`；只有明确的 `REPAIRABLE_BRANCH_ONLY` 才允许 `repair`。未知目录、脏文件、额外提交、注册冲突、符号链接或无法证明安全的 metadata 一律转为 `BLOCKED`，不得自动删除。
 - 验收工件：`artifacts/dispatches/20260808-mvp0-acceptance/verification.md`。
-- MVP 1 规划和实施必须再次取得 Human 明确确认；当前没有前端工作台、GitHub Remote、云服务或生产发布。
+- GitHub Remote、云服务或生产发布仍未配置。
+
+### MVP 1 Local Read-only Dashboard
+
+**状态：ACCEPTED and integrated**
+
+- 任务：`20260809-001`；实现候选 SHA 为 `f785ea1f40820481c19d1f8d5f511485576fc63d`，主线集成 SHA 为 `a0d11656b7dd0fbdc2cd6114eed70adc06ebd1b2`。
+- 最终独立验收：Claude Code / Sonnet，结论 `ACCEPT`；未使用 CodeBuddy 或其他降级 Reviewer。
+- 主线验证：默认 Python 与 Python 3.14 均运行 `python -m unittest discover -s tests -q`，各 273 项，全部 `OK`。
+- 启动入口：`./scripts/open-team-dashboard`；默认只绑定 `127.0.0.1`，浏览器工作台严格只读。
+- 五类视图：总览、任务、Agents、审批、证据；七个 API 均为只读 GET/HEAD/OPTIONS 契约。
+- 使用手册：`USER_OPERATING_GUIDE.md`；项目 Skill：`.agents/skills/ai-software-engineering-team/SKILL.md`。
+- 验收工件：`artifacts/dispatches/20260809-001/`，包含派活单、设计审查、实现审查、验证记录、MiMo 盘点和 Codex 盘点审阅。
+- 已知边界：任务 `current_head_sha` 尚无受控推进入口，因此真实任务可能显示 `HEAD_DRIFT`；该状态不会被伪装成有效验收。并发 writer 回归、真实浏览器自动化和 HTTP 线程限制属于后续改进。
+- MVP 2 前不得从浏览器直接执行状态变更、调 Agent、审批、merge、push 或发布；所有工程动作继续回到 Codex 控制平面。
 
 可使用以下命令复核最终 Worktree 和分支状态：
 
@@ -47,7 +62,7 @@ git worktree list
 git branch --list
 ```
 
-MVP 0 handoff 提交完成前，前者可同时显示已整合且干净的任务 Worktree；清理后应仅显示 `main` 根 Worktree。分支清理必须由 Codex 在验证整合事实后执行。
+MVP 1 状态闭环和本 handoff 提交完成前，前者可同时显示已整合且干净的 MVP 1 任务 Worktree；清理后应仅显示 `main` 根 Worktree。分支清理必须由 Codex 在验证整合事实后执行。
 
 ## 现有四份规范
 
@@ -86,12 +101,11 @@ MVP 0 handoff 提交完成前，前者可同时显示已整合且干净的任务
 - 执行 Agent 只在所属 Worktree 内修改、测试和原子提交；Reviewer 独立审查；L3 由 Claude Code 最终验收。
 - 大型联调只使用类似 `integration/20260809-001` 的临时分支，不得形成第二条长期主线。
 
-## 下一次任务执行
+## 下一次使用与后续实施
 
 ```bash
 ./scripts/repo-health.sh
-./scripts/team-control init
-./scripts/team-control start --dispatch-id 20260809-001 --title "Example task" --objective "Demonstrate controlled dispatch" --risk L1 --agent codex --slug example-task
+./scripts/open-team-dashboard
 ```
 
-控制面初始化后，`scripts/new-agent-worktree.sh` 仅保留为初始化前兼容入口并会 fail closed；不得用它或手工 `git worktree add` 绕过控制锁。
+用户无需日常手工执行整段 CLI；可在 Codex 中要求“打开 AI 软件工程团队工作台”，由 Codex 调用启动入口。MVP 2、GitHub Remote 或任何写操作仍需独立任务与相应门禁。`scripts/new-agent-worktree.sh` 仅保留为初始化前兼容入口并会 fail closed；不得用它或手工 `git worktree add` 绕过控制锁。
