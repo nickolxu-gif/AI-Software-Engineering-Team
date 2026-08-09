@@ -627,6 +627,94 @@ class DashboardReadModelTests(unittest.TestCase):
                 page["items"][0]["attention_reasons"],
             )
 
+    def test_closed_task_does_not_require_a_live_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            head = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+            now = "2030-01-01T00:00:00+00:00"
+            with store.mutation() as connection:
+                connection.execute(
+                    """INSERT INTO tasks (
+                           dispatch_id, schema_version, title, objective,
+                           risk_level, state, task_base_sha, current_head_sha,
+                           owner, agent, slug, branch, worktree_path,
+                           created_at, updated_at
+                       ) VALUES (?, 1, ?, ?, 'L1', 'CLOSED', ?, ?, ?, ?,
+                                 ?, ?, ?, ?, ?)""",
+                    (
+                        "closed-task",
+                        "Closed",
+                        "Worktree lifecycle is complete",
+                        head,
+                        head,
+                        "Codex",
+                        "codex",
+                        "closed",
+                        "agent/codex/closed-task-closed",
+                        str(repo / ".worktrees" / "closed-task-codex-closed"),
+                        now,
+                        now,
+                    ),
+                )
+
+            task = model.tasks(
+                {},
+                state=None,
+                risk=None,
+                attention=None,
+                search="closed-task",
+            )["items"][0]
+            self.assertEqual(task["attention_reasons"], [])
+            self.assertEqual(model.project()["health"], "HEALTHY")
+
+    def test_closed_task_head_drift_is_historical_not_attention(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            control = ControlPlane(RepoContext.discover(repo), store)
+            task = control.start_write_task(
+                "20260810-002",
+                "Drift lifecycle",
+                "Close after implementation",
+                "L1",
+                "codex",
+                "drift-lifecycle",
+            )
+            worktree = Path(task["worktree_path"])
+            (worktree / "drift.txt").write_text("drift\n", encoding="utf-8")
+            run(["git", "add", "drift.txt"], worktree)
+            run(["git", "commit", "-m", "advance task head"], worktree)
+            store.transition(task["dispatch_id"], "IN_PROGRESS", "started")
+
+            active = model.tasks(
+                {},
+                state=None,
+                risk=None,
+                attention=None,
+                search=task["dispatch_id"],
+            )["items"][0]
+            self.assertIn("HEAD_DRIFT", active["attention_reasons"])
+            self.assertEqual(model.project()["health"], "ATTENTION")
+
+            for target in (
+                "REVIEWING",
+                "ACCEPTED",
+                "INTEGRATED",
+                "RELEASED",
+                "CLOSED",
+            ):
+                store.transition(task["dispatch_id"], target, target.lower())
+
+            closed = model.tasks(
+                {},
+                state=None,
+                risk=None,
+                attention=None,
+                search=task["dispatch_id"],
+            )["items"][0]
+            self.assertNotIn("HEAD_DRIFT", closed["attention_reasons"])
+            self.assertEqual(model.project()["health"], "HEALTHY")
+            self.assertTrue(model.task(task["dispatch_id"])["head_drift"])
+
     def test_detail_limit_fails_closed_instead_of_silently_truncating(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, store, model = self.make_model(Path(tmp))

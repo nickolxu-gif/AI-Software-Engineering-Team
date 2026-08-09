@@ -724,9 +724,14 @@ class DashboardReadModel:
             )
         else:
             actual_head, head_available = observed_head
-        if not head_available:
+        worktree_lifecycle_complete = row["state"] == "CLOSED"
+        if not head_available and not worktree_lifecycle_complete:
             reasons.append("WORKTREE_UNAVAILABLE")
-        if actual_head is not None and actual_head != row["current_head_sha"]:
+        if (
+            actual_head is not None
+            and actual_head != row["current_head_sha"]
+            and not worktree_lifecycle_complete
+        ):
             reasons.append("HEAD_DRIFT")
         item = {field: row[field] for field in TASK_FIELDS}
         item["effective_state"] = (
