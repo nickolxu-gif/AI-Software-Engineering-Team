@@ -6,7 +6,9 @@ const SECONDARY_REQUEST_LIMIT = 4;
 const state = {
   view: 'overview', startedAt: Date.now(), lastSuccessAt: 0,
   sourceHeadSha: null, data: null, error: null, selectedTask: null,
-  selectedDetail: null, selectedEvents: null, evidence: null,
+  selectedDetail: null, selectedDetailSourceHead: null,
+  selectedEvents: null, selectedEventsTaskId: null, selectedEventsSourceHead: null,
+  evidence: null, evidenceTaskId: null, evidenceSourceHead: null,
   taskGeneration: 0, evidenceGeneration: 0, refreshing: false,
   taskQuery: '', riskFilter: ''
 };
@@ -65,7 +67,8 @@ const STATUS_ZH = {
   COMPLETED: '已完成', RUNNING: '运行中', FAILED: '失败', OPEN: '未解决',
   RESOLVED: '已解决', PENDING: '待处理', CONSUMED: '已使用', EXPIRED: '已过期',
   REJECTED: '已拒绝', ACCEPT: '通过', MODIFY: '需修改', BLOCK: '不通过', ESCALATE: '升级处理',
-  CURRENT: '当前有效', STALE: '已过期', ATTENTION: '需要关注', HEALTHY: '正常'
+  CURRENT: '当前有效', STALE: '已过期', ATTENTION: '需要关注', HEALTHY: '正常',
+  UNKNOWN: '状态无法确认'
 };
 const REASON_ZH = {
   PENDING_APPROVAL: '等待人工批准', OPEN_BLOCKER: '存在未解决阻塞', STALE_REVIEW: '审查已过期',
@@ -94,7 +97,11 @@ function bindTaskLinks() {
   document.querySelectorAll('[data-task]').forEach(button => button.addEventListener('click', async () => {
     state.selectedTask = button.dataset.task;
     state.selectedDetail = state.data.details.find(detail => detail.task.dispatch_id === state.selectedTask) || null;
-    state.selectedEvents = null;
+    state.selectedDetailSourceHead = state.selectedDetail ? state.sourceHeadSha : null;
+    state.selectedEvents = null; state.selectedEventsTaskId = null; state.selectedEventsSourceHead = null;
+    if (state.evidenceTaskId !== state.selectedTask) {
+      state.evidence = null; state.evidenceTaskId = null; state.evidenceSourceHead = null;
+    }
     state.view = 'tasks'; updateNav(); renderTasks(); content.focus();
     await loadTaskDetail(state.selectedTask);
   }));
@@ -111,10 +118,18 @@ function renderOverview() {
     <div class="grid"><section class="panel"><h2>优先队列</h2>${queue.length ? queue.map(taskRow).join('') : renderEmpty('暂无异常任务')}</section><aside class="panel"><h2>Codex 建议</h2><p>优先处理审批、阻塞和方向问题。此页面不会执行修改。</p><p class="meta">分支 ${escapeHtml(project.branch)} · Worktree ${escapeHtml(project.worktree_count)}</p></aside></div>`;
   bindTaskLinks();
 }
-function renderTimeline(events) {
-  if (events === null) return renderEmpty('正在读取生命周期事件…');
+function renderTimeline(page) {
+  if (page === null) return renderEmpty('正在读取生命周期事件…');
+  const events = page.items || [];
   if (!events.length) return renderEmpty('当前没有生命周期事件');
-  return `<ol class="timeline">${events.map(item => `<li><strong>${escapeHtml(item.summary)}</strong><div class="meta">${escapeHtml(item.event_type)} · ${escapeHtml(item.created_at)}</div></li>`).join('')}</ol>`;
+  const items = events.map(item => {
+    const details = item.details || {};
+    const transition = details.from || details.to ? ` · ${shown(details.from, '未知')} → ${shown(details.to, '未知')}` : '';
+    const reason = details.reason ? `<div>${escapeHtml(details.reason)}</div>` : '';
+    return `<li><strong>${escapeHtml(item.summary)}</strong><div class="meta">${escapeHtml(item.event_type)}${escapeHtml(transition)} · ${escapeHtml(item.created_at)}</div>${reason}</li>`;
+  }).join('');
+  const bounded = page.has_more ? '<p class="meta">仅显示最新 100 条；更早事件请回到 Codex 查询。</p>' : '';
+  return `<ol class="timeline">${items}</ol>${bounded}`;
 }
 function renderTaskDetail(detail) {
   if (!state.selectedTask) return '';
@@ -133,7 +148,10 @@ function renderTaskDetail(detail) {
 }
 function renderTasks() {
   const tasks = (state.data.tasks || []).filter(task => (!state.riskFilter || task.risk_level === state.riskFilter) && (!state.taskQuery || `${task.dispatch_id} ${task.title} ${task.objective}`.toLowerCase().includes(state.taskQuery.toLowerCase())));
-  content.innerHTML = `<h1>任务</h1><p class="subhead">当前首屏最多 100 项；点击任意任务读取完整详情</p><div class="filters"><label>搜索 <input id="task-search" value="${escapeHtml(state.taskQuery)}"></label><label>风险 <select id="risk-filter"><option value="">全部</option>${['L1','L2','L3'].map(value => `<option${state.riskFilter === value ? ' selected' : ''}>${value}</option>`).join('')}</select></label></div><div class="grid"><section>${tasks.length ? tasks.map(taskRow).join('') : renderEmpty('没有匹配任务')}</section>${renderTaskDetail(state.selectedDetail)}</div>`;
+  const detailIsCurrent = state.selectedDetail && state.selectedDetailSourceHead === state.sourceHeadSha && state.selectedDetail.task.dispatch_id === state.selectedTask;
+  const eventsAreCurrent = state.selectedEvents && state.selectedEventsTaskId === state.selectedTask && state.selectedEventsSourceHead === state.sourceHeadSha;
+  if (!eventsAreCurrent) { state.selectedEvents = null; state.selectedEventsTaskId = null; state.selectedEventsSourceHead = null; }
+  content.innerHTML = `<h1>任务</h1><p class="subhead">当前首屏最多 100 项；点击任意任务读取完整详情</p><div class="filters"><label>搜索 <input id="task-search" value="${escapeHtml(state.taskQuery)}"></label><label>风险 <select id="risk-filter"><option value="">全部</option>${['L1','L2','L3'].map(value => `<option${state.riskFilter === value ? ' selected' : ''}>${value}</option>`).join('')}</select></label></div><div class="grid"><section>${tasks.length ? tasks.map(taskRow).join('') : renderEmpty('没有匹配任务')}</section>${renderTaskDetail(detailIsCurrent ? state.selectedDetail : null)}</div>`;
   bindTaskLinks();
   document.querySelector('#task-search').addEventListener('input', event => { state.taskQuery = event.target.value; renderTasks(); const input = document.querySelector('#task-search'); input.focus(); input.setSelectionRange(input.value.length, input.value.length); });
   document.querySelector('#risk-filter').addEventListener('change', event => { state.riskFilter = event.target.value; renderTasks(); document.querySelector('#risk-filter').focus(); });
@@ -148,6 +166,8 @@ function renderApprovals() {
 }
 function renderEvidence() {
   if (!state.selectedTask) { content.innerHTML = `<h1>证据</h1><p class="subhead">请先从任务列表选择任务</p>${renderEmpty('未选择任务')}`; return; }
+  const cacheMatches = state.evidenceTaskId === state.selectedTask && state.evidenceSourceHead === state.sourceHeadSha;
+  if (!cacheMatches) { content.innerHTML = `<h1>证据</h1><p class="subhead">任务 ${escapeHtml(state.selectedTask)} 的只读证据索引</p>${renderEmpty('正在读取证据索引…')}`; return; }
   const items = state.evidence || [];
   content.innerHTML = `<h1>证据</h1><p class="subhead">任务 ${escapeHtml(state.selectedTask)} 的只读证据索引</p>${items.length ? items.map(item => `<article class="row"><div class="row-head"><strong>${escapeHtml(item.kind)}</strong>${statusBadge(item.stale ? 'STALE' : 'CURRENT', !item.stale)}</div><div class="meta">${escapeHtml(item.relative_path)} · ${escapeHtml(item.source_sha)}</div></article>`).join('') : renderEmpty('该任务尚无证据')}`;
 }
@@ -169,7 +189,10 @@ async function loadTaskDetail(taskId) {
     const [detailPayload, eventPayload] = await Promise.all([getTaskPayload(taskId), getEventPayload(taskId)]);
     assertSourceHead(detailPayload, expectedHead); assertSourceHead(eventPayload, expectedHead);
     if (generation !== state.taskGeneration || taskId !== state.selectedTask || expectedHead !== state.sourceHeadSha) return;
-    state.selectedDetail = detailPayload.data; state.selectedEvents = eventPayload.data.items; state.error = null; renderTasks();
+    state.selectedDetail = detailPayload.data; state.selectedDetailSourceHead = expectedHead;
+    state.selectedEvents = eventPayload.data; state.selectedEventsTaskId = taskId;
+    state.selectedEventsSourceHead = expectedHead;
+    state.error = null; renderTasks();
   } catch (error) {
     if (generation !== state.taskGeneration || taskId !== state.selectedTask) return;
     state.error = error; renderError(error);
@@ -180,9 +203,10 @@ async function loadEvidence() {
   content.innerHTML = renderEmpty('正在读取证据索引…');
   try {
     const payload = await runSecondary(() => getJson(`/api/tasks/${encodeURIComponent(taskId)}/evidence?limit=100&offset=0`));
-    assertSourceHead(payload, state.sourceHeadSha);
+    assertSourceHead(payload, expectedHead);
     if (generation !== state.evidenceGeneration || taskId !== state.selectedTask || expectedHead !== state.sourceHeadSha) return;
-    state.evidence = payload.data.items; state.error = null;
+    state.evidence = payload.data.items; state.evidenceTaskId = taskId;
+    state.evidenceSourceHead = expectedHead; state.error = null;
   } catch (error) {
     if (generation !== state.evidenceGeneration) return;
     state.error = error; return renderError(error);
@@ -192,6 +216,8 @@ async function loadEvidence() {
 async function refresh() {
   if (state.refreshing) return;
   state.refreshing = true;
+  let reloadSelectedTask = null;
+  let reloadEvidenceTask = null;
   if (!state.data) renderLoading();
   try {
     const focusedTask = document.activeElement?.dataset?.task || null;
@@ -213,11 +239,31 @@ async function refresh() {
     const details = detailPayloads.map(payload => payload.data);
     const selectedDetail = details.find(detail => detail.task.dispatch_id === selectedTaskAtStart) || null;
     state.data = { project: project.data, tasks: tasks.data.items, approvals: approvals.data.items, details };
+    state.sourceHeadSha = expectedHead;
     if (state.selectedTask === selectedTaskAtStart) {
       state.selectedDetail = selectedDetail;
-      state.selectedEvents = eventPayload ? eventPayload.data.items : null;
+      state.selectedDetailSourceHead = selectedDetail ? expectedHead : null;
+      state.selectedEvents = eventPayload ? eventPayload.data : null;
+      state.selectedEventsTaskId = eventPayload ? selectedTaskAtStart : null;
+      state.selectedEventsSourceHead = eventPayload ? expectedHead : null;
+    } else if (
+      state.selectedTask &&
+      (
+        state.selectedDetailSourceHead !== expectedHead ||
+        state.selectedDetail?.task?.dispatch_id !== state.selectedTask ||
+        state.selectedEventsSourceHead !== expectedHead ||
+        state.selectedEventsTaskId !== state.selectedTask
+      )
+    ) {
+      state.selectedDetail = null; state.selectedDetailSourceHead = null;
+      state.selectedEvents = null; state.selectedEventsTaskId = null; state.selectedEventsSourceHead = null;
+      reloadSelectedTask = state.selectedTask;
     }
-    state.sourceHeadSha = expectedHead; state.lastSuccessAt = Date.now(); state.error = null;
+    if (state.evidenceSourceHead !== expectedHead) {
+      state.evidence = null; state.evidenceTaskId = null; state.evidenceSourceHead = null;
+      if (state.view === 'evidence' && state.selectedTask) reloadEvidenceTask = state.selectedTask;
+    }
+    state.lastSuccessAt = Date.now(); state.error = null;
     sourceMeta.textContent = `HEAD ${state.sourceHeadSha.slice(0, 10)} · 刷新于 ${new Date().toLocaleTimeString('zh-CN')}`;
     statusRegion.textContent = project.data.health === 'ATTENTION' ? '项目需要关注，请回到 Codex 处理' : '本地控制平面已同步';
     renderCurrent();
@@ -225,7 +271,16 @@ async function refresh() {
   } catch (error) {
     state.error = error;
     if (!state.data) renderError(error); else { statusRegion.textContent = `刷新失败：${error.code || 'REQUEST_FAILED'}；保留上次数据`; renderStale(); }
-  } finally { state.refreshing = false; }
+  } finally {
+    state.refreshing = false;
+    if (reloadSelectedTask && state.selectedTask === reloadSelectedTask) loadTaskDetail(reloadSelectedTask);
+    if (reloadEvidenceTask && state.selectedTask === reloadEvidenceTask) loadEvidence();
+  }
 }
-document.querySelectorAll('nav [data-view]').forEach(button => button.addEventListener('click', () => { state.view = button.dataset.view; updateNav(); renderCurrent(); content.focus(); }));
+document.querySelectorAll('nav [data-view]').forEach(button => button.addEventListener('click', async () => {
+  state.view = button.dataset.view; updateNav();
+  const evidenceIsCurrent = state.evidenceTaskId === state.selectedTask && state.evidenceSourceHead === state.sourceHeadSha;
+  if (state.view === 'evidence' && state.selectedTask && !evidenceIsCurrent) await loadEvidence(); else renderCurrent();
+  content.focus();
+}));
 refresh(); setInterval(refresh, REFRESH_INTERVAL_MS); setInterval(renderStale, 5000);

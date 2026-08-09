@@ -61,10 +61,28 @@ class DashboardUiContractTests(unittest.TestCase):
         self.assertIn("assertSourceHead", javascript)
         self.assertRegex(
             javascript,
-            r"assertSourceHead\(payload,\s*state\.sourceHeadSha\)",
+            r"assertSourceHead\(payload,\s*expectedHead\)",
         )
         self.assertIn("detailPayloads", javascript)
         self.assertIn("eventPayload", javascript)
+
+    def test_secondary_caches_are_bound_to_task_and_head(self):
+        javascript = JS.read_text(encoding="utf-8")
+        for field in (
+            "selectedDetailSourceHead",
+            "selectedEventsTaskId",
+            "selectedEventsSourceHead",
+            "evidenceTaskId",
+            "evidenceSourceHead",
+        ):
+            self.assertIn(field, javascript)
+        self.assertIn("reloadSelectedTask", javascript)
+
+    def test_timeline_discloses_bounded_results_and_unknown_state(self):
+        javascript = JS.read_text(encoding="utf-8")
+        self.assertIn("has_more", javascript)
+        self.assertIn("仅显示最新 100 条", javascript)
+        self.assertIn("UNKNOWN: '状态无法确认'", javascript)
 
 
 if __name__ == "__main__":
