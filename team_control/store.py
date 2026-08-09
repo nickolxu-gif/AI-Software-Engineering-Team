@@ -323,11 +323,23 @@ class ControlStore:
         canonical_under(self._common_dir, self.lock_path)
 
     def initialize(self):
-        with self.mutation() as connection:
-            for statement in SCHEMA.split(";"):
-                statement = statement.strip()
-                if statement:
-                    connection.execute(statement)
+        with self._control_lock():
+            connection = self._connect()
+            try:
+                journal_mode = connection.execute(
+                    "PRAGMA journal_mode = WAL"
+                ).fetchone()[0]
+                if journal_mode.lower() != "wal":
+                    raise ReconciliationError(
+                        "control store requires WAL journal mode"
+                    )
+            finally:
+                connection.close()
+            with self._transaction() as connection:
+                for statement in SCHEMA.split(";"):
+                    statement = statement.strip()
+                    if statement:
+                        connection.execute(statement)
 
     def _connect(self):
         connection = sqlite3.connect(str(self.path), timeout=5.0)
@@ -435,6 +447,95 @@ class ControlStore:
                     payload_json, event["created_at"],
                 ),
             )
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE dispatch_id = ?",
+                (record["dispatch_id"],),
+            ).fetchone()
+            task = dict(row)
+        return task
+
+    def create_or_get_write_task(
+        self, record, agent, slug, branch, worktree_path
+    ):
+        """Atomically reserve one stable write-task identity per dispatch."""
+        validate_record("task", record)
+        requested_path = str(worktree_path)
+        with self.mutation() as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE dispatch_id = ?",
+                (record["dispatch_id"],),
+            ).fetchone()
+            if row is None:
+                now = utc_now()
+                connection.execute(
+                    """INSERT INTO tasks (
+                           dispatch_id, schema_version, title, objective,
+                           risk_level, state, resume_state, task_base_sha,
+                           current_head_sha, owner, agent, slug, branch,
+                           worktree_path, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?,
+                                 NULL, ?, ?)""",
+                    (
+                        record["dispatch_id"], record["schema_version"],
+                        record["title"], record["objective"],
+                        record["risk_level"], record["state"],
+                        record["task_base_sha"], record["task_base_sha"],
+                        record["owner"], agent, slug, branch, now, now,
+                    ),
+                )
+                payload_json = json.dumps(record, sort_keys=True)
+                event = {
+                    "schema_version": 1,
+                    "dispatch_id": record["dispatch_id"],
+                    "sequence": 1,
+                    "event_type": "TASK_CREATED",
+                    "created_at": now,
+                }
+                validate_record("event", event)
+                connection.execute(
+                    "INSERT INTO events VALUES (?, ?, ?, ?, ?)",
+                    (
+                        event["dispatch_id"], event["sequence"],
+                        event["event_type"], payload_json, event["created_at"],
+                    ),
+                )
+            else:
+                requested = {
+                    "schema_version": record["schema_version"],
+                    "title": record["title"],
+                    "objective": record["objective"],
+                    "risk_level": record["risk_level"],
+                    "task_base_sha": record["task_base_sha"],
+                    "current_head_sha": record["task_base_sha"],
+                    "owner": record["owner"],
+                }
+                metadata_matches = all(
+                    row[field] == value for field, value in requested.items()
+                )
+                stored_identity = tuple(
+                    row[field]
+                    for field in ("agent", "slug", "branch", "worktree_path")
+                )
+                identity_matches = stored_identity in {
+                    (None, None, None, None),
+                    (agent, slug, branch, None),
+                    (agent, slug, branch, requested_path),
+                }
+                if (
+                    not metadata_matches
+                    or not identity_matches
+                    or row["state"] not in ("PLANNED", "DISPATCHED")
+                ):
+                    raise ReconciliationError(
+                        "existing write task does not match the start request"
+                    )
+                if stored_identity == (None, None, None, None):
+                    connection.execute(
+                        """UPDATE tasks
+                           SET agent = ?, slug = ?, branch = ?, updated_at = ?
+                           WHERE dispatch_id = ?""",
+                        (agent, slug, branch, utc_now(), record["dispatch_id"]),
+                    )
             row = connection.execute(
                 "SELECT * FROM tasks WHERE dispatch_id = ?",
                 (record["dispatch_id"],),

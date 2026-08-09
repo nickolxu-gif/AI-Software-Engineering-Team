@@ -254,12 +254,15 @@ class OperationCoordinator:
         argv,
         verifier,
         on_verified=None,
+        preflight=None,
     ):
         command_argv = _validated_argv(argv)
         if not callable(verifier):
             raise ReconciliationError("operation verifier must be callable")
         if on_verified is not None and not callable(on_verified):
             raise ReconciliationError("on_verified must be callable")
+        if preflight is not None and not callable(preflight):
+            raise ReconciliationError("operation preflight must be callable")
 
         prepared_result = (
             {"callback_status": "PENDING"} if on_verified is not None else None
@@ -291,6 +294,12 @@ class OperationCoordinator:
                 if task is None:
                     raise KeyError(dispatch_id)
                 cwd = self._trusted_git_cwd(task)
+                # This closes inspect-to-mutation races between controlled
+                # writers that obey this repository control lock. It does not
+                # claim to stop arbitrary filesystem or Git mutation by an
+                # external actor that ignores the lock.
+                if preflight is not None:
+                    preflight(deepcopy(task))
                 actual_sha = self._trusted_head(cwd)
                 if not (
                     target_sha == task["current_head_sha"] == actual_sha

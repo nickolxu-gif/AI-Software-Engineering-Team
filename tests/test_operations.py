@@ -447,6 +447,42 @@ class OperationTests(unittest.TestCase):
                     command.assert_not_called()
                 self.assertEqual(self.operation_rows(), [])
 
+    def test_preflight_failure_creates_no_operation_and_runs_no_git_mutation(self):
+        observed = []
+
+        def controlled_run(argv, cwd, check=True):
+            observed.append(list(argv))
+            if argv == ["git", "rev-parse", "HEAD"]:
+                return SimpleNamespace(
+                    stdout=self.head + "\n", stderr="", returncode=0
+                )
+            raise AssertionError("mutation command must not run")
+
+        def reject_fresh_state(task):
+            self.assertEqual(task["dispatch_id"], self.dispatch_id)
+            self.assertEqual(self.operation_rows(), [])
+            raise ReconciliationError("fresh preflight rejected state")
+
+        with mock.patch(
+            "team_control.operations.run_argv", side_effect=controlled_run
+        ):
+            with self.assertRaisesRegex(
+                ReconciliationError, "fresh preflight rejected state"
+            ):
+                self.ops.execute_git(
+                    self.dispatch_id,
+                    "verify-head",
+                    "a" * 64,
+                    self.head,
+                    "preflight-rejected-operation",
+                    ["git", "status", "--short"],
+                    lambda ignored: {"verified": True},
+                    preflight=reject_fresh_state,
+                )
+
+        self.assertEqual(observed, [])
+        self.assertEqual(self.operation_rows(), [])
+
     def test_git_subcommand_allowlist_is_explicit_for_mvp_operations(self):
         self.assertEqual(
             ALLOWED_GIT_SUBCOMMANDS,

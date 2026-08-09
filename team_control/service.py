@@ -12,6 +12,7 @@ from .errors import (
     ContractError,
     GitStateError,
     ReconciliationError,
+    TransitionError,
 )
 from .git_context import RepoContext, canonical_under, run_argv, validate_component
 
@@ -174,33 +175,40 @@ class ControlPlane:
     def start_write_task(
         self, dispatch_id, title, objective, risk_level, agent, slug
     ):
+        _validated_component(dispatch_id, "dispatch-id")
         _validated_component(agent, "agent")
         _validated_component(slug, "slug")
-        task = self.store.get_task(dispatch_id)
-        if task is None:
-            task = self.create_task(dispatch_id, title, objective, risk_level)
-        else:
-            expected_branch = "agent/%s/%s-%s" % (agent, dispatch_id, slug)
-            expected_path = self.context.common_dir.parent / ".worktrees" / (
-                "%s-%s-%s" % (dispatch_id, agent, slug)
-            )
-            metadata_matches = (
-                task["title"] == title
-                and task["objective"] == objective
-                and task["risk_level"] == risk_level
-                and (task["agent"], task["slug"], task["branch"])
-                in ((None, None, None), (agent, slug, expected_branch))
-                and task["worktree_path"] in (None, str(expected_path))
-            )
-            if not metadata_matches or task["state"] not in (
-                "PLANNED", "DISPATCHED"
-            ):
-                raise ReconciliationError(
-                    "existing write task does not match the start request"
-                )
+        main_root = Path(self.context.common_dir).resolve(strict=True).parent
+        main_check = run_argv(
+            ["git", "show-ref", "--verify", "--quiet", "refs/heads/main"],
+            main_root,
+            check=False,
+        )
+        if main_check.returncode != 0:
+            raise ReconciliationError("main branch does not exist")
+        main_head = run_argv(["git", "rev-parse", "main"], main_root).stdout.strip()
+        _validated_sha(main_head, "main HEAD")
+        expected_branch = "agent/%s/%s-%s" % (agent, dispatch_id, slug)
+        expected_path = main_root / ".worktrees" / (
+            "%s-%s-%s" % (dispatch_id, agent, slug)
+        )
+        record = {
+            "schema_version": 1,
+            "dispatch_id": dispatch_id,
+            "title": title,
+            "objective": objective,
+            "risk_level": risk_level,
+            "state": "PLANNED",
+            "task_base_sha": main_head,
+            "owner": "Codex",
+        }
+        validate_record("task", record)
+        task = self.store.create_or_get_write_task(
+            record, agent, slug, expected_branch, expected_path
+        )
         from .doctor import WorktreeDoctor
 
-        doctor = WorktreeDoctor(self.context, self.store)
+        doctor = WorktreeDoctor(RepoContext.discover(main_root), self.store)
         report = doctor.inspect(
             dispatch_id, agent, slug, task["task_base_sha"]
         )
@@ -210,13 +218,23 @@ class ControlPlane:
                     "dispatched write task Worktree is not healthy"
                 )
             return task
-        if report["classification"] == "REPAIRABLE_BRANCH_ONLY":
-            doctor.repair(report)
-        else:
-            doctor.create(report)
-        return self.store.transition(
-            dispatch_id, "DISPATCHED", "isolated Worktree verified"
-        )
+        try:
+            if report["classification"] == "REPAIRABLE_BRANCH_ONLY":
+                doctor.repair(report)
+            else:
+                doctor.create(report)
+            return self.store.transition(
+                dispatch_id, "DISPATCHED", "isolated Worktree verified"
+            )
+        except (ReconciliationError, TransitionError):
+            latest = self.store.get_task(dispatch_id)
+            if latest is not None and latest["state"] == "DISPATCHED":
+                recovered = doctor.inspect(
+                    dispatch_id, agent, slug, latest["task_base_sha"]
+                )
+                if recovered["classification"] == "HEALTHY":
+                    return latest
+            raise
 
     def request_approval(
         self,

@@ -33,7 +33,9 @@ class WorktreeDoctor:
     def __init__(self, context, store):
         self.context = context
         self.store = store
-        self.operations = OperationCoordinator(context, store)
+        self.main_root = Path(context.common_dir).resolve(strict=True).parent
+        self.main_context = RepoContext.discover(self.main_root)
+        self.operations = OperationCoordinator(self.main_context, store)
 
     def expected(self, dispatch_id, agent, slug):
         for value, label in (
@@ -105,15 +107,22 @@ class WorktreeDoctor:
                 ["git", "rev-parse", branch], self.context.root
             ).stdout.strip()
 
-        registration = registered_worktrees(self.context).get(
-            os.path.abspath(str(path))
-        )
+        registrations = registered_worktrees(self.main_context)
+        expected_path = os.path.abspath(str(path))
+        registration = registrations.get(expected_path)
         if registration is not None:
             details["registered"] = True
             details["registered_branch"] = registration["branch"]
             details["registered_head"] = registration["head"]
 
-        if details["registered"] and details["registered_branch"] != branch:
+        branch_registered_elsewhere = any(
+            registered_path != expected_path
+            and registered["branch"] == branch
+            for registered_path, registered in registrations.items()
+        )
+        if branch_registered_elsewhere:
+            classification = "BLOCKED_REGISTRATION_MISMATCH"
+        elif details["registered"] and details["registered_branch"] != branch:
             classification = "BLOCKED_REGISTRATION_MISMATCH"
         elif details["path_exists"] and not details["registered"]:
             classification = "BLOCKED_PATH_RESIDUE"
@@ -264,6 +273,108 @@ class WorktreeDoctor:
                 "doctor mutation requires a PLANNED task"
             )
 
+    def _preflight(self, report, expected_classification, task):
+        """Revalidate a new mutation while OperationCoordinator holds its lock."""
+        fresh = self._fresh_report(report)
+        if fresh["classification"] != expected_classification:
+            raise ReconciliationError(
+                "doctor preflight refuses %s: %s"
+                % (expected_classification, fresh["classification"])
+            )
+        expected_identity = (
+            fresh["agent"], fresh["slug"], fresh["branch"]
+        )
+        if (
+            task["dispatch_id"] != fresh["dispatch_id"]
+            or task["task_base_sha"] != fresh["task_base_sha"]
+            or task["current_head_sha"] != fresh["task_base_sha"]
+            or task["state"] != "PLANNED"
+            or (task["agent"], task["slug"], task["branch"])
+            not in ((None, None, None), expected_identity)
+            or task["worktree_path"] is not None
+        ):
+            raise ReconciliationError(
+                "doctor preflight task identity or state changed"
+            )
+        if self.main_root.is_symlink():
+            raise ReconciliationError("main repository root must not be a symlink")
+        worktree_root = Path(fresh["path"]).parent
+        target = Path(fresh["path"])
+        if worktree_root.is_symlink():
+            raise ReconciliationError("worktree root must not be a symlink")
+        if target.is_symlink():
+            raise ReconciliationError("worktree target must not be a symlink")
+        if worktree_root.exists() and not worktree_root.is_dir():
+            raise ReconciliationError("worktree root must be a directory")
+        discovered = RepoContext.discover(self.main_root)
+        expected_common = Path(self.context.common_dir).resolve(strict=True)
+        if (
+            discovered.root != self.main_root
+            or discovered.common_dir != expected_common
+        ):
+            raise ReconciliationError(
+                "main repository common-dir does not match"
+            )
+        main_exists = run_argv(
+            ["git", "show-ref", "--verify", "--quiet", "refs/heads/main"],
+            self.main_root,
+            check=False,
+        )
+        if main_exists.returncode != 0:
+            raise ReconciliationError("main branch does not exist")
+        current_branch = run_argv(
+            ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+            self.main_root,
+            check=False,
+        )
+        if current_branch.returncode != 0 or current_branch.stdout.strip() != "main":
+            raise ReconciliationError(
+                "main repository current branch must be main"
+            )
+        status = run_argv(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            self.main_root,
+        ).stdout
+        if status.strip():
+            raise ReconciliationError("main root must be clean")
+        ignored = run_argv(
+            ["git", "check-ignore", "--quiet", "--", ".worktrees/"],
+            self.main_root,
+            check=False,
+        )
+        if ignored.returncode != 0:
+            raise ReconciliationError(".worktrees must be ignored")
+        main_head = run_argv(
+            ["git", "rev-parse", "main"], self.main_root
+        ).stdout.strip()
+        if fresh["task_base_sha"] != main_head:
+            raise ReconciliationError("task base must equal fresh main HEAD")
+
+    def _reconcile_prepared(self, idempotency_key, action, report):
+        operation = self.store.operation_for_idempotency(idempotency_key)
+        if operation is None:
+            return None
+        expected = (
+            action,
+            self._request_hash(report),
+            report["task_base_sha"],
+        )
+        actual = (
+            operation["action"],
+            operation["request_hash"],
+            operation["target_sha"],
+        )
+        if actual != expected:
+            raise ReconciliationError(
+                "operation idempotency key belongs to another request"
+            )
+        if operation["phase"] == "PREPARED":
+            return self.operations.reconcile_one(
+                operation["operation_id"],
+                lambda ignored: self._verified(report),
+            )
+        return operation
+
     def _verified(self, report):
         inspected = self.inspect(
             report["dispatch_id"],
@@ -291,6 +402,14 @@ class WorktreeDoctor:
             "doctor-reconstruct-worktree",
             request_report,
         )
+        self._reconcile_prepared(
+            idempotency_key, "doctor-reconstruct-worktree", request_report
+        )
+        idempotency_key = self._retryable_idempotency_key(
+            base_key,
+            "doctor-reconstruct-worktree",
+            request_report,
+        )
         if fresh["classification"] == "HEALTHY":
             if not self._is_committed_operation(
                 idempotency_key,
@@ -313,6 +432,9 @@ class WorktreeDoctor:
             ["git", "worktree", "add", fresh["path"], fresh["branch"]],
             lambda ignored: self._verified(fresh),
             lambda ignored: self._attach(fresh),
+            preflight=lambda task: self._preflight(
+                fresh, "REPAIRABLE_BRANCH_ONLY", task
+            ),
         )
         if operation["phase"] != "COMMITTED":
             raise ReconciliationError(
@@ -333,6 +455,12 @@ class WorktreeDoctor:
         )
         if fresh["classification"] == "HEALTHY":
             request_report = self._historical_report(fresh, "NO_RESIDUE")
+        idempotency_key = self._retryable_idempotency_key(
+            base_key, "create-worktree", request_report
+        )
+        self._reconcile_prepared(
+            idempotency_key, "create-worktree", request_report
+        )
         idempotency_key = self._retryable_idempotency_key(
             base_key, "create-worktree", request_report
         )
@@ -359,6 +487,9 @@ class WorktreeDoctor:
             ],
             lambda ignored: self._verified(fresh),
             lambda ignored: self._attach(fresh),
+            preflight=lambda task: self._preflight(
+                fresh, "NO_RESIDUE", task
+            ),
         )
         if operation["phase"] != "COMMITTED":
             raise ReconciliationError("worktree creation could not be verified")
