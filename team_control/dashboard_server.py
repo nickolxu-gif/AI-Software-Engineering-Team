@@ -75,14 +75,29 @@ def make_handler(model, assets_dir):
             port = self.server.server_address[1]
             return {"localhost:%d" % port, "127.0.0.1:%d" % port}
 
-        def _validate_host(self):
-            if self.headers.get("Host") not in self._allowed_hosts():
-                self._send_error(400, "HOST_REJECTED", "Host is not allowed")
+        def _validate_host(self, head_only=False):
+            hosts = self.headers.get_all("Host", failobj=[])
+            if len(hosts) != 1 or hosts[0] not in self._allowed_hosts():
+                self._send_error(
+                    400,
+                    "HOST_REJECTED",
+                    "Host is not allowed",
+                    head_only=head_only,
+                )
                 return False
             return True
 
-        def _validate_origin(self, required=False):
-            origin = self.headers.get("Origin")
+        def _validate_origin(self, required=False, head_only=False):
+            origins = self.headers.get_all("Origin", failobj=[])
+            if len(origins) > 1:
+                self._send_error(
+                    403,
+                    "ORIGIN_REJECTED",
+                    "Origin is not allowed",
+                    head_only=head_only,
+                )
+                return False
+            origin = origins[0] if origins else None
             if origin is None and not required:
                 return True
             allowed = {"http://" + host for host in self._allowed_hosts()}
@@ -91,6 +106,7 @@ def make_handler(model, assets_dir):
                     403,
                     "ORIGIN_REJECTED",
                     "Origin is not allowed",
+                    head_only=head_only,
                 )
                 return False
             return True
@@ -236,13 +252,20 @@ def make_handler(model, assets_dir):
                     raise OSError("asset escapes assets directory")
                 body = candidate.read_bytes()
             except OSError:
-                self._send_error(503, "ASSET_UNAVAILABLE", "Asset is unavailable")
+                self._send_error(
+                    503,
+                    "ASSET_UNAVAILABLE",
+                    "Asset is unavailable",
+                    head_only=head_only,
+                )
                 return True
             self._send_bytes(200, body, content_type, head_only=head_only)
             return True
 
         def _read(self, head_only=False):
-            if not self._validate_host() or not self._validate_origin():
+            if not self._validate_host(head_only=head_only) or not self._validate_origin(
+                head_only=head_only
+            ):
                 return
             path = self._safe_path()
             if path is None:
@@ -282,6 +305,29 @@ def make_handler(model, assets_dir):
         def do_OPTIONS(self):
             if not self._validate_host() or not self._validate_origin(required=True):
                 return
+            path = self._safe_path()
+            if path is None:
+                self._send_error(404, "NOT_FOUND", "Route was not found")
+                return
+            try:
+                if path in STATIC_FILES:
+                    self._query(())
+                elif path in ("/api/health", "/api/project"):
+                    self._query(())
+                elif path == "/api/tasks":
+                    self._query(("limit", "offset", "state", "risk", "attention", "q"))
+                elif path == "/api/approvals":
+                    self._query(("limit", "offset"))
+                elif TASK_EVENTS_RE.fullmatch(path) or TASK_EVIDENCE_RE.fullmatch(path):
+                    self._query(("limit", "offset"))
+                elif TASK_PATH_RE.fullmatch(path):
+                    self._query(())
+                else:
+                    self._send_error(404, "NOT_FOUND", "Route was not found")
+                    return
+            except DashboardInputError as error:
+                self._send_error(400, error.code, str(error))
+                return
             self._send_bytes(
                 204,
                 b"",
@@ -300,5 +346,10 @@ def make_handler(model, assets_dir):
         do_DELETE = _reject_write
         do_CONNECT = _reject_write
         do_TRACE = _reject_write
+
+        def __getattr__(self, name):
+            if name.startswith("do_"):
+                return self._reject_write
+            raise AttributeError(name)
 
     return DashboardHandler

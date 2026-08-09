@@ -1,14 +1,20 @@
 import hashlib
 import http.client
 import json
+import socket
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from team_control.dashboard_read_model import DashboardReadModel
+from team_control.dashboard_read_model import (
+    DashboardReadModel,
+    DashboardUnavailableError,
+)
 from team_control.dashboard_server import create_server
 from team_control.git_context import RepoContext
+from team_control.service import ControlPlane
 from team_control.store import ControlStore
 from tests.helpers import make_repo
 
@@ -60,6 +66,23 @@ class DashboardServerTests(unittest.TestCase):
             if candidate.exists():
                 digest.update(candidate.read_bytes())
         return digest.hexdigest()
+
+    def raw_request(self, request):
+        connection = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            connection.sendall(request)
+            chunks = []
+            while True:
+                chunk = connection.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        finally:
+            connection.close()
+        response = b"".join(chunks)
+        head, body = response.split(b"\r\n\r\n", 1)
+        status = int(head.splitlines()[0].split()[1])
+        return status, head, body
 
     def test_get_health_has_envelope_and_security_headers(self):
         response, payload, body = self.request("GET", "/api/health")
@@ -154,11 +177,93 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(response.status, 400)
 
     def test_other_unsafe_methods_are_read_only(self):
-        for method in ("CONNECT", "TRACE"):
+        for method in ("CONNECT", "TRACE", "PROPFIND", "BREW"):
             with self.subTest(method=method):
                 response, payload, body = self.request(method, "/api/health")
                 self.assertEqual(response.status, 405)
                 self.assertEqual(payload["error"]["code"], "READ_ONLY")
+
+    def test_duplicate_authority_headers_are_rejected(self):
+        valid_host = "127.0.0.1:%d" % self.port
+        status, head, body = self.raw_request(
+            (
+                "GET /api/health HTTP/1.0\r\n"
+                "Host: %s\r\nHost: example.invalid\r\n\r\n" % valid_host
+            ).encode("ascii")
+        )
+        self.assertEqual(status, 400)
+        status, head, body = self.raw_request(
+            (
+                "GET /api/health HTTP/1.0\r\nHost: %s\r\n"
+                "Origin: http://%s\r\nOrigin: https://example.invalid\r\n\r\n"
+                % (valid_host, valid_host)
+            ).encode("ascii")
+        )
+        self.assertEqual(status, 403)
+
+    def test_head_errors_never_emit_a_body(self):
+        valid_host = "127.0.0.1:%d" % self.port
+        for path, host in (("/secret", valid_host), ("/api/health", "bad.invalid")):
+            with self.subTest(path=path, host=host):
+                status, head, body = self.raw_request(
+                    (
+                        "HEAD %s HTTP/1.0\r\nHost: %s\r\n\r\n"
+                        % (path, host)
+                    ).encode("ascii")
+                )
+                self.assertEqual(body, b"")
+
+    def test_options_rejects_unknown_and_encoded_routes(self):
+        origin = "http://127.0.0.1:%d" % self.port
+        for path in ("/unknown", "/%2e%2e/secret"):
+            with self.subTest(path=path):
+                response, payload, body = self.request(
+                    "OPTIONS",
+                    path,
+                    headers={"Origin": origin},
+                )
+                self.assertEqual(response.status, 404)
+
+    def test_all_seven_api_routes_have_success_contracts(self):
+        control = ControlPlane(RepoContext.discover(self.repo), self.store)
+        task = control.create_task("20260809-100", "HTTP", "Contract", "L1")
+        paths = (
+            "/api/health",
+            "/api/project",
+            "/api/tasks",
+            "/api/tasks/%s" % task["dispatch_id"],
+            "/api/tasks/%s/events" % task["dispatch_id"],
+            "/api/tasks/%s/evidence" % task["dispatch_id"],
+            "/api/approvals",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                response, payload, body = self.request("GET", path)
+                self.assertEqual(response.status, 200)
+                self.assertEqual(payload["schema_version"], 1)
+                self.assertIn("data", payload)
+
+    def test_unavailable_and_unexpected_errors_are_mapped_and_sanitized(self):
+        with patch.object(
+            self.model,
+            "health",
+            side_effect=DashboardUnavailableError(
+                "database unavailable",
+                code="DATABASE_UNAVAILABLE",
+            ),
+        ):
+            response, payload, body = self.request("GET", "/api/health")
+        self.assertEqual(response.status, 503)
+        self.assertEqual(payload["error"]["code"], "DATABASE_UNAVAILABLE")
+        with patch.object(
+            self.model,
+            "project",
+            side_effect=RuntimeError("secret-internal-detail"),
+        ):
+            response, payload, body = self.request("GET", "/api/project")
+        self.assertEqual(response.status, 500)
+        self.assertEqual(payload["error"]["code"], "INTERNAL_ERROR")
+        self.assertNotIn("secret-internal-detail", body.decode("utf-8"))
 
 
 if __name__ == "__main__":
