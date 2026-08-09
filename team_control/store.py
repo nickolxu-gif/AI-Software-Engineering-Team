@@ -14,6 +14,7 @@ from pathlib import Path
 from .contracts import validate_record
 from .errors import (
     ApprovalError,
+    BoundaryError,
     ContractError,
     ReconciliationError,
     TeamControlError,
@@ -1033,6 +1034,25 @@ class ControlStore:
                    ORDER BY expires_at, approval_id""",
                 (dispatch_id,),
             ).fetchall()
+            agent_rows = connection.execute(
+                "SELECT * FROM agents WHERE dispatch_id = ? ORDER BY agent_id",
+                (dispatch_id,),
+            ).fetchall()
+            blocker_rows = connection.execute(
+                """SELECT * FROM blockers
+                   WHERE dispatch_id = ? ORDER BY created_at, blocker_id""",
+                (dispatch_id,),
+            ).fetchall()
+            review_rows = connection.execute(
+                """SELECT * FROM reviews
+                   WHERE dispatch_id = ? ORDER BY created_at, review_id""",
+                (dispatch_id,),
+            ).fetchall()
+            evidence_rows = connection.execute(
+                """SELECT * FROM evidence
+                   WHERE dispatch_id = ? ORDER BY created_at, evidence_id""",
+                (dispatch_id,),
+            ).fetchall()
             task = dict(task_row) if task_row is not None else None
             events = [self._event_from_row(row) for row in event_rows]
             now = datetime.now(timezone.utc)
@@ -1041,7 +1061,13 @@ class ControlStore:
                 for row in approval_rows
                 if parse_approval_expiry(row["expires_at"]) > now
             ]
-        return task, events, approvals
+            agents = [self._agent_status_from_row(row) for row in agent_rows]
+            blockers = [self._blocker_from_row(row) for row in blocker_rows]
+            reviews = [self._review_from_row(row) for row in review_rows]
+            evidence = [self._evidence_from_row(row) for row in evidence_rows]
+        return (
+            task, events, approvals, agents, blockers, reviews, evidence
+        )
 
     def transition(self, dispatch_id, target, reason):
         with self.mutation() as connection:
@@ -1156,3 +1182,223 @@ class ControlStore:
             ).fetchone()
             task = dict(row)
         return task
+
+    @staticmethod
+    def _agent_status_from_row(row):
+        try:
+            record = json.loads(row["report_json"])
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ReconciliationError("stored agent report is invalid") from error
+        if not isinstance(record, dict):
+            raise ReconciliationError("stored agent report is not an object")
+        expected = {
+            "dispatch_id": row["dispatch_id"],
+            "agent_id": row["agent_id"],
+            "role": row["role"],
+            "model": row["model"],
+            "state": row["state"],
+            "progress": row["progress"],
+            "updated_at": row["updated_at"],
+        }
+        if any(record.get(field) != value for field, value in expected.items()):
+            raise ReconciliationError("stored agent report does not match its index")
+        validate_record("agent_status", record)
+        return record
+
+    def upsert_agent_status(self, record):
+        validate_record("agent_status", record)
+        normalized = dict(record)
+        normalized.setdefault("progress", 0)
+        validate_record("agent_status", normalized)
+        report_json = json.dumps(
+            normalized, ensure_ascii=False, sort_keys=True, allow_nan=False
+        )
+        with self.mutation() as connection:
+            connection.execute(
+                """INSERT INTO agents (
+                       dispatch_id, agent_id, role, model, state, progress,
+                       report_json, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(dispatch_id, agent_id) DO UPDATE SET
+                     role = excluded.role,
+                     model = excluded.model,
+                     state = excluded.state,
+                     progress = excluded.progress,
+                     report_json = excluded.report_json,
+                     updated_at = excluded.updated_at""",
+                (
+                    normalized["dispatch_id"], normalized["agent_id"],
+                    normalized["role"], normalized.get("model"),
+                    normalized["state"], normalized["progress"], report_json,
+                    normalized["updated_at"],
+                ),
+            )
+        return normalized
+
+    def list_agent_status(self, dispatch_id):
+        with self.read_connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM agents WHERE dispatch_id = ? ORDER BY agent_id",
+                (dispatch_id,),
+            ).fetchall()
+        return [self._agent_status_from_row(row) for row in rows]
+
+    @staticmethod
+    def _blocker_from_row(row):
+        record = {
+            "schema_version": 1,
+            "blocker_id": row["blocker_id"],
+            "dispatch_id": row["dispatch_id"],
+            "reason": row["reason"],
+            "owner": row["owner"],
+            "status": row["status"],
+            "resolution_condition": row["resolution_condition"],
+            "created_at": row["created_at"],
+        }
+        validate_record("blocker", record)
+        return record
+
+    def add_blocker(self, dispatch_id, reason, owner, resolution_condition):
+        with self.mutation() as connection:
+            now = utc_now()
+            record = {
+                "schema_version": 1,
+                "blocker_id": str(uuid.uuid4()),
+                "dispatch_id": dispatch_id,
+                "reason": reason,
+                "owner": owner,
+                "status": "OPEN",
+                "resolution_condition": resolution_condition,
+                "created_at": now,
+            }
+            validate_record("blocker", record)
+            connection.execute(
+                """INSERT INTO blockers (
+                       blocker_id, dispatch_id, reason, owner, status,
+                       resolution_condition, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    record["blocker_id"], record["dispatch_id"],
+                    record["reason"], record["owner"], record["status"],
+                    record["resolution_condition"], record["created_at"], now,
+                ),
+            )
+        return record
+
+    def list_blockers(self, dispatch_id):
+        with self.read_connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM blockers
+                   WHERE dispatch_id = ? ORDER BY created_at, blocker_id""",
+                (dispatch_id,),
+            ).fetchall()
+        return [self._blocker_from_row(row) for row in rows]
+
+    @staticmethod
+    def _review_from_row(row):
+        record = {
+            "schema_version": 1,
+            "review_id": row["review_id"],
+            "dispatch_id": row["dispatch_id"],
+            "reviewer": row["reviewer"],
+            "disposition": row["disposition"],
+            "source_sha": row["source_sha"],
+            "report_path": row["report_path"],
+            "created_at": row["created_at"],
+        }
+        validate_record("review", record)
+        return record
+
+    def add_review(
+        self, dispatch_id, reviewer, disposition, source_sha, report_path
+    ):
+        with self.mutation() as connection:
+            record = {
+                "schema_version": 1,
+                "review_id": str(uuid.uuid4()),
+                "dispatch_id": dispatch_id,
+                "reviewer": reviewer,
+                "disposition": disposition,
+                "source_sha": source_sha,
+                "report_path": report_path,
+                "created_at": utc_now(),
+            }
+            validate_record("review", record)
+            connection.execute(
+                """INSERT INTO reviews (
+                       review_id, dispatch_id, reviewer, disposition,
+                       source_sha, report_path, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    record["review_id"], record["dispatch_id"],
+                    record["reviewer"], record["disposition"],
+                    record["source_sha"], record["report_path"],
+                    record["created_at"],
+                ),
+            )
+        return record
+
+    def list_reviews(self, dispatch_id):
+        with self.read_connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM reviews
+                   WHERE dispatch_id = ? ORDER BY created_at, review_id""",
+                (dispatch_id,),
+            ).fetchall()
+        return [self._review_from_row(row) for row in rows]
+
+    @staticmethod
+    def _evidence_from_row(row):
+        record = {
+            "schema_version": 1,
+            "evidence_id": row["evidence_id"],
+            "dispatch_id": row["dispatch_id"],
+            "kind": row["kind"],
+            "path": row["path"],
+            "sha256": row["sha256"],
+            "source_sha": row["source_sha"],
+            "created_at": row["created_at"],
+        }
+        validate_record("evidence", record)
+        return record
+
+    def add_evidence(self, record):
+        validate_record("evidence", record)
+        if self._common_dir is None:
+            raise ReconciliationError(
+                "evidence verification requires a repository-bound store"
+            )
+        from .evidence import _read_regular_file
+
+        repository_root = self._common_dir.parent
+        relative, contents = _read_regular_file(
+            repository_root, record["path"]
+        )
+        if record["path"] != relative.as_posix():
+            raise BoundaryError("evidence path must be repository-relative")
+        if hashlib.sha256(contents).hexdigest() != record["sha256"]:
+            raise ReconciliationError(
+                "evidence hash does not match file: %s" % record["path"]
+            )
+        with self.mutation() as connection:
+            connection.execute(
+                """INSERT INTO evidence (
+                       evidence_id, dispatch_id, kind, path, sha256,
+                       source_sha, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    record["evidence_id"], record["dispatch_id"],
+                    record["kind"], record["path"], record["sha256"],
+                    record.get("source_sha"), record["created_at"],
+                ),
+            )
+        return dict(record)
+
+    def list_evidence(self, dispatch_id):
+        with self.read_connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM evidence
+                   WHERE dispatch_id = ? ORDER BY created_at, evidence_id""",
+                (dispatch_id,),
+            ).fetchall()
+        return [self._evidence_from_row(row) for row in rows]

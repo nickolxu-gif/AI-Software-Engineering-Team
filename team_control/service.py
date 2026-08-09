@@ -343,13 +343,25 @@ class ControlPlane:
 
     def status(self, dispatch_id):
         _validated_component(dispatch_id, "dispatch-id")
-        task, events, approvals = self.store.status_snapshot(dispatch_id)
+        (
+            task,
+            events,
+            approvals,
+            agents,
+            blockers,
+            reviews,
+            evidence,
+        ) = self.store.status_snapshot(dispatch_id)
         if task is None:
-            raise KeyError(dispatch_id)
+            raise ReconciliationError("task is missing: %s" % dispatch_id)
         actual_head_sha, _ = self._trusted_actual_head(task)
         return {
             "task": task,
             "events": events,
+            "agents": agents,
+            "blockers": blockers,
+            "reviews": reviews,
+            "evidence": evidence,
             "pending_approvals": approvals,
             "effective_state": (
                 "NEEDS_HUMAN_APPROVAL" if approvals else task["state"]

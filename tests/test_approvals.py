@@ -20,6 +20,7 @@ from team_control.errors import (
     BoundaryError,
     ContractError,
     GitStateError,
+    ReconciliationError,
     TeamControlError,
 )
 from team_control.git_context import RepoContext
@@ -634,8 +635,8 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(status["effective_state"], self.task["state"])
         self.assertEqual(len(self.store.pending_approvals(self.dispatch_id)), 1)
 
-    def test_status_missing_task_raises_key_error(self):
-        with self.assertRaises(KeyError):
+    def test_status_missing_task_raises_domain_error(self):
+        with self.assertRaises(ReconciliationError):
             self.control.status("missing-task")
 
     def test_status_uses_fixed_git_argv_and_reports_head_drift(self):

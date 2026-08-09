@@ -9,7 +9,12 @@ from types import SimpleNamespace
 from unittest import mock
 
 from team_control.contracts import validate_record
-from team_control.errors import BoundaryError, ContractError, TransitionError
+from team_control.errors import (
+    BoundaryError,
+    ContractError,
+    ReconciliationError,
+    TransitionError,
+)
 from team_control.git_context import RepoContext
 from team_control.service import ControlPlane
 from team_control.store import ControlStore
@@ -180,7 +185,7 @@ class TaskServiceTests(unittest.TestCase):
 
     def test_get_task_and_status_report_missing_and_existing_tasks(self):
         self.assertIsNone(self.store.get_task("missing"))
-        with self.assertRaises(KeyError):
+        with self.assertRaises(ReconciliationError):
             self.control.status("missing")
 
         task = self.create()

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "dispatch_id": "20260808-example",
+  "title": "MVP 0 example",
+  "objective": "Demonstrate the minimum task contract",
+  "risk_level": "L1",
+  "state": "PLANNED",
+  "task_base_sha": "0000000000000000000000000000000000000000",
+  "owner": "Codex"
+}
