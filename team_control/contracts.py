@@ -16,6 +16,7 @@ EVIDENCE_KINDS = frozenset({"commit", "diff", "test", "review", "approval", "art
 AGENT_STATES = frozenset({"IN_PROGRESS", "COMPLETED", "BLOCKED", "NEEDS_DIRECTION"})
 REVIEW_DISPOSITIONS = frozenset({"ACCEPT", "MODIFY", "BLOCK", "ESCALATE"})
 BLOCKER_STATUSES = frozenset({"OPEN", "RESOLVED"})
+APPROVAL_STATUSES = frozenset({"PENDING", "CONSUMED"})
 
 DISPATCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -30,7 +31,7 @@ RFC3339_RE = re.compile(
 REQUIRED = {
     "task": ("schema_version", "dispatch_id", "title", "objective", "risk_level", "state", "task_base_sha", "owner"),
     "event": ("schema_version", "dispatch_id", "sequence", "event_type", "created_at"),
-    "approval": ("schema_version", "approval_id", "dispatch_id", "action", "target_sha", "request_hash", "expires_at", "consumed_at", "idempotency_key"),
+    "approval": ("schema_version", "approval_id", "dispatch_id", "action", "target_sha", "request_hash", "expires_at", "consumed_at", "status", "idempotency_key"),
     "evidence": ("schema_version", "evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha", "created_at"),
     "agent_status": ("schema_version", "dispatch_id", "agent_id", "role", "state", "updated_at"),
     "review": ("schema_version", "review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "report_path", "report_sha256", "created_at"),
@@ -40,7 +41,7 @@ REQUIRED = {
 STRING_FIELDS = {
     "task": ("dispatch_id", "title", "objective", "risk_level", "state", "task_base_sha", "owner"),
     "event": ("dispatch_id", "event_type", "created_at"),
-    "approval": ("approval_id", "dispatch_id", "action", "target_sha", "request_hash", "expires_at", "idempotency_key"),
+    "approval": ("approval_id", "dispatch_id", "action", "target_sha", "request_hash", "expires_at", "status", "idempotency_key"),
     "evidence": ("evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha", "created_at"),
     "agent_status": ("dispatch_id", "agent_id", "role", "state", "updated_at"),
     "review": ("review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "report_path", "report_sha256", "created_at"),
@@ -185,6 +186,12 @@ def validate_record(kind, record):
     elif kind == "approval":
         _validate_pattern(record, "target_sha", SHA_RE, "a full hexadecimal SHA")
         _validate_pattern(record, "request_hash", HASH_RE, "a 64-character hexadecimal hash")
+        if record["status"] not in APPROVAL_STATUSES:
+            raise ContractError("unknown approval status: %s" % record["status"])
+        if record["status"] == "PENDING" and record["consumed_at"] is not None:
+            raise ContractError("pending approval must not have a consumed_at value")
+        if record["status"] == "CONSUMED" and record["consumed_at"] is None:
+            raise ContractError("consumed approval must have a consumed_at value")
         if "nonce_hash" in record:
             _validate_string(record, "nonce_hash")
             _validate_pattern(

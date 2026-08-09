@@ -142,10 +142,12 @@ class ApprovalTests(unittest.TestCase):
                 "request_hash",
                 "expires_at",
                 "consumed_at",
+                "status",
                 "idempotency_key",
             },
         )
         self.assertEqual(approval["schema_version"], 1)
+        self.assertEqual(approval["status"], "PENDING")
         uuid.UUID(approval["approval_id"])
         uuid.UUID(approval["idempotency_key"])
         validate_record("approval", approval)
@@ -192,7 +194,9 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(len(self.operation_rows()), 1)
 
         consumed = self.store.get_approval(approval["approval_id"])
+        self.assertEqual(consumed["status"], "CONSUMED")
         self.assertIsNotNone(consumed["consumed_at"])
+        self.assertEqual(self.store.pending_approvals(self.dispatch_id), [])
         validate_record("approval", consumed)
 
     def test_concurrent_consumption_has_exactly_one_winner(self):

@@ -114,12 +114,13 @@ class CliTests(unittest.TestCase):
             store = ControlStore.for_repo(context)
             control = ControlPlane(context, store)
             task = store.get_task("20260808-008")
+            nonce = "cli-approval-nonce-0001"
             approval = control.request_approval(
                 "20260808-008",
                 "integrate",
                 task["current_head_sha"],
                 {},
-                "cli-approval-nonce-0001",
+                nonce,
                 10,
             )
             approvals = run_cli(
@@ -130,16 +131,30 @@ class CliTests(unittest.TestCase):
                 [item["approval_id"] for item in approvals_payload["approvals"]],
                 [approval["approval_id"]],
             )
-            all_approvals = run_cli(repo, "approvals")
+            self.assertEqual(approvals_payload["approvals"][0]["status"], "PENDING")
+            self.assertIsNone(approvals_payload["approvals"][0]["consumed_at"])
+            self.assertEqual(store.pending_approvals("20260808-008"), [approval])
+
+            control.consume_approval(approval["approval_id"], nonce)
+            consumed_approvals = run_cli(
+                repo, "approvals", "--dispatch-id", "20260808-008"
+            )
+            consumed_payload = assert_single_json_line(self, consumed_approvals)
             self.assertEqual(
-                [
-                    item["approval_id"]
-                    for item in assert_single_json_line(
-                        self, all_approvals
-                    )["approvals"]
-                ],
+                consumed_payload["approvals"][0]["status"], "CONSUMED"
+            )
+            self.assertIsNotNone(
+                consumed_payload["approvals"][0]["consumed_at"]
+            )
+            self.assertEqual(store.pending_approvals("20260808-008"), [])
+
+            all_approvals = run_cli(repo, "approvals")
+            all_payload = assert_single_json_line(self, all_approvals)
+            self.assertEqual(
+                [item["approval_id"] for item in all_payload["approvals"]],
                 [approval["approval_id"]],
             )
+            self.assertEqual(all_payload["approvals"][0]["status"], "CONSUMED")
 
     def test_doctor_inspect_and_repair_emit_single_json_lines(self):
         with tempfile.TemporaryDirectory() as tmp:

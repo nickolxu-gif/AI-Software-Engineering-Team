@@ -36,6 +36,7 @@ VALID_RECORDS = {
         "request_hash": "c" * 64,
         "expires_at": CREATED_AT,
         "consumed_at": None,
+        "status": "PENDING",
         "idempotency_key": "approval-1:merge",
     },
     "evidence": {
@@ -138,7 +139,10 @@ class ContractTests(unittest.TestCase):
     def test_rfc3339_dates_with_offsets_are_accepted(self):
         for kind, fields in DATE_TIME_FIELDS.items():
             for field in fields:
-                record = changed(kind, **{field: "2026-08-08T12:00:00+08:00"})
+                updates = {field: "2026-08-08T12:00:00+08:00"}
+                if kind == "approval" and field == "consumed_at":
+                    updates["status"] = "CONSUMED"
+                record = changed(kind, **updates)
                 with self.subTest(kind=kind, field=field):
                     self.assertIs(validate_record(kind, record), record)
 
@@ -150,7 +154,10 @@ class ContractTests(unittest.TestCase):
         for kind, fields in DATE_TIME_FIELDS.items():
             for field in fields:
                 for value in leap_seconds:
-                    record = changed(kind, **{field: value})
+                    updates = {field: value}
+                    if kind == "approval" and field == "consumed_at":
+                        updates["status"] = "CONSUMED"
+                    record = changed(kind, **updates)
                     with self.subTest(kind=kind, field=field, value=value):
                         try:
                             result = validate_record(kind, record)
@@ -185,8 +192,20 @@ class ContractTests(unittest.TestCase):
             ("approval nonce hash", "approval", changed("approval", nonce_hash="d" * 63)),
             ("approval empty expiry", "approval", changed("approval", expires_at="")),
             ("approval empty consumed time", "approval", changed("approval", consumed_at="")),
+            ("approval status enum", "approval", changed("approval", status="EXPIRED")),
+            (
+                "approval pending with consumed time",
+                "approval",
+                changed("approval", status="PENDING", consumed_at=CREATED_AT),
+            ),
+            (
+                "approval consumed without consumed time",
+                "approval",
+                changed("approval", status="CONSUMED", consumed_at=None),
+            ),
             ("approval empty idempotency key", "approval", changed("approval", idempotency_key="")),
             ("approval missing consumed time", "approval", without("approval", "consumed_at")),
+            ("approval missing status", "approval", without("approval", "status")),
             ("approval missing idempotency key", "approval", without("approval", "idempotency_key")),
             ("evidence kind enum", "evidence", changed("evidence", kind="log")),
             ("evidence empty path", "evidence", changed("evidence", path="")),
@@ -242,13 +261,19 @@ class ContractTests(unittest.TestCase):
 
         approval = loaded["approval.schema.json"]
         self.assertTrue(
-            {"consumed_at", "idempotency_key"}.issubset(approval["required"])
+            {"consumed_at", "status", "idempotency_key"}.issubset(
+                approval["required"]
+            )
         )
         self.assertNotIn("nonce_hash", approval["required"])
         self.assertEqual(
             approval["properties"]["nonce_hash"]["pattern"], "^[0-9a-f]{64}$"
         )
         self.assertEqual(approval["properties"]["idempotency_key"]["minLength"], 1)
+        self.assertEqual(
+            approval["properties"]["status"]["enum"],
+            ["PENDING", "CONSUMED"],
+        )
 
         schema_constraints = {
             "evidence path minLength": (

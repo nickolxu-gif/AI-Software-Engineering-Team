@@ -926,6 +926,7 @@ class ControlStore:
             "request_hash": row["request_hash"],
             "expires_at": row["expires_at"],
             "consumed_at": row["consumed_at"],
+            "status": row["status"],
             "idempotency_key": row["idempotency_key"],
         }
         validate_record("approval", approval)
