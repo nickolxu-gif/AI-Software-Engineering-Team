@@ -70,6 +70,28 @@ class EvidenceHardeningTests(unittest.TestCase):
         path.write_text("review\n", encoding="utf-8")
         return path
 
+    def create_linked_task(self, dispatch_id, slug):
+        root = self.repo / ".worktrees"
+        root.mkdir(exist_ok=True)
+        linked = root / slug
+        branch = "agent/codex/%s-%s" % (dispatch_id, slug)
+        run(["git", "worktree", "add", "-b", branch, str(linked)], self.repo)
+        if self.store.get_task(dispatch_id) is None:
+            self.store.create_task({
+                "schema_version": 1,
+                "dispatch_id": dispatch_id,
+                "title": "Linked %s" % slug,
+                "objective": "Test task-bound artifacts",
+                "risk_level": "L2",
+                "state": "PLANNED",
+                "task_base_sha": self.head,
+                "owner": "Codex",
+            })
+        self.store.attach_worktree(
+            dispatch_id, "codex", slug, branch, linked
+        )
+        return linked
+
     def test_linked_worktree_uses_main_relative_identity_and_linked_bytes(self):
         root = self.repo / ".worktrees"
         root.mkdir()
@@ -111,6 +133,54 @@ class EvidenceHardeningTests(unittest.TestCase):
             record["path"],
         )
 
+    def test_artifacts_are_bound_to_the_dispatch_worktree_or_archive(self):
+        other_id = "20260808-other"
+        other = self.create_linked_task(other_id, "other-task")
+        other_file = other / "other.txt"
+        other_file.write_text("OTHER\n", encoding="utf-8")
+
+        planned_file = self.repo / "planned.txt"
+        planned_file.write_text("PLANNED\n", encoding="utf-8")
+        planned = EvidenceManager(self.context, self.store).record(
+            self.dispatch_id, "test", planned_file, self.head
+        )
+        self.assertEqual(planned["path"], "planned.txt")
+        with self.assertRaises(BoundaryError):
+            EvidenceManager(self.context, self.store).record(
+                self.dispatch_id, "test", other_file, self.head
+            )
+
+        own = self.create_linked_task(self.dispatch_id, "own-task")
+        own_file = own / "own.txt"
+        own_file.write_text("OWN\n", encoding="utf-8")
+        own_record = EvidenceManager(
+            RepoContext.discover(own), self.store
+        ).record(self.dispatch_id, "test", own_file, self.head)
+        self.assertEqual(own_record["path"], ".worktrees/own-task/own.txt")
+
+        with self.assertRaises(BoundaryError):
+            EvidenceManager(RepoContext.discover(own), self.store).record(
+                self.dispatch_id, "test", other_file, self.head
+            )
+        with self.assertRaises(BoundaryError):
+            self.store.add_review(
+                self.dispatch_id, "reviewer", "MODIFY", self.head, other_file
+            )
+
+        archive = (
+            self.repo / "artifacts" / "dispatches" / self.dispatch_id /
+            "review.md"
+        )
+        archive.parent.mkdir(parents=True)
+        archive.write_text("ARCHIVED REVIEW\n", encoding="utf-8")
+        review = self.store.add_review(
+            self.dispatch_id, "reviewer", "MODIFY", self.head, archive
+        )
+        self.assertEqual(
+            review["report_path"],
+            "artifacts/dispatches/%s/review.md" % self.dispatch_id,
+        )
+
     def test_agent_report_rejects_unknown_secret_and_bad_lengths_or_types(self):
         schema = json.loads(
             (Path(__file__).resolve().parents[1] / "schemas/agent-status.schema.json")
@@ -127,6 +197,37 @@ class EvidenceHardeningTests(unittest.TestCase):
                 with self.assertRaises(ContractError):
                     self.store.upsert_agent_status(record)
         self.assertEqual(self.store.list_agent_status(self.dispatch_id), [])
+
+    def test_agent_report_accepts_bounded_structured_fields_only(self):
+        structured = self.agent_record(
+            current_subtask="Implement task-bound artifact roots",
+            completed=["Added tests", "Checked contracts"],
+            findings=["Cross-task worktree access was possible"],
+            risks=["Legacy rows need migration"],
+            recommendation="Backfill hashes under the control lock",
+        )
+        persisted = self.store.upsert_agent_status(structured)
+        self.assertEqual(persisted["completed"], structured["completed"])
+        self.assertEqual(
+            self.store.list_agent_status(self.dispatch_id), [persisted]
+        )
+
+        invalid = (
+            self.agent_record(current_subtask="x" * 257),
+            self.agent_record(completed="not-a-list"),
+            self.agent_record(findings=[7]),
+            self.agent_record(risks=["x" * 257]),
+            self.agent_record(
+                completed=["x"] * 20,
+                findings=["x"] * 20,
+                risks=["x"],
+            ),
+            self.agent_record(recommendation="x" * 513),
+        )
+        for record in invalid:
+            with self.subTest(record=record):
+                with self.assertRaises(ContractError):
+                    self.store.upsert_agent_status(record)
 
     def test_agent_status_normalizes_time_and_rejects_stale_or_conflicting_upsert(self):
         first = self.store.upsert_agent_status(self.agent_record())
@@ -203,6 +304,93 @@ class EvidenceHardeningTests(unittest.TestCase):
         self.assertIn(accepted["review_id"], status["review_stale"])
         self.assertTrue(status["evidence_stale"])
         self.assertFalse(status["valid_acceptance"])
+
+    def test_review_file_rewrite_invalidates_acceptance(self):
+        report = self.review_file("accept.md")
+        accepted = self.store.add_review(
+            self.dispatch_id, "reviewer", "ACCEPT", self.head, report
+        )
+        self.assertEqual(
+            accepted["report_sha256"],
+            hashlib.sha256(b"review\n").hexdigest(),
+        )
+        initial = self.control.status(self.dispatch_id)
+        self.assertTrue(initial["valid_acceptance"])
+
+        report.write_text("rewritten\n", encoding="utf-8")
+        status = self.control.status(self.dispatch_id)
+        observed = status["reviews"][0]
+        self.assertTrue(observed["stale"])
+        self.assertFalse(observed["effective"])
+        self.assertFalse(status["valid_acceptance"])
+        self.assertIn("hash", " ".join(observed["stale_reasons"]))
+
+    def test_initialize_migrates_existing_reviews_and_preserves_rows(self):
+        report = self.repo / "legacy-review.md"
+        report.write_text("legacy review\n", encoding="utf-8")
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE reviews")
+            connection.execute(
+                """CREATE TABLE reviews (
+                       review_id TEXT PRIMARY KEY,
+                       dispatch_id TEXT NOT NULL REFERENCES tasks(dispatch_id),
+                       reviewer TEXT NOT NULL,
+                       disposition TEXT NOT NULL,
+                       source_sha TEXT NOT NULL,
+                       report_path TEXT,
+                       created_at TEXT NOT NULL
+                   )"""
+            )
+            connection.execute(
+                "INSERT INTO reviews VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "legacy-review", self.dispatch_id, "reviewer", "MODIFY",
+                    self.head, "legacy-review.md",
+                    "2026-08-08T00:00:00+00:00",
+                ),
+            )
+            connection.execute(
+                "INSERT INTO reviews VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "legacy-missing", self.dispatch_id, "reviewer", "BLOCK",
+                    self.head, None, "2026-08-08T00:01:00+00:00",
+                ),
+            )
+
+        self.store.initialize()
+        self.store.initialize()
+
+        reviews = self.store.list_reviews(self.dispatch_id)
+        self.assertEqual(len(reviews), 2)
+        self.assertEqual(reviews[0]["review_id"], "legacy-review")
+        self.assertEqual(
+            reviews[0]["report_sha256"],
+            hashlib.sha256(b"legacy review\n").hexdigest(),
+        )
+        self.assertEqual(reviews[1]["review_id"], "legacy-missing")
+        self.assertEqual(reviews[1]["report_sha256"], "0" * 64)
+        self.assertTrue(
+            reviews[1]["report_path"].startswith(
+                "artifacts/dispatches/%s/legacy-missing-review-"
+                % self.dispatch_id
+            )
+        )
+        status = self.control.status(self.dispatch_id)
+        migrated = {
+            review["review_id"]: review for review in status["reviews"]
+        }
+        self.assertTrue(migrated["legacy-missing"]["stale"])
+        with self.store.read_connection() as connection:
+            columns = {
+                row["name"]: row for row in connection.execute(
+                    "PRAGMA table_info(reviews)"
+                )
+            }
+            self.assertEqual(columns["report_sha256"]["notnull"], 1)
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM reviews").fetchone()[0],
+                2,
+            )
 
     def test_all_task_scoped_writes_translate_missing_task_inside_transaction(self):
         report = self.review_file()

@@ -102,28 +102,60 @@ def _registered_worktree_roots(main_root):
     return tuple(roots)
 
 
-def _read_approved_regular_file(common_dir, candidate):
+def _is_under(relative, parent):
+    parent_parts = parent.parts
+    return (
+        len(relative.parts) > len(parent_parts)
+        and relative.parts[:len(parent_parts)] == parent_parts
+    )
+
+
+def _task_worktree_root(main_root, task):
+    stored = task.get("worktree_path") if isinstance(task, dict) else task["worktree_path"]
+    if not stored:
+        return None
+    raw = Path(stored)
+    if not raw.is_absolute() or raw.is_symlink():
+        raise BoundaryError("task worktree path is not canonical")
+    try:
+        root = raw.resolve(strict=True)
+    except OSError as error:
+        raise BoundaryError("task worktree is unavailable") from error
+    _, relative = _relative_path(main_root, root)
+    if relative.parts[0] != ".worktrees":
+        raise BoundaryError("task worktree must be under .worktrees")
+    if root not in _registered_worktree_roots(main_root):
+        raise BoundaryError("task worktree is not registered")
+    return root
+
+
+def _read_task_regular_file(common_dir, task, candidate):
     main_root = _main_repository_root(common_dir)
     _, relative = _relative_path(main_root, candidate)
     if relative.parts[0] == ".git":
         raise BoundaryError("Git metadata is not an approved artifact path")
-    if relative.parts[0] == ".worktrees":
-        absolute = main_root / relative
-        approved = False
-        for worktree_root in _registered_worktree_roots(main_root):
-            if worktree_root == main_root:
-                continue
-            try:
-                remainder = absolute.relative_to(worktree_root)
-            except ValueError:
-                continue
-            if remainder.parts:
-                approved = True
-                break
-        if not approved:
+    dispatch_id = task.get("dispatch_id") if isinstance(task, dict) else task["dispatch_id"]
+    archive = Path("artifacts") / "dispatches" / dispatch_id
+    if _is_under(relative, archive):
+        return _read_regular_file(main_root, relative)
+
+    worktree_root = _task_worktree_root(main_root, task)
+    if worktree_root is None:
+        if relative.parts[0] == ".worktrees":
             raise BoundaryError(
-                "artifact path is not inside a registered linked worktree"
+                "planned task artifacts cannot use a linked worktree"
             )
+        return _read_regular_file(main_root, relative)
+
+    absolute = main_root / relative
+    try:
+        remainder = absolute.relative_to(worktree_root)
+    except ValueError as error:
+        raise BoundaryError(
+            "artifact path is outside the dispatch task root"
+        ) from error
+    if not remainder.parts:
+        raise BoundaryError("artifact path must name a task file")
     return _read_regular_file(main_root, relative)
 
 
@@ -192,13 +224,14 @@ class EvidenceManager:
         self.store = store
 
     def record(self, dispatch_id, kind, path, source_sha=None):
-        if self.store.get_task(dispatch_id) is None:
+        task = self.store.get_task(dispatch_id)
+        if task is None:
             raise ReconciliationError("task is missing: %s" % dispatch_id)
         candidate = Path(path)
         if not candidate.is_absolute():
             candidate = self.context.root / candidate
-        relative, contents = _read_approved_regular_file(
-            self.context.common_dir, candidate
+        relative, contents = _read_task_regular_file(
+            self.context.common_dir, task, candidate
         )
         record = {
             "schema_version": 1,
@@ -214,13 +247,14 @@ class EvidenceManager:
         return self.store.add_evidence(record)
 
     def write_summary(self, dispatch_id):
-        if self.store.get_task(dispatch_id) is None:
+        task = self.store.get_task(dispatch_id)
+        if task is None:
             raise ReconciliationError("task is missing: %s" % dispatch_id)
         evidence = self.store.list_evidence(dispatch_id)
         for record in evidence:
             validate_record("evidence", record)
-            _, contents = _read_approved_regular_file(
-                self.context.common_dir, record["path"]
+            _, contents = _read_task_regular_file(
+                self.context.common_dir, task, record["path"]
             )
             digest = hashlib.sha256(contents).hexdigest()
             if digest != record["sha256"]:

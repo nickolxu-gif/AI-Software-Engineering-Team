@@ -42,7 +42,7 @@ EXPECTED_COLUMNS = {
     ),
     "reviews": (
         "review_id", "dispatch_id", "reviewer", "disposition", "source_sha",
-        "report_path", "created_at",
+        "report_path", "report_sha256", "created_at",
     ),
     "blockers": (
         "blocker_id", "dispatch_id", "reason", "owner", "status",
@@ -68,7 +68,7 @@ EXPECTED_NULLABLE = {
     "operations": {"result_json"},
     "evidence": {"source_sha"},
     "agents": {"model"},
-    "reviews": {"report_path"},
+    "reviews": set(),
     "blockers": {"resolution_condition"},
 }
 

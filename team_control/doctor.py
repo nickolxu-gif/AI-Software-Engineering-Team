@@ -9,7 +9,7 @@ from .git_context import RepoContext, run_argv, validate_component
 from .operations import OperationCoordinator
 
 
-GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+GIT_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 
 def registered_worktrees(context):

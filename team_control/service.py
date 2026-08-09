@@ -18,7 +18,7 @@ from .git_context import RepoContext, canonical_under, run_argv, validate_compon
 from .store import utc_now
 
 
-SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
+SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 APPROVAL_REQUEST_DOMAIN = b"team-control/approval-request/v1\n"
 JS_SAFE_INTEGER_MAX = 9007199254740991
 

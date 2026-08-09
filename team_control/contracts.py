@@ -18,8 +18,8 @@ REVIEW_DISPOSITIONS = frozenset({"ACCEPT", "MODIFY", "BLOCK", "ESCALATE"})
 BLOCKER_STATUSES = frozenset({"OPEN", "RESOLVED"})
 
 DISPATCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
-COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+COMMIT_SHA_RE = SHA_RE
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 RFC3339_RE = re.compile(
     r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt]"
@@ -33,7 +33,7 @@ REQUIRED = {
     "approval": ("schema_version", "approval_id", "dispatch_id", "action", "target_sha", "request_hash", "expires_at", "consumed_at", "idempotency_key"),
     "evidence": ("schema_version", "evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha", "created_at"),
     "agent_status": ("schema_version", "dispatch_id", "agent_id", "role", "state", "updated_at"),
-    "review": ("schema_version", "review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "report_path", "created_at"),
+    "review": ("schema_version", "review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "report_path", "report_sha256", "created_at"),
     "blocker": ("schema_version", "blocker_id", "dispatch_id", "reason", "owner", "status", "created_at"),
 }
 
@@ -43,7 +43,7 @@ STRING_FIELDS = {
     "approval": ("approval_id", "dispatch_id", "action", "target_sha", "request_hash", "expires_at", "idempotency_key"),
     "evidence": ("evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha", "created_at"),
     "agent_status": ("dispatch_id", "agent_id", "role", "state", "updated_at"),
-    "review": ("review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "report_path", "created_at"),
+    "review": ("review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "report_path", "report_sha256", "created_at"),
     "blocker": ("blocker_id", "dispatch_id", "reason", "owner", "status", "created_at"),
 }
 
@@ -74,8 +74,13 @@ DATE_TIME_FIELDS = {
 
 AGENT_STATUS_FIELDS = frozenset({
     "schema_version", "dispatch_id", "agent_id", "role", "model", "state",
-    "progress", "updated_at",
+    "progress", "updated_at", "current_subtask", "completed", "findings",
+    "risks", "recommendation",
 })
+AGENT_LIST_FIELDS = ("completed", "findings", "risks")
+MAX_AGENT_LIST_ITEMS = 20
+MAX_AGENT_TOTAL_ITEMS = 40
+MAX_AGENT_ITEM_LENGTH = 256
 
 
 def _validate_string(record, field, nullable=False):
@@ -120,6 +125,24 @@ def _validate_datetime(record, field, nullable=False):
         raise ContractError("%s must be a valid RFC3339 date-time" % field)
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ContractError("%s must include a timezone" % field)
+
+
+def _validate_agent_list(record, field):
+    value = record[field]
+    if type(value) is not list:
+        raise ContractError("%s must be an array" % field)
+    if len(value) > MAX_AGENT_LIST_ITEMS:
+        raise ContractError("%s has too many items" % field)
+    for item in value:
+        if (
+            not isinstance(item, str)
+            or not item
+            or len(item) > MAX_AGENT_ITEM_LENGTH
+        ):
+            raise ContractError(
+                "%s items must contain 1 to %d characters"
+                % (field, MAX_AGENT_ITEM_LENGTH)
+            )
 
 
 def validate_record(kind, record):
@@ -174,7 +197,7 @@ def validate_record(kind, record):
         if record["kind"] not in EVIDENCE_KINDS:
             raise ContractError("unknown evidence kind: %s" % record["kind"])
         _validate_pattern(record, "sha256", HASH_RE, "a 64-character hexadecimal hash")
-        _validate_pattern(record, "source_sha", COMMIT_SHA_RE, "a 40-character commit SHA")
+        _validate_pattern(record, "source_sha", COMMIT_SHA_RE, "a 40- or 64-character commit SHA")
     elif kind == "agent_status":
         unknown = set(record) - AGENT_STATUS_FIELDS
         if unknown:
@@ -188,6 +211,25 @@ def validate_record(kind, record):
             not record["model"] or len(record["model"]) > 128
         ):
             raise ContractError("model must contain 1 to 128 characters")
+        if "current_subtask" in record and record["current_subtask"] is not None:
+            value = record["current_subtask"]
+            if not isinstance(value, str) or not value or len(value) > 256:
+                raise ContractError(
+                    "current_subtask must contain 1 to 256 characters"
+                )
+        if "recommendation" in record and record["recommendation"] is not None:
+            value = record["recommendation"]
+            if not isinstance(value, str) or not value or len(value) > 512:
+                raise ContractError(
+                    "recommendation must contain 1 to 512 characters"
+                )
+        total_items = 0
+        for field in AGENT_LIST_FIELDS:
+            if field in record:
+                _validate_agent_list(record, field)
+                total_items += len(record[field])
+        if total_items > MAX_AGENT_TOTAL_ITEMS:
+            raise ContractError("agent status has too many structured list items")
         _validate_pattern(record, "dispatch_id", DISPATCH_RE, "a valid dispatch identifier")
         if record["state"] not in AGENT_STATES:
             raise ContractError("unknown agent state: %s" % record["state"])
@@ -196,7 +238,8 @@ def validate_record(kind, record):
     elif kind == "review":
         if record["disposition"] not in REVIEW_DISPOSITIONS:
             raise ContractError("unknown review disposition: %s" % record["disposition"])
-        _validate_pattern(record, "source_sha", COMMIT_SHA_RE, "a 40-character commit SHA")
+        _validate_pattern(record, "source_sha", COMMIT_SHA_RE, "a 40- or 64-character commit SHA")
+        _validate_pattern(record, "report_sha256", HASH_RE, "a 64-character hexadecimal hash")
     elif kind == "blocker":
         if record["status"] not in BLOCKER_STATUSES:
             raise ContractError("unknown blocker status: %s" % record["status"])

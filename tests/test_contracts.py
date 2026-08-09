@@ -66,6 +66,7 @@ VALID_RECORDS = {
         "disposition": "ACCEPT",
         "source_sha": "f" * 40,
         "report_path": "artifacts/review.md",
+        "report_sha256": "a" * 64,
         "created_at": CREATED_AT,
     },
     "blocker": {
@@ -87,7 +88,7 @@ STRING_FIELDS = {
     "approval": ("approval_id", "dispatch_id", "action", "target_sha", "request_hash", "expires_at", "idempotency_key"),
     "evidence": ("evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha", "created_at"),
     "agent_status": ("dispatch_id", "agent_id", "role", "state", "updated_at"),
-    "review": ("review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "report_path", "created_at"),
+    "review": ("review_id", "dispatch_id", "reviewer", "disposition", "source_sha", "report_path", "report_sha256", "created_at"),
     "blocker": ("blocker_id", "dispatch_id", "reason", "owner", "status", "created_at"),
 }
 
@@ -198,6 +199,7 @@ class ContractTests(unittest.TestCase):
             ("agent progress bool", "agent_status", changed("agent_status", progress=True)),
             ("review disposition enum", "review", changed("review", disposition="PASS")),
             ("review source SHA", "review", changed("review", source_sha="f" * 39)),
+            ("review report hash", "review", changed("review", report_sha256="a" * 63)),
             ("blocker empty reason", "blocker", changed("blocker", reason="")),
             ("blocker empty owner", "blocker", changed("blocker", owner="")),
             ("blocker status enum", "blocker", changed("blocker", status="CLOSED")),
@@ -267,9 +269,37 @@ class ContractTests(unittest.TestCase):
             "review source SHA pattern": (
                 loaded["review.schema.json"]["properties"]["source_sha"],
                 "pattern",
-                "^[0-9a-f]{40}$",
+                "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+            ),
+            "evidence source SHA pattern": (
+                loaded["evidence.schema.json"]["properties"]["source_sha"],
+                "pattern",
+                "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+            ),
+            "task base SHA pattern": (
+                loaded["task.schema.json"]["properties"]["task_base_sha"],
+                "pattern",
+                "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
             ),
         }
         for label, (schema_property, keyword, expected_value) in schema_constraints.items():
             with self.subTest(label=label):
                 self.assertEqual(schema_property.get(keyword), expected_value)
+
+    def test_git_sha_contracts_accept_sha1_and_sha256_lengths(self):
+        for length in (40, 64):
+            with self.subTest(length=length, kind="task"):
+                validate_record("task", changed("task", task_base_sha="a" * length))
+            with self.subTest(length=length, kind="review"):
+                validate_record("review", changed("review", source_sha="b" * length))
+            with self.subTest(length=length, kind="evidence"):
+                validate_record("evidence", changed("evidence", source_sha="c" * length))
+        for length in (41, 63):
+            for kind, field in (
+                ("task", "task_base_sha"),
+                ("review", "source_sha"),
+                ("evidence", "source_sha"),
+            ):
+                with self.subTest(length=length, kind=kind):
+                    with self.assertRaises(ContractError):
+                        validate_record(kind, changed(kind, **{field: "a" * length}))

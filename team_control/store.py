@@ -103,7 +103,8 @@ CREATE TABLE IF NOT EXISTS reviews (
     reviewer TEXT NOT NULL,
     disposition TEXT NOT NULL,
     source_sha TEXT NOT NULL,
-    report_path TEXT,
+    report_path TEXT NOT NULL,
+    report_sha256 TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS blockers (
@@ -150,7 +151,7 @@ MIN_APPROVAL_NONCE_LENGTH = 16
 OPERATION_PHASES = frozenset(("PREPARED", "COMMITTED", "FAILED", "BLOCKED"))
 TERMINAL_OPERATION_PHASES = frozenset(("COMMITTED", "FAILED", "BLOCKED"))
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+GIT_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 ACTION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -356,6 +357,90 @@ class ControlStore:
                     statement = statement.strip()
                     if statement:
                         connection.execute(statement)
+                self._migrate_reviews_schema(connection)
+
+    def _migrate_reviews_schema(self, connection):
+        columns = {
+            row["name"]: row
+            for row in connection.execute("PRAGMA table_info(reviews)")
+        }
+        if "report_sha256" not in columns:
+            connection.execute(
+                "ALTER TABLE reviews ADD COLUMN report_sha256 TEXT"
+            )
+            columns = {
+                row["name"]: row
+                for row in connection.execute("PRAGMA table_info(reviews)")
+            }
+
+        needs_rebuild = (
+            not columns["report_sha256"]["notnull"]
+            or not columns["report_path"]["notnull"]
+        )
+        if not needs_rebuild:
+            return
+        rows = connection.execute("SELECT * FROM reviews").fetchall()
+        if rows:
+            if self._common_dir is None:
+                raise ReconciliationError(
+                    "review migration requires a repository-bound store"
+                )
+            from .evidence import _read_task_regular_file
+
+            for row in rows:
+                task = self._task_row_or_error(connection, row["dispatch_id"])
+                report_path = row["report_path"]
+                digest = "0" * 64
+                if not isinstance(report_path, str) or not report_path:
+                    report_path = (
+                        "artifacts/dispatches/%s/legacy-missing-review-%s"
+                        % (row["dispatch_id"], row["review_id"])
+                    )
+                else:
+                    try:
+                        _, contents = _read_task_regular_file(
+                            self._common_dir, task, report_path
+                        )
+                    except TeamControlError:
+                        pass
+                    else:
+                        digest = hashlib.sha256(contents).hexdigest()
+                connection.execute(
+                    """UPDATE reviews
+                       SET report_path = ?, report_sha256 = ?
+                       WHERE review_id = ?""",
+                    (report_path, digest, row["review_id"]),
+                )
+
+        residue = connection.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'reviews_migrated'"""
+        ).fetchone()
+        if residue is not None:
+            raise ReconciliationError("review migration residue is present")
+        connection.execute(
+            """CREATE TABLE reviews_migrated (
+                   review_id TEXT PRIMARY KEY,
+                   dispatch_id TEXT NOT NULL REFERENCES tasks(dispatch_id),
+                   reviewer TEXT NOT NULL,
+                   disposition TEXT NOT NULL,
+                   source_sha TEXT NOT NULL,
+                   report_path TEXT NOT NULL,
+                   report_sha256 TEXT NOT NULL,
+                   created_at TEXT NOT NULL
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO reviews_migrated (
+                   review_id, dispatch_id, reviewer, disposition, source_sha,
+                   report_path, report_sha256, created_at
+               )
+               SELECT review_id, dispatch_id, reviewer, disposition, source_sha,
+                      report_path, report_sha256, created_at
+               FROM reviews"""
+        )
+        connection.execute("DROP TABLE reviews")
+        connection.execute("ALTER TABLE reviews_migrated RENAME TO reviews")
 
     def _connect(self):
         connection = sqlite3.connect(str(self.path), timeout=5.0)
@@ -1221,7 +1306,9 @@ class ControlStore:
                 "source verification requires a repository-bound store"
             )
         if not isinstance(source_sha, str) or GIT_SHA_RE.fullmatch(source_sha) is None:
-            raise ReconciliationError("source SHA must be a 40-character commit SHA")
+            raise ReconciliationError(
+                "source SHA must be a 40- or 64-character commit SHA"
+            )
         target = target_sha or task["current_head_sha"]
         if not isinstance(target, str) or GIT_SHA_RE.fullmatch(target) is None:
             raise ReconciliationError("task current HEAD is invalid")
@@ -1264,13 +1351,15 @@ class ControlStore:
         except TeamControlError as error:
             reasons.append(str(error))
         try:
-            from .evidence import _read_approved_regular_file
+            from .evidence import _read_task_regular_file
 
-            relative, _ = _read_approved_regular_file(
-                self._common_dir, review["report_path"]
+            relative, contents = _read_task_regular_file(
+                self._common_dir, task, review["report_path"]
             )
             if relative.as_posix() != review["report_path"]:
                 reasons.append("review report path is not canonical")
+            elif hashlib.sha256(contents).hexdigest() != review["report_sha256"]:
+                reasons.append("review report hash no longer matches file")
         except TeamControlError as error:
             reasons.append(str(error))
         return reasons
@@ -1284,10 +1373,10 @@ class ControlStore:
         except TeamControlError as error:
             reasons.append(str(error))
         try:
-            from .evidence import _read_approved_regular_file
+            from .evidence import _read_task_regular_file
 
-            relative, contents = _read_approved_regular_file(
-                self._common_dir, record["path"]
+            relative, contents = _read_task_regular_file(
+                self._common_dir, task, record["path"]
             )
             if relative.as_posix() != record["path"]:
                 reasons.append("evidence path is not canonical")
@@ -1477,6 +1566,7 @@ class ControlStore:
             "disposition": row["disposition"],
             "source_sha": row["source_sha"],
             "report_path": row["report_path"],
+            "report_sha256": row["report_sha256"],
             "created_at": row["created_at"],
         }
         validate_record("review", record)
@@ -1501,15 +1591,17 @@ class ControlStore:
                 "disposition": disposition,
                 "source_sha": source_sha,
                 "report_path": str(report_path),
+                "report_sha256": "0" * 64,
                 "created_at": utc_now(),
             }
             validate_record("review", record)
-            from .evidence import _read_approved_regular_file
+            from .evidence import _read_task_regular_file
 
-            relative, _ = _read_approved_regular_file(
-                self._common_dir, report_path
+            relative, contents = _read_task_regular_file(
+                self._common_dir, task, report_path
             )
             record["report_path"] = relative.as_posix()
+            record["report_sha256"] = hashlib.sha256(contents).hexdigest()
             validate_record("review", record)
             self._validate_source_commit(
                 task,
@@ -1519,13 +1611,13 @@ class ControlStore:
             connection.execute(
                 """INSERT INTO reviews (
                        review_id, dispatch_id, reviewer, disposition,
-                       source_sha, report_path, created_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       source_sha, report_path, report_sha256, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     record["review_id"], record["dispatch_id"],
                     record["reviewer"], record["disposition"],
                     record["source_sha"], record["report_path"],
-                    record["created_at"],
+                    record["report_sha256"], record["created_at"],
                 ),
             )
         return record
@@ -1562,10 +1654,10 @@ class ControlStore:
             )
         with self.mutation() as connection:
             task = self._task_row_or_error(connection, record["dispatch_id"])
-            from .evidence import _read_approved_regular_file
+            from .evidence import _read_task_regular_file
 
-            relative, contents = _read_approved_regular_file(
-                self._common_dir, record["path"]
+            relative, contents = _read_task_regular_file(
+                self._common_dir, task, record["path"]
             )
             if record["path"] != relative.as_posix():
                 raise BoundaryError("evidence path must be repository-relative")
