@@ -71,6 +71,21 @@ class DashboardServerTests(unittest.TestCase):
         connection.close()
         return response, payload, body
 
+    def request_json(self, method, path, payload, headers=None):
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        request_headers = {
+            "Host": "127.0.0.1:%d" % self.port,
+            "Origin": "http://127.0.0.1:%d" % self.port,
+            "Content-Type": "application/json",
+        }
+        request_headers.update(headers or {})
+        connection.request(method, path, body=json.dumps(payload), headers=request_headers)
+        response = connection.getresponse()
+        body = response.read()
+        decoded = json.loads(body) if body else None
+        connection.close()
+        return response, decoded, body
+
     def database_digest(self):
         digest = hashlib.sha256()
         for suffix in ("", "-wal"):
@@ -118,6 +133,75 @@ class DashboardServerTests(unittest.TestCase):
                 self.assertEqual(response.status, 405)
                 self.assertEqual(payload["error"]["code"], "READ_ONLY")
         self.assertEqual(self.database_digest(), before)
+
+    def test_dashboard_assets_expose_only_bounded_intent_controls(self):
+        app = (PROJECT_ROOT / "apps" / "dashboard" / "app.js").read_text(
+            encoding="utf-8"
+        )
+        page = (PROJECT_ROOT / "apps" / "dashboard" / "index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("受控意图", page)
+        self.assertIn("/api/session", app)
+        self.assertIn("/api/intents", app)
+        self.assertIn("method: 'POST'", app)
+        for action in ("PAUSE_REQUEST", "RESUME_REQUEST", "APPROVAL_REQUEST"):
+            self.assertIn(action, app)
+        for forbidden in ("process-intent", "git merge", "git push", "nonce", "localStorage"):
+            self.assertNotIn(forbidden, app)
+
+    def test_intent_session_and_submission_require_loopback_origin_and_token(self):
+        control = ControlPlane(RepoContext.discover(self.repo), self.store)
+        task = control.create_task("20260812-101", "Intent", "Submit", "L2")
+        control.transition(task["dispatch_id"], "DISPATCHED", "start")
+        control.transition(task["dispatch_id"], "IN_PROGRESS", "start")
+        origin = "http://127.0.0.1:%d" % self.port
+
+        response, payload, body = self.request(
+            "GET", "/api/session", headers={"Origin": origin}
+        )
+        self.assertEqual(response.status, 200)
+        token = payload["data"]["intent_token"]
+        self.assertIsInstance(token, str)
+        request = {
+            "dispatch_id": task["dispatch_id"],
+            "action": "PAUSE_REQUEST",
+            "target_sha": task["current_head_sha"],
+            "idempotency_key": "123e4567-e89b-12d3-a456-426614174000",
+            "parameters": {},
+        }
+        response, payload, body = self.request_json("POST", "/api/intents", request)
+        self.assertEqual(response.status, 403)
+        self.assertEqual(payload["error"]["code"], "TOKEN_REJECTED")
+        response, payload, body = self.request_json(
+            "POST", "/api/intents", request,
+            headers={"X-Team-Intent-Token": token},
+        )
+        self.assertEqual(response.status, 202)
+        self.assertEqual(payload["data"]["status"], "PENDING")
+        self.assertEqual(set(payload["data"]), {
+            "intent_id", "dispatch_id", "action", "target_sha", "status",
+            "result_code", "created_at", "updated_at",
+        })
+        self.assertNotIn("confirmation", body.decode("utf-8"))
+
+    def test_intent_submission_rejects_oversized_or_malformed_requests(self):
+        origin = "http://127.0.0.1:%d" % self.port
+        response, payload, body = self.request(
+            "GET", "/api/session", headers={"Origin": origin}
+        )
+        token = payload["data"]["intent_token"]
+        oversized_length = 8193
+        status, headers, body = self.raw_request(
+            (
+                "POST /api/intents HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n"
+                "Origin: %s\r\nContent-Type: application/json\r\n"
+                "X-Team-Intent-Token: %s\r\nContent-Length: %d\r\n\r\n"
+                % (self.port, origin, token, oversized_length)
+            ).encode("ascii")
+        )
+        self.assertEqual(status, 413)
+        self.assertIn(b"BODY_TOO_LARGE", body)
 
     def test_origin_and_host_policy(self):
         response, payload, body = self.request(

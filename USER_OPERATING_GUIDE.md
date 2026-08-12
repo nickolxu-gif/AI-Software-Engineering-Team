@@ -1,4 +1,4 @@
-# AI 软件工程团队操作与使用说明（MVP 0 + MVP 1）
+# AI 软件工程团队操作与使用说明（MVP 0 + MVP 1 + MVP 2A）
 
 ## 1. 先给结论：你以后只需要在 Codex 里说话
 
@@ -16,11 +16,11 @@ Codex 会在后台读取项目规则、检查 Git，并使用 MVP 0 已实现的
 
 当前必须准确区分三件事：
 
-- Codex 是唯一主入口和工程控制者；MVP 1 工作台只是本地只读观察界面。
+- Codex 是唯一主入口和工程控制者；MVP 2A 工作台可以提交三类受控意图，但不会自行执行工程动作。
 - `scripts/open-team-dashboard` 是 Codex 使用的一键启动器，你不需要自己运行。
 - GitHub Remote 尚未配置；打开本地工作台不会配置 GitHub Remote，也不会 push。
 
-MVP 0 稳定控制 CLI 包含 `init`、`start`、针对已知 `dispatch_id` 的 `status`、`transition`、`approvals` 列表和 `doctor inspect/repair`。MVP 1 另提供本地只读工作台；它能看全局首屏，但不能在浏览器里修改任务、Git 或 Agent。
+MVP 0 稳定控制 CLI 包含 `init`、`start`、针对已知 `dispatch_id` 的 `status`、`transition`、`approvals` 列表和 `doctor inspect/repair`。MVP 2A 的本地工作台能查看全局首屏，并提交暂停、恢复或审批准备意图；浏览器不能处理意图、修改 Git、调 Agent、merge、push、发布或消费审批 nonce。
 
 现行依据：
 
@@ -104,7 +104,16 @@ MVP 0 稳定 CLI 只有以下能力：
 
 这些动作只有在已有测试覆盖的 Python 内部 API 可用、身份和 SHA 已校验、且 Codex 能保持控制锁与事务边界时，才可作为“Codex 内部受控编排”执行。例如通用 operation 恢复必须调用 `OperationCoordinator.reconcile_one/reconcile_all` 并提供匹配 verifier。不得直接修改 SQLite，也不得把内部方法描述成用户可依赖的稳定 CLI。内部 API 不可用、参数不足或恢复事实不唯一时，任务转为 `BLOCKED`。
 
-MVP 1 工作台可以显示受限首屏任务列表；需要执行暂停、继续、审批或修复时，仍应回到 Codex 并指明任务 ID。底层控制 CLI 本身仍不提供全局任务列表。
+MVP 2A 工作台可以显示受限首屏任务列表。任务详情中的“提交给 Codex”只会创建 `PENDING` 意图；状态显示“已提交给 Codex，尚未执行”并不代表任务已经暂停、恢复或获批。只有 Codex 显式处理、重新核验实际 HEAD 和状态后，结果才会写入生命周期事件。底层控制 CLI 本身仍不提供全局任务列表。
+
+### 4.1.1 工作台按钮怎么用
+
+1. 在 Codex 中说“打开软件 AI 工程团队工作台”；Codex 启动本机页面。
+2. 在“任务”中选择目标任务，查看当前 HEAD、阻塞、审查和既有意图。
+3. 点击“申请暂停”“申请恢复”或“请求审批准备”。审批准备会要求你说明事项。
+4. 页面出现“已提交给 Codex，尚未执行”后，回到 Codex 说“处理任务 `<任务 ID>` 的待处理意图，并报告重新核验结果”。
+
+三个按钮不是直接命令：暂停仍需要安全检查点，恢复会被待审批或 HEAD 漂移拦截，审批准备不会直接授权、创建 nonce 或执行审批。页面重启后 token 自动失效；如提交失败，刷新页面并回到 Codex 检查即可。
 
 ### 4.2 七问派活与风险判断
 

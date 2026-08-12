@@ -11,7 +11,13 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .contracts import validate_record
+from .contracts import (
+    HASH_RE,
+    INTENT_ACTIONS,
+    SHA_RE,
+    UUID_RE,
+    validate_record,
+)
 from .errors import (
     ApprovalError,
     BoundaryError,
@@ -73,6 +79,21 @@ CREATE TABLE IF NOT EXISTS operations (
         phase IN ('PREPARED', 'COMMITTED', 'FAILED', 'BLOCKED')
     ),
     result_json TEXT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS intents (
+    intent_id TEXT PRIMARY KEY,
+    dispatch_id TEXT NOT NULL REFERENCES tasks(dispatch_id),
+    action TEXT NOT NULL,
+    target_sha TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    confirmation_hash TEXT,
+    status TEXT NOT NULL CHECK (
+        status IN ('PENDING', 'APPLIED', 'REJECTED', 'BLOCKED')
+    ),
+    result_code TEXT NOT NULL,
     idempotency_key TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -153,6 +174,9 @@ TERMINAL_OPERATION_PHASES = frozenset(("COMMITTED", "FAILED", "BLOCKED"))
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 ACTION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+INTENT_STATUSES = frozenset(("PENDING", "APPLIED", "REJECTED", "BLOCKED"))
+TERMINAL_INTENT_STATUSES = INTENT_STATUSES - {"PENDING"}
+INTENT_RESULT_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 
 
 def validate_approval_nonce(value, error_type):
@@ -293,6 +317,19 @@ class _ControlledOperationSession:
 
     def get_task(self, dispatch_id):
         return self._store.get_task(dispatch_id)
+
+    def transition(self, dispatch_id, target, reason):
+        return self._store._transition_durable(dispatch_id, target, reason)
+
+    def transition_to_resume_state(self, dispatch_id, reason):
+        return self._store._transition_to_resume_state_durable(
+            dispatch_id, reason
+        )
+
+    def finish_intent(self, intent_id, status, result_code, event_type=None):
+        return self._store._finish_intent_durable(
+            intent_id, status, result_code, event_type=event_type
+        )
 
     def prepared_operations(self):
         return self._store.prepared_operations()
@@ -658,6 +695,251 @@ class ControlStore:
                 "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
             ).fetchone()
         return dict(row) if row is not None else None
+
+    @staticmethod
+    def _intent_from_row(row):
+        if row is None:
+            return None
+        if row["status"] not in INTENT_STATUSES:
+            raise ReconciliationError("stored intent status is invalid")
+        return {
+            "intent_id": row["intent_id"],
+            "dispatch_id": row["dispatch_id"],
+            "action": row["action"],
+            "target_sha": row["target_sha"],
+            "request_hash": row["request_hash"],
+            "confirmation_hash": row["confirmation_hash"],
+            "status": row["status"],
+            "result_code": row["result_code"],
+            "idempotency_key": row["idempotency_key"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _validate_intent_fields(
+        dispatch_id, action, target_sha, request_hash, confirmation_hash,
+        idempotency_key,
+    ):
+        if not isinstance(dispatch_id, str) or not dispatch_id:
+            raise ContractError("intent dispatch_id is invalid")
+        if action not in INTENT_ACTIONS:
+            raise ContractError("intent action is invalid")
+        if not isinstance(target_sha, str) or SHA_RE.fullmatch(target_sha) is None:
+            raise ContractError("intent target SHA is invalid")
+        if not isinstance(request_hash, str) or HASH_RE.fullmatch(request_hash) is None:
+            raise ContractError("intent request hash is invalid")
+        if confirmation_hash is not None and (
+            not isinstance(confirmation_hash, str)
+            or HASH_RE.fullmatch(confirmation_hash) is None
+        ):
+            raise ContractError("intent confirmation hash is invalid")
+        if not isinstance(idempotency_key, str) or UUID_RE.fullmatch(idempotency_key) is None:
+            raise ContractError("intent idempotency key is invalid")
+
+    @staticmethod
+    def _next_event_sequence(connection, dispatch_id):
+        return connection.execute(
+            """SELECT COALESCE(MAX(sequence), 0) + 1
+                 FROM events WHERE dispatch_id = ?""",
+            (dispatch_id,),
+        ).fetchone()[0]
+
+    def create_intent(
+        self, dispatch_id, action, target_sha, request_hash, confirmation_hash,
+        idempotency_key,
+    ):
+        self._validate_intent_fields(
+            dispatch_id, action, target_sha, request_hash, confirmation_hash,
+            idempotency_key,
+        )
+        with self.mutation() as connection:
+            existing = connection.execute(
+                "SELECT * FROM intents WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if existing is not None:
+                identity = {
+                    "dispatch_id": dispatch_id,
+                    "action": action,
+                    "target_sha": target_sha,
+                    "request_hash": request_hash,
+                    "confirmation_hash": confirmation_hash,
+                }
+                if all(existing[field] == value for field, value in identity.items()):
+                    return self._intent_from_row(existing)
+                raise ReconciliationError(
+                    "intent idempotency key was used for another request"
+                )
+            task = connection.execute(
+                "SELECT 1 FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+            ).fetchone()
+            if task is None:
+                raise KeyError(dispatch_id)
+            now = utc_now()
+            intent_id = str(uuid.uuid4())
+            try:
+                connection.execute(
+                    """INSERT INTO intents (
+                           intent_id, dispatch_id, action, target_sha, request_hash,
+                           confirmation_hash, status, result_code, idempotency_key,
+                           created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', 'PENDING', ?, ?, ?)""",
+                    (
+                        intent_id, dispatch_id, action, target_sha, request_hash,
+                        confirmation_hash, idempotency_key, now, now,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                existing = connection.execute(
+                    "SELECT * FROM intents WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+                identity = {
+                    "dispatch_id": dispatch_id,
+                    "action": action,
+                    "target_sha": target_sha,
+                    "request_hash": request_hash,
+                    "confirmation_hash": confirmation_hash,
+                }
+                if existing is not None and all(
+                    existing[field] == value for field, value in identity.items()
+                ):
+                    return self._intent_from_row(existing)
+                raise ReconciliationError(
+                    "intent idempotency key was used for another request"
+                ) from error
+            event = {
+                "schema_version": 1,
+                "dispatch_id": dispatch_id,
+                "sequence": self._next_event_sequence(connection, dispatch_id),
+                "event_type": "INTENT_SUBMITTED",
+                "created_at": now,
+            }
+            validate_record("event", event)
+            connection.execute(
+                "INSERT INTO events VALUES (?, ?, ?, ?, ?)",
+                (
+                    event["dispatch_id"], event["sequence"], event["event_type"],
+                    json.dumps(
+                        {
+                            "intent_id": intent_id,
+                            "action": action,
+                            "target_sha": target_sha,
+                            "request_hash": request_hash,
+                            "status": "PENDING",
+                        },
+                        sort_keys=True,
+                    ),
+                    event["created_at"],
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM intents WHERE intent_id = ?", (intent_id,)
+            ).fetchone()
+            return self._intent_from_row(row)
+
+    def _finish_intent_durable(
+        self, intent_id, status, result_code, event_type=None
+    ):
+        if status not in TERMINAL_INTENT_STATUSES:
+            raise ContractError("intent terminal status is invalid")
+        if (
+            not isinstance(result_code, str)
+            or INTENT_RESULT_CODE_RE.fullmatch(result_code) is None
+        ):
+            raise ContractError("intent result code is invalid")
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM intents WHERE intent_id = ?", (intent_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(intent_id)
+            current = self._intent_from_row(row)
+            if current["status"] != "PENDING":
+                if (
+                    current["status"] == status
+                    and current["result_code"] == result_code
+                ):
+                    return current
+                raise ReconciliationError("intent already has a terminal result")
+            now = utc_now()
+            cursor = connection.execute(
+                """UPDATE intents
+                   SET status = ?, result_code = ?, updated_at = ?
+                   WHERE intent_id = ? AND status = 'PENDING'""",
+                (status, result_code, now, intent_id),
+            )
+            if cursor.rowcount != 1:
+                raise ReconciliationError("intent terminal update lost its guard")
+            if event_type is None:
+                event_type = "INTENT_%s" % status
+            if not isinstance(event_type, str) or not event_type:
+                raise ContractError("intent terminal event type is invalid")
+            event = {
+                "schema_version": 1,
+                "dispatch_id": current["dispatch_id"],
+                "sequence": self._next_event_sequence(
+                    connection, current["dispatch_id"]
+                ),
+                "event_type": event_type,
+                "created_at": now,
+            }
+            validate_record("event", event)
+            connection.execute(
+                "INSERT INTO events VALUES (?, ?, ?, ?, ?)",
+                (
+                    event["dispatch_id"], event["sequence"], event["event_type"],
+                    json.dumps(
+                        {
+                            "intent_id": intent_id,
+                            "status": status,
+                            "result_code": result_code,
+                        },
+                        sort_keys=True,
+                    ),
+                    event["created_at"],
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM intents WHERE intent_id = ?", (intent_id,)
+            ).fetchone()
+            return self._intent_from_row(updated)
+
+    def finish_intent(self, intent_id, status, result_code, event_type=None):
+        with self._control_lock():
+            return self._finish_intent_durable(
+                intent_id, status, result_code, event_type=event_type
+            )
+
+    def get_intent(self, intent_id):
+        with self.read_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM intents WHERE intent_id = ?", (intent_id,)
+            ).fetchone()
+        return self._intent_from_row(row)
+
+    def intent_for_idempotency(self, idempotency_key):
+        with self.read_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM intents WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        return self._intent_from_row(row)
+
+    def list_intents(self, dispatch_id=None):
+        with self.read_connection() as connection:
+            if dispatch_id is None:
+                rows = connection.execute(
+                    "SELECT * FROM intents ORDER BY created_at, intent_id"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT * FROM intents WHERE dispatch_id = ?
+                       ORDER BY created_at, intent_id""",
+                    (dispatch_id,),
+                ).fetchall()
+        return [self._intent_from_row(row) for row in rows]
 
     @staticmethod
     def _operation_from_row(row):
@@ -1193,53 +1475,71 @@ class ControlStore:
             task, events, approvals, agents, blockers, reviews, evidence
         )
 
-    def transition(self, dispatch_id, target, reason):
-        with self.mutation() as connection:
-            now = utc_now()
+    def _transition_in_transaction(self, connection, dispatch_id, target, reason):
+        now = utc_now()
+        row = connection.execute(
+            "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(dispatch_id)
+
+        target_state, resume_state = next_state(
+            row["state"], target, row["resume_state"]
+        )
+        sequence = self._next_event_sequence(connection, dispatch_id)
+        connection.execute(
+            """UPDATE tasks
+               SET state = ?, resume_state = ?, updated_at = ?
+               WHERE dispatch_id = ?""",
+            (target_state, resume_state, now, dispatch_id),
+        )
+        payload_json = json.dumps(
+            {"from": row["state"], "to": target_state, "reason": reason},
+            sort_keys=True,
+        )
+        event = {
+            "schema_version": 1,
+            "dispatch_id": dispatch_id,
+            "sequence": sequence,
+            "event_type": "STATE_CHANGED",
+            "created_at": now,
+        }
+        validate_record("event", event)
+        connection.execute(
+            "INSERT INTO events VALUES (?, ?, ?, ?, ?)",
+            (
+                event["dispatch_id"], event["sequence"], event["event_type"],
+                payload_json, event["created_at"],
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+        ).fetchone()
+        return dict(row)
+
+    def _transition_durable(self, dispatch_id, target, reason):
+        with self._transaction() as connection:
+            return self._transition_in_transaction(
+                connection, dispatch_id, target, reason
+            )
+
+    def _transition_to_resume_state_durable(self, dispatch_id, reason):
+        with self._transaction() as connection:
             row = connection.execute(
-                "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+                "SELECT resume_state FROM tasks WHERE dispatch_id = ?",
+                (dispatch_id,),
             ).fetchone()
             if row is None:
                 raise KeyError(dispatch_id)
+            return self._transition_in_transaction(
+                connection, dispatch_id, row["resume_state"], reason
+            )
 
-            target_state, resume_state = next_state(
-                row["state"], target, row["resume_state"]
+    def transition(self, dispatch_id, target, reason):
+        with self.mutation() as connection:
+            return self._transition_in_transaction(
+                connection, dispatch_id, target, reason
             )
-            sequence = connection.execute(
-                """SELECT COALESCE(MAX(sequence), 0) + 1
-                     FROM events WHERE dispatch_id = ?""",
-                (dispatch_id,),
-            ).fetchone()[0]
-            connection.execute(
-                """UPDATE tasks
-                   SET state = ?, resume_state = ?, updated_at = ?
-                   WHERE dispatch_id = ?""",
-                (target_state, resume_state, now, dispatch_id),
-            )
-            payload_json = json.dumps(
-                {"from": row["state"], "to": target_state, "reason": reason},
-                sort_keys=True,
-            )
-            event = {
-                "schema_version": 1,
-                "dispatch_id": dispatch_id,
-                "sequence": sequence,
-                "event_type": "STATE_CHANGED",
-                "created_at": now,
-            }
-            validate_record("event", event)
-            connection.execute(
-                "INSERT INTO events VALUES (?, ?, ?, ?, ?)",
-                (
-                    event["dispatch_id"], event["sequence"], event["event_type"],
-                    payload_json, event["created_at"],
-                ),
-            )
-            row = connection.execute(
-                "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
-            ).fetchone()
-            task = dict(row)
-        return task
 
     def reserve_worktree_identity(self, dispatch_id, agent, slug, branch):
         with self.mutation() as connection:

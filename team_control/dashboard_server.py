@@ -1,6 +1,8 @@
 import json
 import re
+import secrets
 import stat
+import hmac
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -12,6 +14,9 @@ from .dashboard_read_model import (
     DashboardNotFoundError,
     DashboardUnavailableError,
 )
+from .intents import IntentService, safe_intent_summary
+from .service import ControlPlane
+from .errors import ContractError, ReconciliationError
 
 
 STATIC_FILES = {
@@ -36,6 +41,7 @@ TASK_EVENTS_RE = re.compile(
 TASK_EVIDENCE_RE = re.compile(
     r"^/api/tasks/([A-Za-z0-9][A-Za-z0-9._-]*)/evidence$"
 )
+MAX_INTENT_BODY_BYTES = 8192
 
 
 class RouteNotFoundError(DashboardError):
@@ -55,14 +61,17 @@ def create_server(model, assets_dir, host="127.0.0.1", port=0):
     if host != "127.0.0.1":
         raise ValueError("dashboard host must be 127.0.0.1")
     assets = Path(assets_dir).resolve(strict=True)
-    handler = make_handler(model, assets)
+    handler = make_handler(model, assets, secrets.token_urlsafe(32))
     server = ThreadingHTTPServer((host, port), handler)
     server.daemon_threads = True
     return server
 
 
-def make_handler(model, assets_dir):
+def make_handler(model, assets_dir, intent_token):
     repository_id = model.repository_id()
+    intent_service = IntentService(
+        model.context, model.store, ControlPlane(model.context, model.store)
+    )
 
     class DashboardHandler(BaseHTTPRequestHandler):
         server_version = "TeamDashboard/1"
@@ -186,6 +195,9 @@ def make_handler(model, assets_dir):
             return query
 
         def _api_data(self, path):
+            if path == "/api/session":
+                self._query(())
+                return {"intent_token": intent_token}
             if path == "/api/health":
                 self._query(())
                 return model.health()
@@ -222,6 +234,58 @@ def make_handler(model, assets_dir):
                 self._query(())
                 return model.task(matched.group(1))
             raise RouteNotFoundError("route was not found")
+
+        def _intent_request(self):
+            content_types = self.headers.get_all("Content-Type", failobj=[])
+            if len(content_types) != 1 or content_types[0] != "application/json":
+                self._send_error(415, "CONTENT_TYPE_REJECTED", "Content-Type is not allowed")
+                return None
+            tokens = self.headers.get_all("X-Team-Intent-Token", failobj=[])
+            if len(tokens) != 1 or not hmac.compare_digest(tokens[0], intent_token):
+                self._send_error(403, "TOKEN_REJECTED", "Intent token is not allowed")
+                return None
+            lengths = self.headers.get_all("Content-Length", failobj=[])
+            if len(lengths) != 1 or not lengths[0].isdigit():
+                self._send_error(400, "CONTENT_LENGTH_REJECTED", "Content-Length is invalid")
+                return None
+            length = int(lengths[0])
+            if length > MAX_INTENT_BODY_BYTES:
+                self._send_error(413, "BODY_TOO_LARGE", "Intent request is too large")
+                return None
+            try:
+                raw = self.rfile.read(length)
+                value = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+                self._send_error(400, "INVALID_JSON", "Intent request must be JSON")
+                return None
+            if type(value) is not dict:
+                self._send_error(400, "INVALID_JSON", "Intent request must be an object")
+                return None
+            return value
+
+        def _submit_intent(self):
+            if not self._validate_host() or not self._validate_origin(required=True):
+                return
+            if self._safe_path() != "/api/intents" or urlsplit(self.path).query:
+                self._send_error(404, "NOT_FOUND", "Route was not found")
+                return
+            request = self._intent_request()
+            if request is None:
+                return
+            try:
+                intent = intent_service.submit(request)
+            except ContractError as error:
+                self._send_error(400, "INVALID_INTENT", str(error))
+            except ReconciliationError as error:
+                self._send_error(409, "INTENT_CONFLICT", str(error))
+            except KeyError:
+                self._send_error(404, "TASK_NOT_FOUND", "Task was not found")
+            except Exception:
+                self._send_error(500, "INTERNAL_ERROR", "Intent request failed")
+            else:
+                self._send_json(
+                    202, success_envelope(model, safe_intent_summary(intent))
+                )
 
         def _safe_path(self):
             raw = urlsplit(self.path).path
@@ -312,7 +376,7 @@ def make_handler(model, assets_dir):
             try:
                 if path in STATIC_FILES:
                     self._query(())
-                elif path in ("/api/health", "/api/project"):
+                elif path in ("/api/health", "/api/project", "/api/session"):
                     self._query(())
                 elif path == "/api/tasks":
                     self._query(("limit", "offset", "state", "risk", "attention", "q"))
@@ -335,12 +399,17 @@ def make_handler(model, assets_dir):
                 extra={"Allow": "GET, HEAD, OPTIONS"},
             )
 
+        def do_POST(self):
+            if self._safe_path() == "/api/intents":
+                self._submit_intent()
+            else:
+                self._reject_write()
+
         def _reject_write(self):
             if not self._validate_host() or not self._validate_origin():
                 return
             self._send_error(405, "READ_ONLY", "Dashboard is read-only")
 
-        do_POST = _reject_write
         do_PUT = _reject_write
         do_PATCH = _reject_write
         do_DELETE = _reject_write
