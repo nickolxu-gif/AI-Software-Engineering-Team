@@ -94,6 +94,23 @@ class DashboardServerTests(unittest.TestCase):
                 digest.update(candidate.read_bytes())
         return digest.hexdigest()
 
+    def session_token(self):
+        origin = "http://127.0.0.1:%d" % self.port
+        response, payload, body = self.request(
+            "GET", "/api/session", headers={"Origin": origin}
+        )
+        self.assertEqual(response.status, 200)
+        return payload["data"]["intent_token"]
+
+    @staticmethod
+    def task_intake_request():
+        return {
+            "title": "Create a task request",
+            "objective": "Let Codex prepare a seven-question dispatch",
+            "context": "No browser Git execution",
+            "idempotency_key": "123e4567-e89b-12d3-a456-426614174999",
+        }
+
     def raw_request(self, request):
         connection = socket.create_connection(("127.0.0.1", self.port), timeout=5)
         try:
@@ -195,6 +212,39 @@ class DashboardServerTests(unittest.TestCase):
             "result_code", "created_at", "updated_at",
         })
         self.assertNotIn("confirmation", body.decode("utf-8"))
+
+    def test_task_intake_requires_token_and_returns_safe_summary(self):
+        request = self.task_intake_request()
+        before = self.database_digest()
+        response, payload, body = self.request_json(
+            "POST", "/api/task-intakes", request
+        )
+        self.assertEqual(response.status, 403)
+        self.assertEqual(payload["error"]["code"], "TOKEN_REJECTED")
+        self.assertEqual(self.database_digest(), before)
+
+        response, payload, body = self.request_json(
+            "POST", "/api/task-intakes", request,
+            headers={"X-Team-Intent-Token": self.session_token()},
+        )
+        self.assertEqual(response.status, 202)
+        self.assertEqual(set(payload["data"]), {
+            "intake_id", "title", "objective", "status", "result_code",
+            "created_at", "updated_at",
+        })
+        self.assertEqual(payload["data"]["status"], "PENDING")
+        self.assertNotIn("context", body.decode("utf-8"))
+        self.assertNotIn("request_hash", body.decode("utf-8"))
+
+    def test_task_intake_wrong_origin_has_no_side_effect(self):
+        before = self.database_digest()
+        response, payload, body = self.request_json(
+            "POST", "/api/task-intakes", self.task_intake_request(),
+            headers={"Origin": "https://example.invalid"},
+        )
+        self.assertEqual(response.status, 403)
+        self.assertEqual(payload["error"]["code"], "ORIGIN_REJECTED")
+        self.assertEqual(self.database_digest(), before)
 
     def test_intent_submission_rejects_oversized_or_malformed_requests(self):
         origin = "http://127.0.0.1:%d" % self.port

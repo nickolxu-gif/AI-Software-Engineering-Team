@@ -541,6 +541,9 @@ class DashboardReadModel:
         pending_intents = connection.execute(
             "SELECT COUNT(*) FROM intents WHERE status = 'PENDING'"
         ).fetchone()[0]
+        pending_task_intakes = connection.execute(
+            "SELECT COUNT(*) FROM task_intake_requests WHERE status = 'PENDING'"
+        ).fetchone()[0]
         stale_reviews = connection.execute(
             """SELECT COUNT(*) FROM reviews r JOIN tasks t
                    ON t.dispatch_id = r.dispatch_id
@@ -557,6 +560,7 @@ class DashboardReadModel:
             "blocked_tasks": row["blocked_tasks"] or 0,
             "pending_approvals": pending,
             "pending_intents": pending_intents,
+            "pending_task_intakes": pending_task_intakes,
             "stale_reviews": stale_reviews,
             "stale_evidence": stale_evidence,
         }

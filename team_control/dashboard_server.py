@@ -16,6 +16,7 @@ from .dashboard_read_model import (
 )
 from .intents import IntentService, safe_intent_summary
 from .service import ControlPlane
+from .task_intakes import TaskIntakeService, safe_task_intake_summary
 from .errors import ContractError, ReconciliationError
 
 
@@ -72,6 +73,7 @@ def make_handler(model, assets_dir, intent_token):
     intent_service = IntentService(
         model.context, model.store, ControlPlane(model.context, model.store)
     )
+    task_intake_service = TaskIntakeService(model.store)
 
     class DashboardHandler(BaseHTTPRequestHandler):
         server_version = "TeamDashboard/1"
@@ -287,6 +289,28 @@ def make_handler(model, assets_dir, intent_token):
                     202, success_envelope(model, safe_intent_summary(intent))
                 )
 
+        def _submit_task_intake(self):
+            if not self._validate_host() or not self._validate_origin(required=True):
+                return
+            if self._safe_path() != "/api/task-intakes" or urlsplit(self.path).query:
+                self._send_error(404, "NOT_FOUND", "Route was not found")
+                return
+            request = self._intent_request()
+            if request is None:
+                return
+            try:
+                intake = task_intake_service.submit(request)
+            except ContractError as error:
+                self._send_error(400, "INVALID_TASK_INTAKE", str(error))
+            except ReconciliationError as error:
+                self._send_error(409, "TASK_INTAKE_CONFLICT", str(error))
+            except Exception:
+                self._send_error(500, "INTERNAL_ERROR", "Task intake request failed")
+            else:
+                self._send_json(
+                    202, success_envelope(model, safe_task_intake_summary(intake))
+                )
+
         def _safe_path(self):
             raw = urlsplit(self.path).path
             lowered = raw.lower()
@@ -402,6 +426,8 @@ def make_handler(model, assets_dir, intent_token):
         def do_POST(self):
             if self._safe_path() == "/api/intents":
                 self._submit_intent()
+            elif self._safe_path() == "/api/task-intakes":
+                self._submit_task_intake()
             else:
                 self._reject_write()
 
