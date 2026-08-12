@@ -240,6 +240,59 @@ class IntentRequestTests(unittest.TestCase):
             ).hexdigest(),
         )
 
+    def test_rejects_lone_surrogates_as_contract_errors(self):
+        for field, parameters in (
+            (
+                "requested_action",
+                {
+                    "requested_action": "\ud800",
+                    "requested_parameters": {},
+                    "confirmation": "yes",
+                },
+            ),
+            (
+                "confirmation",
+                {
+                    "requested_action": "merge",
+                    "requested_parameters": {},
+                    "confirmation": "\ud800",
+                },
+            ),
+            (
+                "requested_parameters",
+                {
+                    "requested_action": "merge",
+                    "requested_parameters": {"note": "\ud800"},
+                    "confirmation": "yes",
+                },
+            ),
+        ):
+            request = dict(
+                self.request,
+                action="APPROVAL_REQUEST",
+                parameters=parameters,
+            )
+            with self.subTest(field=field):
+                with self.assertRaises(ContractError):
+                    validate_intent_request(request)
+
+    def test_rejects_excessively_nested_approval_parameters(self):
+        nested = "leaf"
+        for _ in range(33):
+            nested = [nested]
+        request = dict(
+            self.request,
+            action="APPROVAL_REQUEST",
+            parameters={
+                "requested_action": "merge",
+                "requested_parameters": {"payload": nested},
+                "confirmation": "yes",
+            },
+        )
+
+        with self.assertRaises(ContractError):
+            validate_intent_request(request)
+
 
 if __name__ == "__main__":
     unittest.main()

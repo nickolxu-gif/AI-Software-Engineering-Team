@@ -19,20 +19,35 @@ APPROVAL_PARAMETER_FIELDS = frozenset({
     "requested_action", "requested_parameters", "confirmation",
 })
 JS_SAFE_INTEGER_MAX = 9007199254740991
+MAX_JSON_DEPTH = 32
 
 
-def _normalize_json_value(value):
+def _utf8_text(value, label):
+    if type(value) is not str:
+        raise ContractError("%s must be a string" % label)
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ContractError("%s must be valid UTF-8 text" % label) from error
+    return value
+
+
+def _normalize_json_value(value, depth=0):
+    if depth > MAX_JSON_DEPTH:
+        raise ContractError("JSON value exceeds the maximum nesting depth")
     if type(value) is dict:
         normalized = {}
         for key, nested_value in value.items():
             if type(key) is not str or not key.isascii():
                 raise ContractError("JSON object keys must be ASCII strings")
-            normalized[key] = _normalize_json_value(nested_value)
+            normalized[key] = _normalize_json_value(nested_value, depth + 1)
         return normalized
     if type(value) is list:
-        return [_normalize_json_value(item) for item in value]
-    if value is None or type(value) in (bool, str):
+        return [_normalize_json_value(item, depth + 1) for item in value]
+    if value is None or type(value) is bool:
         return value
+    if type(value) is str:
+        return _utf8_text(value, "JSON string")
     if type(value) is int:
         if abs(value) > JS_SAFE_INTEGER_MAX:
             raise ContractError("intent integers must be within the JS safe range")
@@ -57,11 +72,13 @@ def _normalize_approval_parameters(parameters):
     confirmation = parameters["confirmation"]
     if type(requested_action) is not str or not requested_action:
         raise ContractError("requested_action must be a non-empty string")
+    requested_action = _utf8_text(requested_action, "requested_action")
     if (
         type(confirmation) is not str
         or not 1 <= len(confirmation) <= 256
     ):
         raise ContractError("confirmation must contain 1 to 256 characters")
+    confirmation = _utf8_text(confirmation, "confirmation")
     requested_parameters = parameters["requested_parameters"]
     if type(requested_parameters) is not dict:
         raise ContractError("requested_parameters must be an object")
