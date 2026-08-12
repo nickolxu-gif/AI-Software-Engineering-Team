@@ -90,6 +90,7 @@
 - 这是前台固定循环，不是后台 daemon、timer、webhook 或网络监听；没有新增浏览器处理、Git/merge/push/发布、审批 nonce 消费、远程或权限扩大。
 - 独立验收：Claude Code / Sonnet V4.10.3 首次完整候选为 `PASS_WITH_WARNINGS`，三项警告修复后的 delta 为 `PASS`。安全记录见 `artifacts/dispatches/20260812-006/verification.md`；未使用 fallback Reviewer。
 - 整合前验证：默认 Python、Python 3.14 全量测试与 `git diff --check` 均通过；`repo-health` 必须从 `main` 根 Worktree 运行。
+- 运行库兼容性事实：若历史控制数据库存在但缺少 MVP 2 的 `intents` 表，意图 CLI 会 fail-closed 为 `INTERNAL_ERROR`。先只读核对缺失表与既有状态；仅在 `init` 的幂等迁移可证明为加表且无未知迁移风险时，使用稳定 `scripts/team-control init` 恢复，禁止直接修改 SQLite。任务 `20260812-006` 的实际恢复后队列为 `attempted: 0`。
 - 下一阶段为 MVP 3 或 GitHub Remote，均仍需 Human 明确的新任务授权；不得由 MVP 2C 自动进入。
 
 可使用以下命令复核最终 Worktree 和分支状态：

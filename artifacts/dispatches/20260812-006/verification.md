@@ -23,6 +23,10 @@ Claude Code / Sonnet 使用 V4.10.3、无工具、无 session persistence 审阅
 
 最终合同：普通可写 Codex 请求在健康成功、控制库存在（必要时 `init` 成功）后只运行一次 `process-pending-intents --limit 10`；严格只读和 Dashboard open/view 不初始化、不处理；初始化失败、控制库不可用或队列命令非零时停止后续写入。单条 `REJECTED`/`BLOCKED` 仅记录并继续当前请求。没有 daemon、浏览器处理、Git/远程/发布、审批消费或权限扩大。
 
+## 整合后的运行库恢复验证
+
+首次在主线实际运行队列时，旧的 MVP 1 运行数据库缺少后来新增的 `intents` 表，CLI 因未识别的 SQLite 错误 fail-closed 为 `INTERNAL_ERROR`。Codex 随即停止写入并只读核对：缺失表仅为 `intents`，有 3 个任务、0 条 review、0 条 approval，且既有 `init` 的幂等 schema 迁移只会创建该表。随后通过稳定入口 `scripts/team-control init` 恢复，未直接修改 SQLite；重新执行 `process-pending-intents --limit 10` 返回 `{"attempted":0,"results":[]}`，`intents` 读模型也为空。仓库健康检查仍为 PASS。
+
 ## MiMo 盘点
 
 当前没有可用的 MiMo 独立执行入口，未伪造盘点。Codex 的可复用结论是：主动性应以“每次前台请求的一次有上限循环”实现，并用明确的前置条件和非零退出 fail-closed；不能把主动性实现成后台权限或把旧能力伪装成新扩权。
