@@ -1,4 +1,4 @@
-# AI 软件工程团队操作与使用说明（MVP 0 + MVP 1 + MVP 2A + MVP 2B）
+# AI 软件工程团队操作与使用说明（MVP 0 + MVP 1 + MVP 2A + MVP 2B + MVP 2C）
 
 ## 1. 先给结论：你以后只需要在 Codex 里说话
 
@@ -16,11 +16,11 @@ Codex 会在后台读取项目规则、检查 Git，并使用 MVP 0 已实现的
 
 当前必须准确区分三件事：
 
-- Codex 是唯一主入口和工程控制者；MVP 2A 工作台可以提交三类受控意图，MVP 2B 让 Codex 主动、安全地批量处理这些已提交意图。
+- Codex 是唯一主入口和工程控制者；MVP 2A 工作台可以提交三类受控意图，MVP 2B 提供逐条门禁队列，MVP 2C 让 Codex 在正常工程请求开始时主动、安全地处理有限批次。
 - `scripts/open-team-dashboard` 是 Codex 使用的一键启动器，你不需要自己运行。
 - GitHub Remote 尚未配置；打开本地工作台不会配置 GitHub Remote，也不会 push。
 
-MVP 0 稳定控制 CLI 包含 `init`、`start`、针对已知 `dispatch_id` 的 `status`、`transition`、`approvals` 列表和 `doctor inspect/repair`。MVP 2A 的本地工作台能查看全局首屏，并提交暂停、恢复或审批准备意图；MVP 2B 让 Codex 每次最多处理 25 条已提交意图。浏览器不能处理意图、修改 Git、调 Agent、merge、push、发布或消费审批 nonce。
+MVP 0 稳定控制 CLI 包含 `init`、`start`、针对已知 `dispatch_id` 的 `status`、`transition`、`approvals` 列表和 `doctor inspect/repair`。MVP 2A 的本地工作台能查看全局首屏，并提交暂停、恢复或审批准备意图；MVP 2C 让 Codex 每次正常工程请求最多处理 10 条已提交意图。浏览器不能处理意图、修改 Git、调 Agent、merge、push、发布或消费审批 nonce。
 
 现行依据：
 
@@ -49,8 +49,9 @@ Codex 应自动完成：
 2. 从主仓库运行健康检查，核对 `main`、Worktree、分支和脏文件。
 3. 检查 Git common directory 下的控制数据库；普通请求可安全初始化，严格只读请求不得初始化。
 4. 任何新写入前检查 `PREPARED`。当前没有通用 reconcile CLI，只能由 Codex 使用已有测试覆盖的内部 `OperationCoordinator` API；无法完成时转为 `BLOCKED`，不得直接修改 SQLite。
-5. 已知 `dispatch_id` 时读取该任务的 Git 事实、Agent、Blocker、Review、Evidence 和待审批项。
-6. 把已验证事实、尚未验证判断和建议下一步分开报告。
+5. 正常工程请求会自动调用一次 `process-pending-intents --limit 10`。单条 `REJECTED` 或 `BLOCKED` 会被说明后继续当前请求；若队列命令本身非零退出，Codex 停止后续写入，只报告控制面问题。
+6. 已知 `dispatch_id` 时读取该任务的 Git 事实、Agent、Blocker、Review、Evidence 和待审批项。
+7. 把已验证事实、尚未验证判断和建议下一步分开报告。
 
 如果项目刚刚被 Codex 扫描，也可以说：
 
@@ -104,7 +105,7 @@ MVP 0 稳定 CLI 只有以下能力：
 
 这些动作只有在已有测试覆盖的 Python 内部 API 可用、身份和 SHA 已校验、且 Codex 能保持控制锁与事务边界时，才可作为“Codex 内部受控编排”执行。例如通用 operation 恢复必须调用 `OperationCoordinator.reconcile_one/reconcile_all` 并提供匹配 verifier。不得直接修改 SQLite，也不得把内部方法描述成用户可依赖的稳定 CLI。内部 API 不可用、参数不足或恢复事实不唯一时，任务转为 `BLOCKED`。
 
-MVP 2B 工作台可以显示受限首屏任务列表与“待处理意图”计数。任务详情中的“提交给 Codex”只会创建 `PENDING` 意图；状态显示“已提交给 Codex，尚未执行”并不代表任务已经暂停、恢复或获批。Codex 在主动工作循环中可按稳定顺序处理至多 25 条意图，并为每一条重新核验实际 HEAD、状态、待审批项和已准备操作；结果才会写入生命周期事件。底层控制 CLI 本身仍不提供全局任务列表。
+MVP 2B 工作台可以显示受限首屏任务列表与“待处理意图”计数。任务详情中的“提交给 Codex”只会创建 `PENDING` 意图；状态显示“已提交给 Codex，尚未执行”并不代表任务已经暂停、恢复或获批。MVP 2C 中，Codex 在每次正常工程请求的前台启动循环中按稳定顺序处理至多 10 条意图，并为每一条重新核验实际 HEAD、状态、待审批项和已准备操作；结果才会写入生命周期事件。这不是后台 daemon 或定时器。底层控制 CLI 本身仍不提供全局任务列表。
 
 ### 4.1.1 工作台按钮怎么用
 
@@ -309,7 +310,7 @@ Codex 先从主仓库检查健康，再调用 `scripts/open-team-dashboard`。�
 - 页面每 15 秒自动刷新；刷新期间不会叠加新的全量刷新。
 - 连续 45 秒没有成功刷新时显示过期提醒，并保留最后一次成功数据。
 - 所有并行响应必须来自同一个 Git HEAD，否则显示 `SOURCE_HEAD_MISMATCH`，不混合新旧快照。
-- 浏览器只发送 GET/HEAD/OPTIONS；不能启动 Agent、改状态、审批、修复、merge、push 或发布。
+- 浏览器读取使用 GET/HEAD/OPTIONS；仅可 POST 三类受限意图请求，不能处理意图、启动 Agent、改状态、审批、修复、merge、push 或发布。
 - 页面仅绑定 `127.0.0.1`，不监听局域网；不配置远端，不依赖云服务。
 - 所有工程动作都显示“请回到 Codex 处理”。
 
