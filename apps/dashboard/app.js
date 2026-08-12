@@ -29,6 +29,26 @@ async function getJson(url) {
   return payload;
 }
 
+async function submitIntent(request) {
+  const session = assertSourceHead(await getJson('/api/session'), state.sourceHeadSha);
+  const response = await fetch('/api/intents', {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'X-Team-Intent-Token': session.data.intent_token
+    },
+    body: JSON.stringify(request)
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    const error = new Error(payload.error?.message || '受控意图提交失败');
+    error.code = payload.error?.code || 'INTENT_SUBMIT_FAILED';
+    throw error;
+  }
+  return assertSourceHead(payload, state.sourceHeadSha);
+}
+
 function runSecondary(operation) {
   return new Promise((resolve, reject) => {
     const run = async () => {
@@ -139,12 +159,50 @@ function renderTaskDetail(detail) {
   const agents = (detail.agents || []).map(item => `<div class="row"><div class="row-head"><strong>${escapeHtml(item.agent_id)}</strong>${statusBadge(item.state, item.state === 'COMPLETED')}</div><div class="meta">${escapeHtml(item.role)} · 进度 ${escapeHtml(item.progress)}% · ${escapeHtml(item.updated_at)}</div></div>`).join('') || renderEmpty('无 Agent 汇报');
   const blockers = (detail.blockers || []).map(item => `<div class="row"><div class="row-head"><strong>${escapeHtml(item.reason)}</strong>${statusBadge(item.status, item.status === 'RESOLVED')}</div><div class="meta">Owner ${escapeHtml(shown(item.owner))} · ${escapeHtml(item.created_at)}</div><p>${escapeHtml(shown(item.resolution_condition, '未记录解除条件'))}</p></div>`).join('') || renderEmpty('无阻塞');
   const reviews = (detail.reviews || []).map(item => `<div class="row"><div class="row-head"><strong>${escapeHtml(item.reviewer)}</strong>${statusBadge(item.disposition, item.disposition === 'ACCEPT' && !item.stale)}</div><div class="meta">${item.stale ? escapeHtml(statusText('STALE')) : escapeHtml(statusText('CURRENT'))} · ${escapeHtml(item.created_at)}</div></div>`).join('') || renderEmpty('无审查记录');
+  const intents = (detail.intents || []).map(item => `<div class="row"><div class="row-head"><strong>${escapeHtml(item.action)}</strong>${statusBadge(item.status, item.status === 'APPLIED')}</div><div class="meta">${escapeHtml(shown(item.result_code, '尚未由 Codex 处理'))} · ${escapeHtml(item.created_at)}</div></div>`).join('') || renderEmpty('尚未提交受控意图');
+  const terminal = ['CLOSED', 'RELEASED'].includes(task.state);
+  const controls = `<section class="intent-panel"><h2>提交给 Codex</h2><p class="meta">仅创建待处理意图，不会在浏览器执行 Git、合并、发布或审批。</p><div class="intent-controls"><button data-intent-action="PAUSE_REQUEST"${terminal ? ' disabled' : ''}>申请暂停</button><button data-intent-action="RESUME_REQUEST"${task.state === 'PAUSED' && !terminal ? '' : ' disabled'}>申请恢复</button><button data-intent-action="APPROVAL_REQUEST"${terminal ? ' disabled' : ''}>请求审批准备</button></div></section>`;
   return `<section class="panel task-detail"><div class="row-head"><div><h2>${escapeHtml(task.title)}</h2><div class="meta">${escapeHtml(task.dispatch_id)}</div></div><button class="task-link" data-evidence="${escapeHtml(task.dispatch_id)}">查看证据索引</button></div>
     <p>${escapeHtml(task.objective)}</p><div>${statusBadge(task.effective_state)}${badge(`风险 ${task.risk_level}`)}${badge(detail.head_drift ? 'HEAD 漂移' : 'HEAD 一致', !detail.head_drift)}${badge(detail.valid_acceptance ? '有效验收' : '尚无有效验收', detail.valid_acceptance)}</div>
     <dl class="facts"><div><dt>Owner</dt><dd>${escapeHtml(shown(task.owner))}</dd></div><div><dt>Executor</dt><dd>${escapeHtml(shown(task.agent))}</dd></div><div><dt>生命周期状态</dt><dd>${escapeHtml(statusText(task.state))}</dd></div><div><dt>最近更新</dt><dd>${escapeHtml(task.updated_at)}</dd></div><div><dt>Task Base SHA</dt><dd>${escapeHtml(shortSha(task.task_base_sha))}</dd></div><div><dt>Current HEAD</dt><dd>${escapeHtml(shortSha(task.current_head_sha))}</dd></div><div><dt>Actual HEAD</dt><dd>${escapeHtml(shortSha(detail.actual_head_sha))}</dd></div><div><dt>分支</dt><dd>${escapeHtml(shown(task.branch))}</dd></div><div class="wide"><dt>Worktree</dt><dd>${escapeHtml(shown(task.worktree_path))}</dd></div></dl>
     <div class="cards compact"><div class="card">Agent<div class="metric">${escapeHtml((detail.agents || []).length)}</div></div><div class="card">未解决阻塞<div class="metric">${escapeHtml((detail.blockers || []).filter(item => item.status === 'OPEN').length)}</div></div><div class="card">待审批<div class="metric">${escapeHtml(detail.pending_approval_count)}</div></div><div class="card">证据<div class="metric">${escapeHtml(detail.evidence_count)}</div></div></div>
     <h2>当前下一步</h2><p>${escapeHtml(nextStep)}；所有工程动作请回到 Codex 处理。</p>
-    <h2>Agent 汇报</h2>${agents}<h2>阻塞</h2>${blockers}<h2>审查</h2>${reviews}<h2>生命周期事件</h2>${renderTimeline(state.selectedEvents)}</section>`;
+    ${controls}<h2>受控意图</h2>${intents}<h2>Agent 汇报</h2>${agents}<h2>阻塞</h2>${blockers}<h2>审查</h2>${reviews}<h2>生命周期事件</h2>${renderTimeline(state.selectedEvents)}</section>`;
+}
+
+function newIntentId() {
+  if (!globalThis.crypto?.randomUUID) throw Object.assign(new Error('当前浏览器不支持安全意图标识'), { code: 'BROWSER_CRYPTO_UNAVAILABLE' });
+  return globalThis.crypto.randomUUID();
+}
+
+function bindIntentControls() {
+  document.querySelectorAll('[data-intent-action]').forEach(button => button.addEventListener('click', async () => {
+    const detail = state.selectedDetail;
+    if (!detail || button.disabled) return;
+    const action = button.dataset.intentAction;
+    let parameters = {};
+    if (action === 'APPROVAL_REQUEST') {
+      const confirmation = window.prompt('请说明需要 Codex 准备的审批事项（最多 256 字）：');
+      if (!confirmation) return;
+      parameters = { requested_action: 'HUMAN_APPROVAL', requested_parameters: {}, confirmation };
+    }
+    button.disabled = true;
+    statusRegion.textContent = '正在提交给 Codex…';
+    try {
+      await submitIntent({
+        dispatch_id: detail.task.dispatch_id,
+        action,
+        target_sha: detail.task.current_head_sha,
+        idempotency_key: newIntentId(),
+        parameters
+      });
+      statusRegion.textContent = '已提交给 Codex，尚未执行';
+      await loadTaskDetail(detail.task.dispatch_id);
+    } catch (error) {
+      statusRegion.textContent = `提交失败：${error.code || 'INTENT_SUBMIT_FAILED'}；请回到 Codex 处理`;
+      button.disabled = false;
+    }
+  }));
 }
 function renderTasks() {
   const tasks = (state.data.tasks || []).filter(task => (!state.riskFilter || task.risk_level === state.riskFilter) && (!state.taskQuery || `${task.dispatch_id} ${task.title} ${task.objective}`.toLowerCase().includes(state.taskQuery.toLowerCase())));
@@ -153,6 +211,7 @@ function renderTasks() {
   if (!eventsAreCurrent) { state.selectedEvents = null; state.selectedEventsTaskId = null; state.selectedEventsSourceHead = null; }
   content.innerHTML = `<h1>任务</h1><p class="subhead">当前首屏最多 100 项；点击任意任务读取完整详情</p><div class="filters"><label>搜索 <input id="task-search" value="${escapeHtml(state.taskQuery)}"></label><label>风险 <select id="risk-filter"><option value="">全部</option>${['L1','L2','L3'].map(value => `<option${state.riskFilter === value ? ' selected' : ''}>${value}</option>`).join('')}</select></label></div><div class="grid"><section>${tasks.length ? tasks.map(taskRow).join('') : renderEmpty('没有匹配任务')}</section>${renderTaskDetail(detailIsCurrent ? state.selectedDetail : null)}</div>`;
   bindTaskLinks();
+  bindIntentControls();
   document.querySelector('#task-search').addEventListener('input', event => { state.taskQuery = event.target.value; renderTasks(); const input = document.querySelector('#task-search'); input.focus(); input.setSelectionRange(input.value.length, input.value.length); });
   document.querySelector('#risk-filter').addEventListener('change', event => { state.riskFilter = event.target.value; renderTasks(); document.querySelector('#risk-filter').focus(); });
 }

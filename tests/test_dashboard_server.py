@@ -134,6 +134,22 @@ class DashboardServerTests(unittest.TestCase):
                 self.assertEqual(payload["error"]["code"], "READ_ONLY")
         self.assertEqual(self.database_digest(), before)
 
+    def test_dashboard_assets_expose_only_bounded_intent_controls(self):
+        app = (PROJECT_ROOT / "apps" / "dashboard" / "app.js").read_text(
+            encoding="utf-8"
+        )
+        page = (PROJECT_ROOT / "apps" / "dashboard" / "index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("受控意图", page)
+        self.assertIn("/api/session", app)
+        self.assertIn("/api/intents", app)
+        self.assertIn("method: 'POST'", app)
+        for action in ("PAUSE_REQUEST", "RESUME_REQUEST", "APPROVAL_REQUEST"):
+            self.assertIn(action, app)
+        for forbidden in ("process-intent", "git merge", "git push", "nonce", "localStorage"):
+            self.assertNotIn(forbidden, app)
+
     def test_intent_session_and_submission_require_loopback_origin_and_token(self):
         control = ControlPlane(RepoContext.discover(self.repo), self.store)
         task = control.create_task("20260812-101", "Intent", "Submit", "L2")

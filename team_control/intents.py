@@ -171,8 +171,7 @@ class IntentService:
         except (ValueError, AttributeError) as error:
             raise ContractError("intent_id must be a UUID") from error
 
-        with self.store.controlled_operation():
-            session = _IntentSession(self.store)
+        with self.store.controlled_operation() as session:
             intent = self.store.get_intent(intent_id)
             if intent is None:
                 raise KeyError(intent_id)
@@ -233,18 +232,3 @@ class IntentService:
                     intent_id, "REJECTED", "STATE_CONFLICT"
                 )
             return session.finish_intent(intent_id, "APPLIED", target)
-
-
-class _IntentSession:
-    """Small adapter over lock-held store primitives."""
-
-    def __init__(self, store):
-        self._store = store
-
-    def transition(self, dispatch_id, target, reason):
-        return self._store._transition_durable(dispatch_id, target, reason)
-
-    def finish_intent(self, intent_id, status, result_code, event_type=None):
-        return self._store._finish_intent_durable(
-            intent_id, status, result_code, event_type=event_type
-        )

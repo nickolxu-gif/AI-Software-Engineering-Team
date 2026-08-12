@@ -971,6 +971,28 @@ class DashboardReadModel:
                 }
                 for review in review_rows
             ]
+            intent_rows = self._bounded_detail_rows(
+                connection.execute(
+                    """SELECT intent_id, action, target_sha, status, result_code,
+                              created_at, updated_at
+                       FROM intents WHERE dispatch_id = ?
+                       ORDER BY created_at DESC, intent_id LIMIT ?""",
+                    (dispatch_id, DETAIL_SUBRESOURCE_LIMIT + 1),
+                ).fetchall(),
+                "intents",
+            )
+            intents = [
+                {
+                    "intent_id": intent["intent_id"],
+                    "action": intent["action"],
+                    "target_sha": intent["target_sha"],
+                    "status": intent["status"],
+                    "result_code": intent["result_code"],
+                    "created_at": intent["created_at"],
+                    "updated_at": intent["updated_at"],
+                }
+                for intent in intent_rows
+            ]
             pending_count = connection.execute(
                 """SELECT COUNT(*) FROM approvals
                    WHERE dispatch_id = ? AND status = 'PENDING'
@@ -1006,6 +1028,7 @@ class DashboardReadModel:
             "agents": agents,
             "blockers": blockers,
             "reviews": reviews,
+            "intents": intents,
             "pending_approval_count": pending_count,
             "evidence_count": evidence_count,
             "latest_event": self._event_item(latest) if latest else None,

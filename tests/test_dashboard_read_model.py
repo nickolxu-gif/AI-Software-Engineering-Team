@@ -19,6 +19,7 @@ from team_control.dashboard_read_model import (
 )
 from team_control.errors import GitStateError
 from team_control.git_context import RepoContext
+from team_control.intents import IntentService
 from team_control.service import ControlPlane
 from team_control.store import ControlStore
 from tests.helpers import make_repo, run
@@ -351,6 +352,33 @@ class DashboardReadModelTests(unittest.TestCase):
                 },
             )
             self.assertEqual(project["counts"]["pending_approvals"], 1)
+
+    def test_task_detail_exposes_safe_intent_summaries_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            context = RepoContext.discover(repo)
+            control = ControlPlane(context, store)
+            task = control.create_task("20260812-110", "Intent", "Safe view", "L2")
+            IntentService(context, store, control).submit({
+                "dispatch_id": task["dispatch_id"],
+                "action": "APPROVAL_REQUEST",
+                "target_sha": task["current_head_sha"],
+                "idempotency_key": "123e4567-e89b-12d3-a456-426614174000",
+                "parameters": {
+                    "requested_action": "merge",
+                    "requested_parameters": {},
+                    "confirmation": "private confirmation",
+                },
+            })
+
+            detail = model.task(task["dispatch_id"])
+
+            self.assertEqual(len(detail["intents"]), 1)
+            self.assertEqual(set(detail["intents"][0]), {
+                "intent_id", "action", "target_sha", "status", "result_code",
+                "created_at", "updated_at",
+            })
+            self.assertNotIn("confirmation", repr(detail))
 
     def test_task_filters_pagination_and_search_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -807,6 +835,7 @@ class DashboardReadModelTests(unittest.TestCase):
                     "agents",
                     "blockers",
                     "reviews",
+                    "intents",
                     "pending_approval_count",
                     "evidence_count",
                     "latest_event",
