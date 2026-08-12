@@ -42,7 +42,7 @@ def test_submit_is_idempotent_and_does_not_create_a_task(self):
 
 - [ ] **Step 2: Run the focused test to verify RED**
 
-Run: `python3 -m unittest tests.test_task_intakes -q`  
+Run: `python3 -m unittest tests.test_task_intakes -q`
 Expected: import failure for `team_control.task_intakes`.
 
 - [ ] **Step 3: Implement the minimum private intake contract and store API**
@@ -51,7 +51,7 @@ Add `TASK_INTAKE_REQUEST_FIELDS`, UTF-8 / exact-field / UUID validation, bounded
 
 - [ ] **Step 4: Run focused tests to verify GREEN**
 
-Run: `python3 -m unittest tests.test_task_intakes -q`  
+Run: `python3 -m unittest tests.test_task_intakes -q`
 Expected: `OK`.
 
 - [ ] **Step 5: Commit the isolated storage increment**
@@ -97,7 +97,7 @@ def test_task_intake_rejects_wrong_origin_or_missing_token(self):
 
 - [ ] **Step 2: Run focused tests to verify RED**
 
-Run: `python3 -m unittest tests.test_dashboard_server -q`  
+Run: `python3 -m unittest tests.test_dashboard_server -q`
 Expected: `POST /api/task-intakes` is rejected or route is absent.
 
 - [ ] **Step 3: Add the route and read-model summaries**
@@ -106,7 +106,7 @@ Reuse `_intent_request` only for transport parsing; dispatch `/api/task-intakes`
 
 - [ ] **Step 4: Run focused tests to verify GREEN**
 
-Run: `python3 -m unittest tests.test_dashboard_server tests.test_dashboard_read_model -q`  
+Run: `python3 -m unittest tests.test_dashboard_server tests.test_dashboard_read_model -q`
 Expected: `OK`.
 
 - [ ] **Step 5: Commit the API increment**
@@ -137,7 +137,7 @@ def test_dashboard_assets_expose_task_intake_without_execution_controls(self):
 
 - [ ] **Step 2: Run the focused UI tests to verify RED**
 
-Run: `python3 -m unittest tests.test_dashboard_server tests.test_dashboard_ui_contract -q`  
+Run: `python3 -m unittest tests.test_dashboard_server tests.test_dashboard_ui_contract -q`
 Expected: assertion failure for the missing task intake UI.
 
 - [ ] **Step 3: Implement a bounded overview form and documentation**
@@ -146,7 +146,7 @@ Render title, objective and optional context fields only on overview. Submit thr
 
 - [ ] **Step 4: Run focused UI tests to verify GREEN**
 
-Run: `python3 -m unittest tests.test_dashboard_server tests.test_dashboard_ui_contract -q`  
+Run: `python3 -m unittest tests.test_dashboard_server tests.test_dashboard_ui_contract -q`
 Expected: `OK`.
 
 - [ ] **Step 5: Run complete local verification and commit**

@@ -38,6 +38,10 @@ EXPECTED_COLUMNS = {
         "confirmation_hash", "status", "result_code", "idempotency_key",
         "created_at", "updated_at",
     ),
+    "task_intake_requests": (
+        "intake_id", "title", "objective", "context", "request_hash",
+        "status", "result_code", "idempotency_key", "created_at", "updated_at",
+    ),
     "evidence": (
         "evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha",
         "created_at",
@@ -62,6 +66,7 @@ EXPECTED_PRIMARY_KEYS = {
     "approvals": {"approval_id": 1},
     "operations": {"operation_id": 1},
     "intents": {"intent_id": 1},
+    "task_intake_requests": {"intake_id": 1},
     "evidence": {"evidence_id": 1},
     "agents": {"dispatch_id": 1, "agent_id": 2},
     "reviews": {"review_id": 1},
@@ -74,6 +79,7 @@ EXPECTED_NULLABLE = {
     "approvals": {"consumed_at"},
     "operations": {"result_json"},
     "intents": {"confirmation_hash"},
+    "task_intake_requests": {"context"},
     "evidence": {"source_sha"},
     "agents": {"model"},
     "reviews": set(),
@@ -182,7 +188,7 @@ class StoreTests(unittest.TestCase):
                         }
                         self.assertEqual(nullable, EXPECTED_NULLABLE[table])
 
-                for table in set(EXPECTED_COLUMNS) - {"tasks"}:
+                for table in set(EXPECTED_COLUMNS) - {"tasks", "task_intake_requests"}:
                     with self.subTest(foreign_key_table=table):
                         foreign_keys = connection.execute(
                             "PRAGMA foreign_key_list(%s)" % table
@@ -194,7 +200,7 @@ class StoreTests(unittest.TestCase):
                             ("tasks", "dispatch_id", "dispatch_id"),
                         )
 
-                for table in ("approvals", "operations", "intents"):
+                for table in ("approvals", "operations", "intents", "task_intake_requests"):
                     unique_columns = set()
                     for index in connection.execute(
                         "PRAGMA index_list(%s)" % table

@@ -1,8 +1,8 @@
 # Dispatch Record：20260812-008 MVP 2D 受控任务需求入口
 
-> 状态：`IN_PROGRESS`  
-> Owner / Builder：Codex  
-> 风险：L2（本地受控写入与浏览器边界）  
+> 状态：`IN_PROGRESS`
+> Owner / Builder：Codex
+> 风险：L2（本地受控写入与浏览器边界）
 > 基线：`6858bb715b4b8bb738a3d4e62fc2542ea616169c`
 
 ## Q1 目标、范围与完成标准

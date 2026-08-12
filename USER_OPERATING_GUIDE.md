@@ -316,7 +316,7 @@ Codex 先从主仓库检查健康，再调用 `scripts/open-team-dashboard`。�
 - 页面每 15 秒自动刷新；刷新期间不会叠加新的全量刷新。
 - 连续 45 秒没有成功刷新时显示过期提醒，并保留最后一次成功数据。
 - 所有并行响应必须来自同一个 Git HEAD，否则显示 `SOURCE_HEAD_MISMATCH`，不混合新旧快照。
-- 浏览器读取使用 GET/HEAD/OPTIONS；仅可 POST MVP 2A 的三类受限意图请求与 MVP 2D 的任务需求收件箱，不能处理意图、启动 Agent、创建任务、改状态、审批、修复、merge、push 或发布。
+- 浏览器读取使用 GET/HEAD/OPTIONS；仅可 POST MVP 2A 的既有三类受限意图请求与 MVP 2D 的任务需求收件箱，不能处理意图、启动 Agent、创建任务、改状态、审批、修复、merge、push 或发布。
 - 页面仅绑定 `127.0.0.1`，不监听局域网；不配置远端，不依赖云服务。
 - 所有工程动作都显示“请回到 Codex 处理”。
 
