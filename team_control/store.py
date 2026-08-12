@@ -23,6 +23,8 @@ from .errors import (
     BoundaryError,
     ContractError,
     ReconciliationError,
+    SchemaMigrationRequiredError,
+    SchemaUnsupportedError,
     TeamControlError,
 )
 from .git_context import canonical_under, run_argv
@@ -178,6 +180,45 @@ INTENT_STATUSES = frozenset(("PENDING", "APPLIED", "REJECTED", "BLOCKED"))
 TERMINAL_INTENT_STATUSES = INTENT_STATUSES - {"PENDING"}
 INTENT_RESULT_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 MAX_PENDING_INTENT_BATCH = 25
+REQUIRED_SCHEMA_COLUMNS = {
+    "tasks": frozenset((
+        "dispatch_id", "schema_version", "title", "objective", "risk_level",
+        "state", "resume_state", "task_base_sha", "current_head_sha", "owner",
+        "agent", "slug", "branch", "worktree_path", "created_at", "updated_at",
+    )),
+    "events": frozenset((
+        "dispatch_id", "sequence", "event_type", "payload_json", "created_at",
+    )),
+    "approvals": frozenset((
+        "approval_id", "dispatch_id", "action", "target_sha", "request_hash",
+        "nonce_hash", "expires_at", "consumed_at", "status", "idempotency_key",
+    )),
+    "operations": frozenset((
+        "operation_id", "dispatch_id", "action", "request_hash", "target_sha",
+        "phase", "result_json", "idempotency_key", "created_at", "updated_at",
+    )),
+    "intents": frozenset((
+        "intent_id", "dispatch_id", "action", "target_sha", "request_hash",
+        "confirmation_hash", "status", "result_code", "idempotency_key",
+        "created_at", "updated_at",
+    )),
+    "evidence": frozenset((
+        "evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha",
+        "created_at",
+    )),
+    "agents": frozenset((
+        "dispatch_id", "agent_id", "role", "model", "state", "progress",
+        "report_json", "updated_at",
+    )),
+    "reviews": frozenset((
+        "review_id", "dispatch_id", "reviewer", "disposition", "source_sha",
+        "report_path", "report_sha256", "created_at",
+    )),
+    "blockers": frozenset((
+        "blocker_id", "dispatch_id", "reason", "owner", "status",
+        "resolution_condition", "created_at", "updated_at",
+    )),
+}
 
 
 def validate_approval_nonce(value, error_type):
@@ -558,6 +599,53 @@ class ControlStore:
             yield connection
         finally:
             connection.close()
+
+    def require_schema_compatible(self):
+        with self.read_connection() as connection:
+            objects = {
+                row["name"]: row["type"]
+                for row in connection.execute(
+                    "SELECT name, type FROM sqlite_master "
+                    "WHERE name IN (%s)"
+                    % ", ".join("?" for _ in REQUIRED_SCHEMA_COLUMNS),
+                    tuple(REQUIRED_SCHEMA_COLUMNS),
+                )
+            }
+            columns = {
+                table: {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(%s)" % table)
+                }
+                for table, object_type in objects.items()
+                if object_type == "table"
+            }
+        missing = sorted(set(REQUIRED_SCHEMA_COLUMNS) - set(objects))
+        if missing:
+            raise SchemaMigrationRequiredError(
+                "control database is missing required tables: %s; run init"
+                % ", ".join(missing)
+            )
+        non_tables = sorted(
+            table for table, object_type in objects.items() if object_type != "table"
+        )
+        if non_tables:
+            raise SchemaUnsupportedError(
+                "control database has required objects that are not tables: %s"
+                % ", ".join(non_tables)
+            )
+        incomplete = {
+            table: sorted(required - columns[table])
+            for table, required in REQUIRED_SCHEMA_COLUMNS.items()
+            if not required.issubset(columns[table])
+        }
+        if incomplete:
+            details = "; ".join(
+                "%s(%s)" % (table, ", ".join(missing_columns))
+                for table, missing_columns in sorted(incomplete.items())
+            )
+            raise SchemaUnsupportedError(
+                "control database is missing required columns: %s" % details
+            )
 
     def create_task(self, record):
         validate_record("task", record)

@@ -457,6 +457,103 @@ class CliTests(unittest.TestCase):
                 "CONTRACT_ERROR",
             )
 
+    def test_missing_intents_table_requires_schema_migration_before_queue_processing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_cli_repo(Path(tmp) / "repo")
+            run_cli(repo, "init")
+            store = ControlStore.for_repo(RepoContext.discover(repo))
+            with store.mutation() as connection:
+                connection.execute("DROP TABLE intents")
+
+            blocked = run_cli(
+                repo,
+                "process-pending-intents",
+                "--limit",
+                "1",
+                check=False,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertEqual(blocked.stdout, "")
+            self.assertEqual(
+                assert_single_json_line(self, blocked, "stderr")["error"]["code"],
+                "SCHEMA_MIGRATION_REQUIRED",
+            )
+
+            run_cli(repo, "init")
+            recovered = run_cli(repo, "process-pending-intents", "--limit", "1")
+            self.assertEqual(
+                assert_single_json_line(self, recovered),
+                {"attempted": 0, "results": []},
+            )
+
+    def test_missing_required_table_blocks_every_non_init_cli_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_cli_repo(Path(tmp) / "repo")
+            run_cli(repo, "init")
+            store = ControlStore.for_repo(RepoContext.discover(repo))
+            with store.mutation() as connection:
+                connection.execute("DROP TABLE intents")
+
+            blocked = run_cli(
+                repo,
+                "status",
+                "--dispatch-id",
+                "20260812-007",
+                check=False,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertEqual(blocked.stdout, "")
+            self.assertEqual(
+                assert_single_json_line(self, blocked, "stderr")["error"]["code"],
+                "SCHEMA_MIGRATION_REQUIRED",
+            )
+
+    def test_required_table_with_missing_column_is_schema_unsupported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_cli_repo(Path(tmp) / "repo")
+            run_cli(repo, "init")
+            store = ControlStore.for_repo(RepoContext.discover(repo))
+            with store.mutation() as connection:
+                connection.execute("DROP TABLE intents")
+                connection.execute("CREATE TABLE intents (intent_id TEXT PRIMARY KEY)")
+
+            blocked = run_cli(
+                repo,
+                "process-pending-intents",
+                "--limit",
+                "1",
+                check=False,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertEqual(blocked.stdout, "")
+            self.assertEqual(
+                assert_single_json_line(self, blocked, "stderr")["error"]["code"],
+                "SCHEMA_UNSUPPORTED",
+            )
+
+    def test_required_table_name_cannot_be_satisfied_by_view(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_cli_repo(Path(tmp) / "repo")
+            run_cli(repo, "init")
+            store = ControlStore.for_repo(RepoContext.discover(repo))
+            with store.mutation() as connection:
+                connection.execute("DROP TABLE intents")
+                connection.execute("CREATE VIEW intents AS SELECT 'fake' AS intent_id")
+
+            blocked = run_cli(
+                repo,
+                "process-pending-intents",
+                "--limit",
+                "1",
+                check=False,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertEqual(blocked.stdout, "")
+            self.assertEqual(
+                assert_single_json_line(self, blocked, "stderr")["error"]["code"],
+                "SCHEMA_UNSUPPORTED",
+            )
+
     def test_unexpected_error_is_redacted_without_traceback(self):
         from team_control import cli
 

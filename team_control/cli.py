@@ -164,6 +164,7 @@ def execute(args):
         return {"database": str(store.path), "status": "initialized"}
     if not store.path.is_file():
         raise ContractError("control plane is not initialized; run init first")
+    store.require_schema_compatible()
 
     control = ControlPlane(context, store)
     if args.command == "start":

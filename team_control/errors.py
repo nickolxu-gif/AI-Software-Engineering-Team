@@ -14,6 +14,14 @@ class ContractError(TeamControlError):
     code = "CONTRACT_ERROR"
 
 
+class SchemaMigrationRequiredError(TeamControlError):
+    code = "SCHEMA_MIGRATION_REQUIRED"
+
+
+class SchemaUnsupportedError(TeamControlError):
+    code = "SCHEMA_UNSUPPORTED"
+
+
 class TransitionError(TeamControlError):
     code = "TRANSITION_ERROR"
 

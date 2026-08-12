@@ -114,6 +114,10 @@ REQUIRED_SCHEMA = {
         "evidence_id", "dispatch_id", "kind", "path", "sha256",
         "source_sha", "created_at",
     },
+    "intents": {
+        "intent_id", "dispatch_id", "action", "target_sha", "status",
+        "result_code", "created_at", "updated_at",
+    },
 }
 SQLITE_BUSY_CODES = frozenset(
     {
@@ -373,6 +377,19 @@ class DashboardReadModel:
 
     def _validate_schema(self, connection):
         for table, required in REQUIRED_SCHEMA.items():
+            object_row = connection.execute(
+                "SELECT type FROM sqlite_master WHERE name = ?", (table,)
+            ).fetchone()
+            if object_row is None:
+                raise DashboardUnavailableError(
+                    "control database requires schema migration",
+                    code="SCHEMA_MIGRATION_REQUIRED",
+                )
+            if object_row["type"] != "table":
+                raise DashboardUnavailableError(
+                    "control database schema is unsupported",
+                    code="SCHEMA_UNSUPPORTED",
+                )
             rows = connection.execute("PRAGMA table_info(%s)" % table).fetchall()
             observed = {row["name"] for row in rows}
             if not required.issubset(observed):

@@ -320,6 +320,8 @@ Codex 先从主仓库检查健康，再调用 `scripts/open-team-dashboard`。�
 |---|---|---|
 | 页面打不开 | 服务未启动、已停止或地址属于旧进程 | 回到 Codex 说“重新检查并打开工作台” |
 | `DATABASE_UNAVAILABLE` | 控制数据库不存在/不可读 | 只读启动器绝不会初始化缺失数据库；由 Codex单独判断是否允许初始化 |
+| `SCHEMA_MIGRATION_REQUIRED` | 历史控制库缺少已知控制面表 | Codex先只读核对，再在普通可写请求中运行稳定 `init`；严格只读时不得恢复 |
+| `SCHEMA_UNSUPPORTED` | 表不是预期 SQLite table，或必需字段不匹配 | 保持 `BLOCKED` 并保留现场；`init` 不是对此类未知不兼容的自动修复方式，禁止直接编辑 SQLite |
 | `PORT_IN_USE` | 固定端口被其他程序或其他仓库占用 | Codex核对进程身份后处理，不自动杀进程 |
 | 45 秒过期 | 最近刷新失败或服务停止 | 页面保留旧数据；回到 Codex 检查服务和 Git |
 | HEAD 漂移 | 控制库记录与已登记 Worktree 的实际提交不一致 | 停止验收判断，由 Codex核对分支、Worktree 和 Review |
@@ -364,6 +366,10 @@ SQLite 是本地运行状态索引，不是唯一不可替代事实源。Git 是
 ### Q2：Codex 说数据库不存在，我该怎么办？
 
 普通请求可以说：“安全初始化控制平面，然后查看已知任务 20260809-001。”Codex 应先核对仓库，再安全初始化。若你已经说“严格只读/不要任何写入”，则不得 init，只能盘点 Git 和文件，并明确报告状态库不可用。
+
+### Q2.1：出现 `SCHEMA_MIGRATION_REQUIRED` 或 `SCHEMA_UNSUPPORTED` 怎么办？
+
+前者表示历史数据库缺少系统已知的表。Codex 会先只读核对，再在普通可写请求中使用稳定 `init` 补齐；不会直接编辑 SQLite。后者表示表结构本身不符合当前协议，不能假设 `init` 可以无损修复，必须保留现场并转为 `BLOCKED`。
 
 ### Q3：出现 `PREPARED` 是失败了吗？
 
