@@ -27,7 +27,7 @@
 - Modify: `team_control/cli.py`
 
 - [ ] 在 `errors.py` 增加 `SchemaMigrationRequiredError`，code 固定为 `SCHEMA_MIGRATION_REQUIRED`。
-- [ ] 在 `store.py` 定义完整必需表集合，增加只读 `require_schema_tables()`；缺表抛出新错误并只列出排序后的表名。
+- [ ] 在 `store.py` 定义完整必需表与列集合，增加只读 `require_schema_compatible()`；缺表抛出新错误，同名非 table 或缺列抛出 `SCHEMA_UNSUPPORTED`。
 - [ ] 在 CLI 的 `init` 分支之后、任何 `ControlPlane`/`IntentService` 创建之前调用预检。
 - [ ] 重跑 CLI 测试，预期通过。
 
@@ -37,8 +37,8 @@
 - Modify: `tests/test_dashboard_read_model.py`
 - Modify: `team_control/dashboard_read_model.py`
 
-- [ ] 写失败测试：删除 `intents` 后 `model.health()` 抛出 `DashboardUnavailableError`，code 为 `SCHEMA_MIGRATION_REQUIRED`。
-- [ ] 将 `intents` 加入工作台必需 schema；表缺失映射为 `SCHEMA_MIGRATION_REQUIRED`，字段缺失仍为 `SCHEMA_UNSUPPORTED`。
+- [ ] 写失败测试：删除 `intents` 后 `/api/health` 返回 503 与 `SCHEMA_MIGRATION_REQUIRED`；缺列与同名 view 的 CLI 预检返回 `SCHEMA_UNSUPPORTED`。
+- [ ] 将 `intents` 加入工作台必需 schema；表缺失映射为 `SCHEMA_MIGRATION_REQUIRED`，非 table 或字段缺失仍为 `SCHEMA_UNSUPPORTED`。
 - [ ] 重跑工作台读模型测试，预期通过。
 
 ### Task 4: 文档、验收与整合

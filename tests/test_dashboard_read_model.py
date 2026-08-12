@@ -504,6 +504,18 @@ class DashboardReadModelTests(unittest.TestCase):
                 model.health()
             self.assertEqual(caught.exception.code, "SCHEMA_MIGRATION_REQUIRED")
 
+    def test_intents_view_is_schema_unsupported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            with store.mutation() as connection:
+                connection.execute("DROP TABLE intents")
+                connection.execute(
+                    "CREATE VIEW intents AS SELECT 'fake' AS intent_id"
+                )
+            with self.assertRaises(DashboardUnavailableError) as caught:
+                model.health()
+            self.assertEqual(caught.exception.code, "SCHEMA_UNSUPPORTED")
+
     def test_task_listing_observes_git_worktrees_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, store, model = self.make_model(Path(tmp))

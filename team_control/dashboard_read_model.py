@@ -377,13 +377,21 @@ class DashboardReadModel:
 
     def _validate_schema(self, connection):
         for table, required in REQUIRED_SCHEMA.items():
-            rows = connection.execute("PRAGMA table_info(%s)" % table).fetchall()
-            observed = {row["name"] for row in rows}
-            if not observed:
+            object_row = connection.execute(
+                "SELECT type FROM sqlite_master WHERE name = ?", (table,)
+            ).fetchone()
+            if object_row is None:
                 raise DashboardUnavailableError(
                     "control database requires schema migration",
                     code="SCHEMA_MIGRATION_REQUIRED",
                 )
+            if object_row["type"] != "table":
+                raise DashboardUnavailableError(
+                    "control database schema is unsupported",
+                    code="SCHEMA_UNSUPPORTED",
+                )
+            rows = connection.execute("PRAGMA table_info(%s)" % table).fetchall()
+            observed = {row["name"] for row in rows}
             if not required.issubset(observed):
                 raise DashboardUnavailableError(
                     "control database schema is unsupported",
