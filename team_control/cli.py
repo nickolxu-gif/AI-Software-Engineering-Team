@@ -6,7 +6,7 @@ from pathlib import Path
 from .doctor import WorktreeDoctor
 from .errors import BoundaryError, ContractError, TeamControlError
 from .git_context import RepoContext
-from .intents import IntentService
+from .intents import IntentService, safe_intent_summary
 from .service import ControlPlane
 from .store import ControlStore
 
@@ -147,10 +147,7 @@ def _repo_context(raw_path):
 
 
 def _safe_intent(intent):
-    return {
-        key: value for key, value in intent.items()
-        if key not in {"confirmation_hash"}
-    }
+    return safe_intent_summary(intent)
 
 
 def execute(args):

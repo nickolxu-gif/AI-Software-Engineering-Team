@@ -21,6 +21,10 @@ APPROVAL_PARAMETER_FIELDS = frozenset({
 })
 JS_SAFE_INTEGER_MAX = 9007199254740991
 MAX_JSON_DEPTH = 32
+SAFE_INTENT_FIELDS = (
+    "intent_id", "dispatch_id", "action", "target_sha", "status",
+    "result_code", "created_at", "updated_at",
+)
 
 
 def _utf8_text(value, label):
@@ -133,6 +137,10 @@ def validate_intent_request(request):
 def request_hash(request):
     normalized = validate_intent_request(request)
     return _normalized_request_hash(normalized)
+
+
+def safe_intent_summary(intent):
+    return {field: intent[field] for field in SAFE_INTENT_FIELDS}
 
 
 def _normalized_request_hash(normalized):

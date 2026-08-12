@@ -179,6 +179,10 @@ class DashboardServerTests(unittest.TestCase):
         )
         self.assertEqual(response.status, 202)
         self.assertEqual(payload["data"]["status"], "PENDING")
+        self.assertEqual(set(payload["data"]), {
+            "intent_id", "dispatch_id", "action", "target_sha", "status",
+            "result_code", "created_at", "updated_at",
+        })
         self.assertNotIn("confirmation", body.decode("utf-8"))
 
     def test_intent_submission_rejects_oversized_or_malformed_requests(self):

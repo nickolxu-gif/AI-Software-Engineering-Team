@@ -309,6 +309,10 @@ class CliTests(unittest.TestCase):
                 [item["intent_id"] for item in listed_payload["intents"]],
                 [submitted["intent_id"]],
             )
+            self.assertEqual(set(listed_payload["intents"][0]), {
+                "intent_id", "dispatch_id", "action", "target_sha", "status",
+                "result_code", "created_at", "updated_at",
+            })
             self.assertNotIn("confirmation", listed.stdout)
             processed = run_cli(
                 repo, "process-intent", "--intent-id", submitted["intent_id"]

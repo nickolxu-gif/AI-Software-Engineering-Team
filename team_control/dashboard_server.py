@@ -14,7 +14,7 @@ from .dashboard_read_model import (
     DashboardNotFoundError,
     DashboardUnavailableError,
 )
-from .intents import IntentService
+from .intents import IntentService, safe_intent_summary
 from .service import ControlPlane
 from .errors import ContractError, ReconciliationError
 
@@ -283,11 +283,9 @@ def make_handler(model, assets_dir, intent_token):
             except Exception:
                 self._send_error(500, "INTERNAL_ERROR", "Intent request failed")
             else:
-                safe_intent = {
-                    key: value for key, value in intent.items()
-                    if key != "confirmation_hash"
-                }
-                self._send_json(202, success_envelope(model, safe_intent))
+                self._send_json(
+                    202, success_envelope(model, safe_intent_summary(intent))
+                )
 
         def _safe_path(self):
             raw = urlsplit(self.path).path
