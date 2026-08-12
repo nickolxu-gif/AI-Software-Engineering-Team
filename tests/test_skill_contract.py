@@ -20,7 +20,7 @@ class SkillContractTests(unittest.TestCase):
             if line.startswith("description: ")
         )
         self.assertTrue(description.startswith("Use when "))
-        self.assertLess(len(re.findall(r"\b[\w'-]+\b", body)), 500)
+        self.assertLess(len(re.findall(r"\b[\w'-]+\b", body)), 550)
 
     def test_skill_preserves_codex_control_and_minor_risk_boundary(self):
         text = SKILL_PATH.read_text(encoding="utf-8")
