@@ -112,6 +112,12 @@ CREATE TABLE IF NOT EXISTS task_intake_requests (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS task_intake_handlings (
+    intake_id TEXT PRIMARY KEY REFERENCES task_intake_requests(intake_id),
+    dispatch_id TEXT NOT NULL UNIQUE REFERENCES tasks(dispatch_id),
+    disposition TEXT NOT NULL CHECK (disposition IN ('DISPATCHED', 'BLOCKED')),
+    handled_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS evidence (
     evidence_id TEXT PRIMARY KEY,
     dispatch_id TEXT NOT NULL REFERENCES tasks(dispatch_id),
@@ -193,6 +199,21 @@ TERMINAL_INTENT_STATUSES = INTENT_STATUSES - {"PENDING"}
 INTENT_RESULT_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 MAX_PENDING_INTENT_BATCH = 25
 TASK_INTAKE_STATUSES = frozenset(("PENDING", "ACKNOWLEDGED"))
+TASK_INTAKE_LEGACY_SCHEMA = """CREATE TABLE task_intake_requests (
+    intake_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    context TEXT,
+    request_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('PENDING')),
+    result_code TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)"""
+TASK_INTAKE_CURRENT_SCHEMA = TASK_INTAKE_LEGACY_SCHEMA.replace(
+    "status IN ('PENDING')", "status IN ('PENDING', 'ACKNOWLEDGED')"
+)
 REQUIRED_SCHEMA_COLUMNS = {
     "tasks": frozenset((
         "dispatch_id", "schema_version", "title", "objective", "risk_level",
@@ -218,6 +239,9 @@ REQUIRED_SCHEMA_COLUMNS = {
     "task_intake_requests": frozenset((
         "intake_id", "title", "objective", "context", "request_hash",
         "status", "result_code", "idempotency_key", "created_at", "updated_at",
+    )),
+    "task_intake_handlings": frozenset((
+        "intake_id", "dispatch_id", "disposition", "handled_at",
     )),
     "evidence": frozenset((
         "evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha",
@@ -546,8 +570,22 @@ class ControlStore:
         ).fetchone()
         if schema is None:
             raise ReconciliationError("task intake schema is missing after initialization")
-        if "ACKNOWLEDGED" in schema["sql"]:
+        normalized = self._normalized_schema_sql(schema["sql"])
+        if normalized == self._normalized_schema_sql(TASK_INTAKE_CURRENT_SCHEMA):
             return
+        if normalized != self._normalized_schema_sql(TASK_INTAKE_LEGACY_SCHEMA):
+            raise SchemaUnsupportedError(
+                "task intake schema is not a supported legacy version"
+            )
+        extra_objects = connection.execute(
+            """SELECT type, name FROM sqlite_master
+               WHERE tbl_name = 'task_intake_requests'
+                 AND type IN ('index', 'trigger') AND sql IS NOT NULL"""
+        ).fetchall()
+        if extra_objects:
+            raise SchemaUnsupportedError(
+                "task intake legacy schema has unsupported objects"
+            )
         rows = connection.execute(
             "SELECT * FROM task_intake_requests"
         ).fetchall()
@@ -587,6 +625,13 @@ class ControlStore:
         connection.execute(
             "ALTER TABLE task_intake_requests_migrated RENAME TO task_intake_requests"
         )
+
+    @staticmethod
+    def _normalized_schema_sql(value):
+        normalized = re.sub(r"\s+", " ", value).replace('"', "").strip().upper()
+        normalized = re.sub(r"\(\s+", "(", normalized)
+        normalized = re.sub(r"\s+\)", ")", normalized)
+        return re.sub(r"\s*,\s*", ",", normalized)
 
     def _connect(self):
         connection = sqlite3.connect(str(self.path), timeout=5.0)
@@ -1230,9 +1275,22 @@ class ControlStore:
             ).fetchall()
         return [self._task_intake_from_row(row) for row in rows]
 
-    def acknowledge_task_intake(self, intake_id):
+    def get_task_intake_handling(self, intake_id):
         if not isinstance(intake_id, str) or UUID_RE.fullmatch(intake_id) is None:
             raise ContractError("task intake ID is invalid")
+        with self.read_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM task_intake_handlings WHERE intake_id = ?", (intake_id,)
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def acknowledge_task_intake(self, intake_id, dispatch_id, disposition="DISPATCHED"):
+        if not isinstance(intake_id, str) or UUID_RE.fullmatch(intake_id) is None:
+            raise ContractError("task intake ID is invalid")
+        if not isinstance(dispatch_id, str) or not dispatch_id:
+            raise ContractError("task intake handling dispatch ID is invalid")
+        if disposition not in ("DISPATCHED", "BLOCKED"):
+            raise ContractError("task intake handling disposition is invalid")
         with self._control_lock():
             with self._transaction() as connection:
                 row = connection.execute(
@@ -1243,13 +1301,38 @@ class ControlStore:
                 if current is None:
                     raise KeyError(intake_id)
                 if current["status"] == "ACKNOWLEDGED":
+                    handling = connection.execute(
+                        "SELECT * FROM task_intake_handlings WHERE intake_id = ?", (intake_id,)
+                    ).fetchone()
+                    if handling is None or handling["dispatch_id"] != dispatch_id:
+                        raise ContractError("task intake is already handled by another record")
                     return current
+                task = connection.execute(
+                    "SELECT dispatch_id FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+                ).fetchone()
+                if task is None:
+                    raise ContractError("task intake handling requires an existing dispatch")
+                if disposition == "BLOCKED":
+                    blocker = connection.execute(
+                        """SELECT 1 FROM blockers
+                           WHERE dispatch_id = ? AND status = 'OPEN' LIMIT 1""",
+                        (dispatch_id,),
+                    ).fetchone()
+                    if blocker is None:
+                        raise ContractError("blocked task intake requires an open blocker")
+                now = utc_now()
+                connection.execute(
+                    """INSERT INTO task_intake_handlings (
+                           intake_id, dispatch_id, disposition, handled_at
+                       ) VALUES (?, ?, ?, ?)""",
+                    (intake_id, dispatch_id, disposition, now),
+                )
                 cursor = connection.execute(
                     """UPDATE task_intake_requests
-                       SET status = 'ACKNOWLEDGED', result_code = 'ACKNOWLEDGED',
+                       SET status = 'ACKNOWLEDGED', result_code = ?,
                            updated_at = ?
                        WHERE intake_id = ? AND status = 'PENDING'""",
-                    (utc_now(), intake_id),
+                    (disposition, now, intake_id),
                 )
                 if cursor.rowcount != 1:
                     raise ReconciliationError("task intake acknowledgement lost its guard")

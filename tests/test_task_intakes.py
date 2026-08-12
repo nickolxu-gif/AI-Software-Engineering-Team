@@ -10,7 +10,8 @@ from team_control.errors import (
 from team_control.git_context import RepoContext
 from team_control.store import ControlStore
 from team_control.task_intakes import (
-    TaskIntakeService,
+    CodexTaskIntakeService,
+    TaskIntakeSubmissionService,
     normalize_task_intake_request,
     safe_task_intake_summary,
 )
@@ -24,7 +25,8 @@ class TaskIntakeTests(unittest.TestCase):
         self.repo = make_repo(Path(self.temporary.name) / "repo")
         self.store = ControlStore.for_repo(RepoContext.discover(self.repo))
         self.store.initialize()
-        self.service = TaskIntakeService(self.store)
+        self.service = TaskIntakeSubmissionService(self.store)
+        self.codex_service = CodexTaskIntakeService(self.store)
         self.request = {
             "title": "Add a safe task entry",
             "objective": "Let the dashboard submit a request",
@@ -85,16 +87,22 @@ class TaskIntakeTests(unittest.TestCase):
 
     def test_codex_acknowledgement_removes_an_intake_from_pending_queue(self):
         intake = self.service.submit(self.request)
+        dispatch_id = self._create_formal_task()
 
-        acknowledged = self.service.acknowledge(intake["intake_id"])
+        with self.assertRaises(ContractError):
+            self.codex_service.acknowledge(intake["intake_id"], "missing-task")
+        acknowledged = self.codex_service.acknowledge(intake["intake_id"], dispatch_id)
 
         self.assertEqual(acknowledged["status"], "ACKNOWLEDGED")
-        self.assertEqual(acknowledged["result_code"], "ACKNOWLEDGED")
+        self.assertEqual(acknowledged["result_code"], "DISPATCHED")
         self.assertEqual(self.store.list_pending_task_intakes(limit=1), [])
         self.assertEqual(
-            self.service.acknowledge(intake["intake_id"])["status"],
+            self.codex_service.acknowledge(intake["intake_id"], dispatch_id)["status"],
             "ACKNOWLEDGED",
         )
+        handling = self.store.get_task_intake_handling(intake["intake_id"])
+        self.assertEqual(handling["dispatch_id"], dispatch_id)
+        self.assertEqual(handling["disposition"], "DISPATCHED")
 
     def test_schema_preflight_reports_missing_or_incompatible_task_intake_table(self):
         with self.store.mutation() as connection:
@@ -132,7 +140,39 @@ class TaskIntakeTests(unittest.TestCase):
 
         self.store.initialize()
 
-        self.assertEqual(
-            self.service.acknowledge(row["intake_id"])["status"],
-            "ACKNOWLEDGED",
-        )
+        dispatch_id = self._create_formal_task()
+        self.assertEqual(self.codex_service.acknowledge(row["intake_id"], dispatch_id)["status"], "ACKNOWLEDGED")
+        self.store.initialize()
+
+    def test_initialize_rejects_unknown_legacy_intake_schema_without_rebuild(self):
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_requests")
+            connection.execute(
+                """CREATE TABLE task_intake_requests (
+                       intake_id TEXT PRIMARY KEY, title TEXT NOT NULL,
+                       objective TEXT NOT NULL, context TEXT, request_hash TEXT NOT NULL,
+                       status TEXT NOT NULL CHECK (status IN ('PENDING')),
+                       result_code TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
+                       created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                       unexpected TEXT
+                   )"""
+            )
+        with self.assertRaises(SchemaUnsupportedError):
+            self.store.initialize()
+        with self.store.read_connection() as connection:
+            columns = [row["name"] for row in connection.execute("PRAGMA table_info(task_intake_requests)")]
+        self.assertIn("unexpected", columns)
+
+    def _create_formal_task(self):
+        dispatch_id = "20260813-009"
+        self.store.create_task({
+            "schema_version": 1,
+            "dispatch_id": dispatch_id,
+            "title": "Formal task for intake",
+            "objective": "Persist a formal handling record",
+            "risk_level": "L1",
+            "state": "PLANNED",
+            "task_base_sha": "0" * 40,
+            "owner": "Codex",
+        })
+        return dispatch_id

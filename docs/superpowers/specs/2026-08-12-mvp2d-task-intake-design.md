@@ -20,12 +20,12 @@ Codex 在下一次普通自然语言请求中读取待处理需求，补齐七�
 - POST ` /api/task-intakes` 仅在 loopback、同源 Origin、进程内 session token、精确 `application/json` 和最大 8 KiB body 下接受。
 - 请求字段仅为 UUID `idempotency_key`、1–120 字符 `title`、1–2000 字符 `objective`，以及可选 1–2000 字符 `context`；拒绝未知字段、控制字符、孤立 surrogate 和过深/非对象 JSON。
 - 存储记录生成 UUID `intake_id`，请求哈希和明确状态；公开 API 只返回 `intake_id`、`title`、`objective`、`status`、`result_code`、时间。`context` 与请求哈希不读回，避免工作台放大敏感或冗长内容。
-- 初始状态为 `PENDING`；只有 Codex 的受控内部 API 可将其确认至 `ACKNOWLEDGED`。本次不增加浏览器处理端点、后台循环、自动任务创建、Git 操作、审批或远程访问。
+- 初始状态为 `PENDING`；只有 Codex 的受控内部 API 在同一事务中验证既有正式 `dispatch_id`、写入不可变处理关联并将其确认至 `ACKNOWLEDGED`。浏览器只有提交能力，没有确认能力。本次不增加浏览器处理端点、后台循环、自动任务创建、Git 操作、审批或远程访问。
 - 总览只展示有上限的待处理摘要和表单。提交成功后提示“已提交给 Codex，等待下一次工程会话处理”。
 
 ## 数据与兼容性
 
-`task_intake_requests` 是新的已知 schema 表；`ControlStore.initialize()` 只做 `CREATE TABLE IF NOT EXISTS`。缺少该表应使用已有 `SCHEMA_MIGRATION_REQUIRED` fail-closed 路径，普通可写 Codex 请求再显式 `init`。表或列不兼容继续返回 `SCHEMA_UNSUPPORTED`，不得直接编辑 SQLite。
+`task_intake_requests` 与独立 `task_intake_handlings` 是已知 schema 表。初始化只迁移与已发布旧定义完全匹配的仅 `PENDING` 表：整个 DDL 重建运行在 `BEGIN IMMEDIATE` 事务中，保留所有行；未知列、索引、触发器或不匹配定义一律 `SCHEMA_UNSUPPORTED` 且回滚，不做猜测性重建。缺少该表应使用已有 `SCHEMA_MIGRATION_REQUIRED` fail-closed 路径，普通可写 Codex 请求再显式 `init`。不得直接编辑 SQLite。
 
 ## 验收
 

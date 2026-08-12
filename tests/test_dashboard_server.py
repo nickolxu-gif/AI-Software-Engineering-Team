@@ -258,6 +258,22 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "ORIGIN_REJECTED")
         self.assertEqual(self.database_digest(), before)
 
+    def test_dashboard_has_no_task_intake_acknowledgement_route(self):
+        request = self.task_intake_request()
+        response, payload, body = self.request_json(
+            "POST", "/api/task-intakes", request,
+            headers={"X-Team-Intent-Token": self.session_token()},
+        )
+        self.assertEqual(response.status, 202)
+        before = self.database_digest()
+        response, payload, body = self.request_json(
+            "POST", "/api/task-intakes/%s/acknowledge" % payload["data"]["intake_id"],
+            request, headers={"X-Team-Intent-Token": self.session_token()},
+        )
+        self.assertEqual(response.status, 405)
+        self.assertEqual(payload["error"]["code"], "READ_ONLY")
+        self.assertEqual(self.database_digest(), before)
+
     def test_task_intake_rejects_wrong_content_type_and_oversized_body(self):
         origin = "http://127.0.0.1:%d" % self.port
         token = self.session_token()

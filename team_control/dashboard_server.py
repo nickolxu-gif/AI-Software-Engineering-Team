@@ -16,7 +16,7 @@ from .dashboard_read_model import (
 )
 from .intents import IntentService, safe_intent_summary
 from .service import ControlPlane
-from .task_intakes import TaskIntakeService, safe_task_intake_summary
+from .task_intakes import TaskIntakeSubmissionService, safe_task_intake_summary
 from .errors import ContractError, ReconciliationError
 
 
@@ -73,7 +73,7 @@ def make_handler(model, assets_dir, intent_token):
     intent_service = IntentService(
         model.context, model.store, ControlPlane(model.context, model.store)
     )
-    task_intake_service = TaskIntakeService(model.store)
+    task_intake_service = TaskIntakeSubmissionService(model.store)
 
     class DashboardHandler(BaseHTTPRequestHandler):
         server_version = "TeamDashboard/1"

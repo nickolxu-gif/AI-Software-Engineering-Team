@@ -65,8 +65,8 @@ def safe_task_intake_summary(intake):
     return {field: intake[field] for field in SAFE_TASK_INTAKE_FIELDS}
 
 
-class TaskIntakeService:
-    """Durable, browser-submitted task request inbox with no execution power."""
+class TaskIntakeSubmissionService:
+    """Browser capability: submit a bounded request without execution power."""
 
     def __init__(self, store):
         self.store = store
@@ -81,5 +81,17 @@ class TaskIntakeService:
             normalized["idempotency_key"],
         )
 
-    def acknowledge(self, intake_id):
-        return self.store.acknowledge_task_intake(intake_id)
+
+class CodexTaskIntakeService:
+    """Codex capability: read and durably link handled requests to a dispatch."""
+
+    def __init__(self, store):
+        self.store = store
+
+    def list_pending(self, limit=10):
+        return self.store.list_pending_task_intakes(limit)
+
+    def acknowledge(self, intake_id, dispatch_id, disposition="DISPATCHED"):
+        return self.store.acknowledge_task_intake(
+            intake_id, dispatch_id, disposition,
+        )
