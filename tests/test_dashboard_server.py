@@ -148,7 +148,10 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("待处理意图", app)
         for action in ("PAUSE_REQUEST", "RESUME_REQUEST", "APPROVAL_REQUEST"):
             self.assertIn(action, app)
-        for forbidden in ("process-intent", "git merge", "git push", "nonce", "localStorage"):
+        for forbidden in (
+            "process-intent", "process-pending-intents", "git merge",
+            "git push", "nonce", "localStorage",
+        ):
             self.assertNotIn(forbidden, app)
 
     def test_intent_session_and_submission_require_loopback_origin_and_token(self):
