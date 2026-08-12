@@ -90,8 +90,18 @@
 - 这是前台固定循环，不是后台 daemon、timer、webhook 或网络监听；没有新增浏览器处理、Git/merge/push/发布、审批 nonce 消费、远程或权限扩大。
 - 独立验收：Claude Code / Sonnet V4.10.3 首次完整候选为 `PASS_WITH_WARNINGS`，三项警告修复后的 delta 为 `PASS`。安全记录见 `artifacts/dispatches/20260812-006/verification.md`；未使用 fallback Reviewer。
 - 整合前验证：默认 Python、Python 3.14 全量测试与 `git diff --check` 均通过；`repo-health` 必须从 `main` 根 Worktree 运行。
-- 运行库兼容性事实：若历史控制数据库存在但缺少 MVP 2 的 `intents` 表，意图 CLI 会 fail-closed 为 `INTERNAL_ERROR`。先只读核对缺失表与既有状态；仅在 `init` 的幂等迁移可证明为加表且无未知迁移风险时，使用稳定 `scripts/team-control init` 恢复，禁止直接修改 SQLite。任务 `20260812-006` 的实际恢复后队列为 `attempted: 0`。
+- 历史运行库兼容性事件：在 `20260812-007` 前，若历史控制数据库缺少 MVP 2 的 `intents` 表，意图 CLI 会 fail-closed 为 `INTERNAL_ERROR`。该任务已改为显式 schema 预检；恢复仍只能使用稳定 `scripts/team-control init`，禁止直接修改 SQLite。任务 `20260812-006` 的实际恢复后队列为 `attempted: 0`。
 - 下一阶段为 MVP 3 或 GitHub Remote，均仍需 Human 明确的新任务授权；不得由 MVP 2C 自动进入。
+
+### 控制库 Schema 兼容性预检
+
+**状态：ACCEPTED — pending local main integration**
+
+- 任务：`20260812-007`；候选 HEAD：`703db23`；基线：`b1703b7`。
+- 任何非 `init` 控制 CLI 先用只读连接校验完整控制面表、SQLite object type 和必需列。缺少已知表时返回 `SCHEMA_MIGRATION_REQUIRED`；同名 view 或缺列时返回 `SCHEMA_UNSUPPORTED`，不再退化为 `INTERNAL_ERROR`。
+- 工作台 `intents` 表缺失时 `/api/health` 返回 503 + `SCHEMA_MIGRATION_REQUIRED`；view 或字段不兼容返回 `SCHEMA_UNSUPPORTED`。
+- 恢复仍必须由 Codex 显式调用已有幂等 `scripts/team-control init`；严格只读请求不能恢复，且不得直接编辑 SQLite。`SCHEMA_UNSUPPORTED` 保持 `BLOCKED`，不假设 init 能无损修复。
+- Claude Code / Sonnet 独立验收为 `PASS`，安全记录：`artifacts/dispatches/20260812-007/verification.md`。未使用 fallback Reviewer。
 
 可使用以下命令复核最终 Worktree 和分支状态：
 

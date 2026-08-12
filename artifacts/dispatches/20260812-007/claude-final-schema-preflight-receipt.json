@@ -1,0 +1,18 @@
+{
+  "estimated_input_tokens": 7087,
+  "event_count": 1,
+  "failure_class": null,
+  "final_result_seen": true,
+  "fingerprint": "55a3ab171bae7c9c9d4ee10da93e8c81d2b342f36830b128043703cc548fdbf3",
+  "format_version": 4,
+  "model": "sonnet",
+  "model_verdict": "PASS",
+  "packet_bytes": 28347,
+  "packet_id": "review-packets/55a3ab171bae7c9c9d4ee10da93e8c81d2b342f36830b128043703cc548fdbf3",
+  "preflight": "pass",
+  "provider": "claude",
+  "provider_started": true,
+  "reason_code": null,
+  "recorded_at": "2026-08-12T15:22:17Z",
+  "verdict_parse": "pass"
+}
