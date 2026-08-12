@@ -23,3 +23,13 @@
 - No GitHub remote, push, pull request, release, deployment, production access, permission expansion, global Skill/config modification, credential inspection, or direct CodeBuddy CLI bypass.
 - The adapter may reference the approved global V4.10.3 core by fixed path and SHA; it does not mutate the Hub checkout or global Skill.
 - Provider output is accepted only through the wrapper’s strict V4 validator and sanitized receipt.
+
+## Execution evidence
+
+- Adapter commit: `55c195e4116bdf7264d19641c5dc1b39d4d3e91f`.
+- Contract checks: 3 adapter tests, `bash -n`, and `git diff --check` passed before provider start.
+- Provider: CodeBuddy / GLM-5.2 through the project adapter; `provider_started=true`, `event_count=5`, `final_result_seen=true`, `verdict_parse=pass`.
+- Packet: 27,280 bytes, fingerprint `6f3de2128a2b22e1600162a5b16bc77c82fb8bee981878f2cc008ae13bb4f499`.
+- Safe receipt: `.review-evidence/receipts/6f3de2128a2b22e1600162a5b16bc77c82fb8bee981878f2cc008ae13bb4f499.json`.
+- Report: `reports/codebuddy-verifier-20260813-010.md`.
+- Result: `PASS_WITH_WARNINGS`; this is not strict acceptance. The original MVP 2D candidate remains blocked and no merge is authorized by this result.

@@ -25,11 +25,11 @@ The dispatch records this as L2, with no GitHub, push, global configuration, cre
 **Files:**
 - Create: `tests/test_codebuddy_adapter.py`
 
-- [ ] **Step 1: Assert the adapter contract**
+- [x] **Step 1: Assert the adapter contract**
 
 The test must require an executable `scripts/codebuddy-verify.sh`, the global V4.10.3 core paths and pinned hashes, `review_packet.py` build/claim/receipt/validation calls, `--tools ''`, `--no-session-persistence`, `--max-turns 1`, `--strict-mcp-config`, `--output-format stream-json`, and no dangerous permission bypass.
 
-- [ ] **Step 2: Run the contract test and observe the expected missing-wrapper failure**
+- [x] **Step 2: Run the contract test and observe the expected missing-wrapper failure**
 
 Run `python3 -m unittest tests.test_codebuddy_adapter -q`. It must fail because the project adapter does not yet exist.
 
@@ -39,15 +39,15 @@ Run `python3 -m unittest tests.test_codebuddy_adapter -q`. It must fail because 
 - Create: `scripts/codebuddy-verify.sh`
 - Modify: `.gitignore`
 
-- [ ] **Step 1: Add the wrapper**
+- [x] **Step 1: Add the wrapper**
 
 Reuse the reviewed V4 wrapper shape while binding `project_root=$(pwd -P)`, the fixed global V4.10.3 core paths, pinned SHA checks, local packet evidence, explicit file allowlisting, and the project report path. Preserve fail-closed reason codes for packet, local diff, claim, transport, parse, and receipt failures.
 
-- [ ] **Step 2: Ignore local packet evidence**
+- [x] **Step 2: Ignore local packet evidence**
 
 Add `/.review-evidence/` to `.gitignore`; reports remain visible as local review evidence and are not staged by the adapter task.
 
-- [ ] **Step 3: Run the contract test and shell syntax check**
+- [x] **Step 3: Run the contract test and shell syntax check**
 
 Run `python3 -m unittest tests.test_codebuddy_adapter -q` and `bash -n scripts/codebuddy-verify.sh`. Both must pass.
 
@@ -56,7 +56,7 @@ Run `python3 -m unittest tests.test_codebuddy_adapter -q` and `bash -n scripts/c
 **Files:**
 - Modify: `artifacts/dispatches/20260813-010/dispatch.md`
 
-- [ ] **Step 1: Run deterministic packet preflight**
+- [x] **Step 1: Run deterministic packet preflight**
 
 Run the adapter with the current candidate delta:
 
@@ -76,7 +76,7 @@ scripts/codebuddy-verify.sh \
   --file tests/test_task_intakes.py
 ```
 
-- [ ] **Step 2: Accept only a parsed V4 verdict**
+- [x] **Step 2: Accept only a parsed V4 verdict**
 
 Record provider, model, verdict, packet fingerprint, and receipt path. `PASS_WITH_WARNINGS`, `MODIFY`, transport failure, parse failure, quota failure, or missing result keeps the candidate blocked.
 
@@ -89,10 +89,10 @@ Run `python3 -m unittest discover -s tests -q`, `/opt/homebrew/bin/python3.14 -m
 **Files:**
 - Commit: `scripts/codebuddy-verify.sh`, `.gitignore`, `tests/test_codebuddy_adapter.py`, and dispatch/plan records.
 
-- [ ] **Step 1: Review staged scope**
+- [x] **Step 1: Review staged scope**
 
 Run `git diff --cached --check` and `git status --short`; preserve unrelated untracked `reports/` files.
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 Run `git add -- scripts/codebuddy-verify.sh .gitignore tests/test_codebuddy_adapter.py artifacts/dispatches/20260813-010/dispatch.md docs/superpowers/plans/2026-08-13-codebuddy-v4-project-adapter.md` followed by `git commit -m 'feat: add project CodeBuddy V4 adapter'`.
