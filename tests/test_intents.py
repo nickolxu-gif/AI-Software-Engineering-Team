@@ -341,6 +341,12 @@ class IntentServiceTests(unittest.TestCase):
         self.assertEqual(self.store.get_task("20260812-004")["state"], "PAUSE_REQUESTED")
         self.assertEqual(self.service.process(intent["intent_id"]), result)
 
+    def test_process_rejects_noncanonical_intent_identifiers(self):
+        intent = self.submit("PAUSE_REQUEST")
+
+        with self.assertRaises(ContractError):
+            self.service.process(intent["intent_id"].replace("-", ""))
+
     def test_process_rejects_stale_head_before_transition(self):
         intent = self.submit("PAUSE_REQUEST")
         with self.store.mutation() as connection:

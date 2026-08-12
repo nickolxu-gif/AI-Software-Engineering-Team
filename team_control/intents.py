@@ -132,6 +132,10 @@ def validate_intent_request(request):
 
 def request_hash(request):
     normalized = validate_intent_request(request)
+    return _normalized_request_hash(normalized)
+
+
+def _normalized_request_hash(normalized):
     request_json = json.dumps(
         normalized,
         sort_keys=True,
@@ -158,18 +162,14 @@ class IntentService:
             normalized["dispatch_id"],
             normalized["action"],
             normalized["target_sha"],
-            request_hash(request),
+            _normalized_request_hash(normalized),
             normalized["parameters"].get("confirmation_hash"),
             normalized["idempotency_key"],
         )
 
     def process(self, intent_id):
-        if type(intent_id) is not str:
-            raise ContractError("intent_id must be a string")
-        try:
-            uuid.UUID(intent_id)
-        except (ValueError, AttributeError) as error:
-            raise ContractError("intent_id must be a UUID") from error
+        if type(intent_id) is not str or UUID_RE.fullmatch(intent_id) is None:
+            raise ContractError("intent_id must be a canonical UUID")
 
         with self.store.controlled_operation() as session:
             intent = self.store.get_intent(intent_id)
