@@ -80,7 +80,7 @@ scripts/codebuddy-verify.sh \
 
 Record provider, model, verdict, packet fingerprint, and receipt path. `PASS_WITH_WARNINGS`, `MODIFY`, transport failure, parse failure, quota failure, or missing result keeps the candidate blocked.
 
-- [ ] **Step 3: Run the full local regression**
+- [x] **Step 3: Run the full local regression**
 
 Run `python3 -m unittest discover -s tests -q`, `/opt/homebrew/bin/python3.14 -m unittest discover -s tests -q`, and `git diff --check`. A green adapter test does not replace the project regression.
 
@@ -99,7 +99,9 @@ The adapter now requires a strict `PASS`, accepts only new `reports/` paths, val
 
 The test harness executes a temporary wrapper copy against a fake V4 stream and proves `PASS_WITH_WARNINGS` returns non-zero while retaining only the sanitized report.
 
-- [ ] **Step 3: Re-run both full interpreter suites and obtain fresh fallback authorization before any new CodeBuddy call**
+- [x] **Step 3: Re-run both full interpreter suites and obtain fresh fallback authorization before any new CodeBuddy call**
+
+Both interpreter suites passed with `338/338`; a new CodeBuddy call remains authorization-gated because the adapter hardening changed the packet fingerprint.
 
 ### Task 5: Commit the adapter only after its checks pass
 
