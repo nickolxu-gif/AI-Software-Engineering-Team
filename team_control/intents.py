@@ -175,6 +175,13 @@ class IntentService:
             normalized["idempotency_key"],
         )
 
+    def process_pending(self, limit):
+        pending = self.store.list_pending_intents(limit)
+        return {
+            "attempted": len(pending),
+            "results": [self.process(intent["intent_id"]) for intent in pending],
+        }
+
     def process(self, intent_id):
         if type(intent_id) is not str or UUID_RE.fullmatch(intent_id) is None:
             raise ContractError("intent_id must be a canonical UUID")

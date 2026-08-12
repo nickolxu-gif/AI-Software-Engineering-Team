@@ -521,6 +521,9 @@ class DashboardReadModel:
                  AND julianday(expires_at) > julianday(?)""",
             (now,),
         ).fetchone()[0]
+        pending_intents = connection.execute(
+            "SELECT COUNT(*) FROM intents WHERE status = 'PENDING'"
+        ).fetchone()[0]
         stale_reviews = connection.execute(
             """SELECT COUNT(*) FROM reviews r JOIN tasks t
                    ON t.dispatch_id = r.dispatch_id
@@ -536,6 +539,7 @@ class DashboardReadModel:
             "active_tasks": row["active_tasks"] or 0,
             "blocked_tasks": row["blocked_tasks"] or 0,
             "pending_approvals": pending,
+            "pending_intents": pending_intents,
             "stale_reviews": stale_reviews,
             "stale_evidence": stale_evidence,
         }

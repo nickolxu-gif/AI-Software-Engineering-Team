@@ -177,6 +177,7 @@ ACTION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 INTENT_STATUSES = frozenset(("PENDING", "APPLIED", "REJECTED", "BLOCKED"))
 TERMINAL_INTENT_STATUSES = INTENT_STATUSES - {"PENDING"}
 INTENT_RESULT_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+MAX_PENDING_INTENT_BATCH = 25
 
 
 def validate_approval_nonce(value, error_type):
@@ -939,6 +940,17 @@ class ControlStore:
                        ORDER BY created_at, intent_id""",
                     (dispatch_id,),
                 ).fetchall()
+        return [self._intent_from_row(row) for row in rows]
+
+    def list_pending_intents(self, limit):
+        if type(limit) is not int or not 1 <= limit <= MAX_PENDING_INTENT_BATCH:
+            raise ContractError("pending intent limit must be an integer from 1 to 25")
+        with self.read_connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM intents WHERE status = 'PENDING'
+                   ORDER BY created_at, intent_id LIMIT ?""",
+                (limit,),
+            ).fetchall()
         return [self._intent_from_row(row) for row in rows]
 
     @staticmethod

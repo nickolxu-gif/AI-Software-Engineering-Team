@@ -12,8 +12,8 @@ from .store import ControlStore
 
 
 COMMANDS = (
-    "approvals", "doctor", "init", "intents", "process-intent", "start",
-    "status", "transition",
+    "approvals", "doctor", "init", "intents", "process-intent",
+    "process-pending-intents", "start", "status", "transition",
 )
 COMMAND_USAGE = {
     "approvals": "team-control --repo PATH approvals [--dispatch-id ID]",
@@ -24,6 +24,9 @@ COMMAND_USAGE = {
     "init": "team-control --repo PATH init",
     "intents": "team-control --repo PATH intents [--dispatch-id ID]",
     "process-intent": "team-control --repo PATH process-intent --intent-id UUID",
+    "process-pending-intents": (
+        "team-control --repo PATH process-pending-intents --limit 1..25"
+    ),
     "start": (
         "team-control --repo PATH start --dispatch-id ID --title TITLE "
         "--objective OBJECTIVE --risk {L1,L2,L3} --agent AGENT --slug SLUG"
@@ -89,6 +92,9 @@ def build_parser():
 
     process_intent = commands.add_parser("process-intent")
     process_intent.add_argument("--intent-id", required=True)
+
+    pending_intents = commands.add_parser("process-pending-intents")
+    pending_intents.add_argument("--limit", required=True, type=int)
 
     doctor = commands.add_parser("doctor")
     doctor.add_argument("mode", choices=("inspect", "repair"))
@@ -183,6 +189,12 @@ def execute(args):
         }
     if args.command == "process-intent":
         return _safe_intent(IntentService(context, store, control).process(args.intent_id))
+    if args.command == "process-pending-intents":
+        result = IntentService(context, store, control).process_pending(args.limit)
+        return {
+            "attempted": result["attempted"],
+            "results": [_safe_intent(intent) for intent in result["results"]],
+        }
     if args.command == "doctor":
         doctor = WorktreeDoctor(context, store)
         report = doctor.inspect(
