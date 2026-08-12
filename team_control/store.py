@@ -100,6 +100,18 @@ CREATE TABLE IF NOT EXISTS intents (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS task_intake_requests (
+    intake_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    context TEXT,
+    request_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('PENDING')),
+    result_code TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS evidence (
     evidence_id TEXT PRIMARY KEY,
     dispatch_id TEXT NOT NULL REFERENCES tasks(dispatch_id),
@@ -180,6 +192,7 @@ INTENT_STATUSES = frozenset(("PENDING", "APPLIED", "REJECTED", "BLOCKED"))
 TERMINAL_INTENT_STATUSES = INTENT_STATUSES - {"PENDING"}
 INTENT_RESULT_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 MAX_PENDING_INTENT_BATCH = 25
+TASK_INTAKE_STATUSES = frozenset(("PENDING",))
 REQUIRED_SCHEMA_COLUMNS = {
     "tasks": frozenset((
         "dispatch_id", "schema_version", "title", "objective", "risk_level",
@@ -201,6 +214,10 @@ REQUIRED_SCHEMA_COLUMNS = {
         "intent_id", "dispatch_id", "action", "target_sha", "request_hash",
         "confirmation_hash", "status", "result_code", "idempotency_key",
         "created_at", "updated_at",
+    )),
+    "task_intake_requests": frozenset((
+        "intake_id", "title", "objective", "context", "request_hash",
+        "status", "result_code", "idempotency_key", "created_at", "updated_at",
     )),
     "evidence": frozenset((
         "evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha",
@@ -1040,6 +1057,108 @@ class ControlStore:
                 (limit,),
             ).fetchall()
         return [self._intent_from_row(row) for row in rows]
+
+    @staticmethod
+    def _task_intake_from_row(row):
+        if row is None:
+            return None
+        if row["status"] not in TASK_INTAKE_STATUSES:
+            raise ReconciliationError("stored task intake status is invalid")
+        return {
+            "intake_id": row["intake_id"],
+            "title": row["title"],
+            "objective": row["objective"],
+            "context": row["context"],
+            "request_hash": row["request_hash"],
+            "status": row["status"],
+            "result_code": row["result_code"],
+            "idempotency_key": row["idempotency_key"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _validate_task_intake_fields(
+        title, objective, context, request_hash, idempotency_key,
+    ):
+        for value, label, maximum in (
+            (title, "task intake title", 120),
+            (objective, "task intake objective", 2000),
+        ):
+            if not isinstance(value, str) or not 1 <= len(value) <= maximum:
+                raise ContractError("%s is invalid" % label)
+        if context is not None and (
+            not isinstance(context, str) or not 1 <= len(context) <= 2000
+        ):
+            raise ContractError("task intake context is invalid")
+        if not isinstance(request_hash, str) or HASH_RE.fullmatch(request_hash) is None:
+            raise ContractError("task intake request hash is invalid")
+        if not isinstance(idempotency_key, str) or UUID_RE.fullmatch(idempotency_key) is None:
+            raise ContractError("task intake idempotency key is invalid")
+
+    def create_task_intake(
+        self, title, objective, context, request_hash, idempotency_key,
+    ):
+        self._validate_task_intake_fields(
+            title, objective, context, request_hash, idempotency_key,
+        )
+        with self.mutation() as connection:
+            existing = connection.execute(
+                "SELECT * FROM task_intake_requests WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            identity = {
+                "title": title,
+                "objective": objective,
+                "context": context,
+                "request_hash": request_hash,
+            }
+            if existing is not None:
+                if all(existing[field] == value for field, value in identity.items()):
+                    return self._task_intake_from_row(existing)
+                raise ReconciliationError(
+                    "task intake idempotency key was used for another request"
+                )
+            now = utc_now()
+            intake_id = str(uuid.uuid4())
+            try:
+                connection.execute(
+                    """INSERT INTO task_intake_requests (
+                           intake_id, title, objective, context, request_hash,
+                           status, result_code, idempotency_key, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, 'PENDING', 'PENDING', ?, ?, ?)""",
+                    (
+                        intake_id, title, objective, context, request_hash,
+                        idempotency_key, now, now,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                existing = connection.execute(
+                    "SELECT * FROM task_intake_requests WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+                if existing is not None and all(
+                    existing[field] == value for field, value in identity.items()
+                ):
+                    return self._task_intake_from_row(existing)
+                raise ReconciliationError(
+                    "task intake idempotency key was used for another request"
+                ) from error
+            row = connection.execute(
+                "SELECT * FROM task_intake_requests WHERE intake_id = ?", (intake_id,)
+            ).fetchone()
+            return self._task_intake_from_row(row)
+
+    def list_pending_task_intakes(self, limit):
+        if type(limit) is not int or not 1 <= limit <= MAX_PENDING_INTENT_BATCH:
+            raise ContractError("pending task intake limit must be an integer from 1 to 25")
+        with self.read_connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM task_intake_requests WHERE status = 'PENDING'
+                   ORDER BY created_at, intake_id LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [self._task_intake_from_row(row) for row in rows]
 
     @staticmethod
     def _operation_from_row(row):

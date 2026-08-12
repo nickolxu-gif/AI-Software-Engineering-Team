@@ -23,6 +23,9 @@ INTENT_ACTIONS = frozenset({
 INTENT_REQUEST_FIELDS = frozenset({
     "action", "dispatch_id", "target_sha", "idempotency_key", "parameters",
 })
+TASK_INTAKE_REQUEST_FIELDS = frozenset({
+    "title", "objective", "context", "idempotency_key",
+})
 
 DISPATCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
