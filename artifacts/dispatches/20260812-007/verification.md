@@ -1,7 +1,7 @@
 # 20260812-007 控制库 Schema 兼容性预检验证
 
-候选 HEAD：`703db23`  
-基线：`b1703b7`  
+候选 HEAD：`703db23`
+基线：`b1703b7`
 状态：`ACCEPTED — pending local main integration`
 
 ## 验证结果
