@@ -1,13 +1,20 @@
 import hashlib
+import tempfile
 import unittest
+from pathlib import Path
 
 from team_control.contracts import INTENT_ACTIONS
 from team_control.errors import ContractError
 from team_control.intents import (
+    IntentService,
     normalize_intent_request,
     request_hash,
     validate_intent_request,
 )
+from team_control.git_context import RepoContext
+from team_control.service import ControlPlane
+from team_control.store import ControlStore
+from tests.helpers import make_repo, run
 
 
 class IntentRequestTests(unittest.TestCase):
@@ -293,6 +300,110 @@ class IntentRequestTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             validate_intent_request(request)
 
+
+class IntentServiceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = make_repo(Path(self.tmp.name) / "repo")
+        self.context = RepoContext.discover(self.repo)
+        self.store = ControlStore.for_repo(self.context)
+        self.store.initialize()
+        self.control = ControlPlane(self.context, self.store)
+        self.head = run(["git", "rev-parse", "HEAD"], self.repo).stdout.strip()
+        self.task = self.control.create_task(
+            "20260812-004", "Intent adapter", "Process bounded intents", "L2"
+        )
+        self.control.transition("20260812-004", "DISPATCHED", "start")
+        self.control.transition("20260812-004", "IN_PROGRESS", "start")
+        self.service = IntentService(self.context, self.store, self.control)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def submit(self, action, parameters=None):
+        request = {
+            "dispatch_id": "20260812-004",
+            "action": action,
+            "target_sha": self.head,
+            "idempotency_key": "123e4567-e89b-12d3-a456-426614174000",
+            "parameters": parameters or {},
+        }
+        return self.service.submit(request)
+
+    def test_process_pause_revalidates_head_then_requests_pause(self):
+        intent = self.submit("PAUSE_REQUEST")
+
+        result = self.service.process(intent["intent_id"])
+
+        self.assertEqual(result["status"], "APPLIED")
+        self.assertEqual(result["result_code"], "PAUSE_REQUESTED")
+        self.assertEqual(self.store.get_task("20260812-004")["state"], "PAUSE_REQUESTED")
+        self.assertEqual(self.service.process(intent["intent_id"]), result)
+
+    def test_process_rejects_stale_head_before_transition(self):
+        intent = self.submit("PAUSE_REQUEST")
+        with self.store.mutation() as connection:
+            connection.execute(
+                "UPDATE tasks SET current_head_sha = ? WHERE dispatch_id = ?",
+                ("b" * 40, "20260812-004"),
+            )
+
+        result = self.service.process(intent["intent_id"])
+
+        self.assertEqual((result["status"], result["result_code"]), ("REJECTED", "STALE_HEAD"))
+        self.assertEqual(self.store.get_task("20260812-004")["state"], "IN_PROGRESS")
+
+    def test_approval_request_only_records_preparation(self):
+        intent = self.submit(
+            "APPROVAL_REQUEST",
+            {
+                "requested_action": "merge",
+                "requested_parameters": {"branch": "main"},
+                "confirmation": "yes",
+            },
+        )
+
+        result = self.service.process(intent["intent_id"])
+
+        self.assertEqual((result["status"], result["result_code"]), (
+            "APPLIED", "APPROVAL_PREPARATION_REQUESTED",
+        ))
+        self.assertEqual(self.store.list_approvals("20260812-004"), [])
+        self.assertEqual(
+            self.store.list_events("20260812-004")[-1]["event_type"],
+            "APPROVAL_PREPARATION_REQUESTED",
+        )
+
+    def test_process_blocks_when_an_operation_is_prepared(self):
+        intent = self.submit("PAUSE_REQUEST")
+        self.store.prepare_operation(
+            "20260812-004", "merge", "a" * 64, self.head,
+            "123e4567-e89b-12d3-a456-426614174001",
+        )
+
+        result = self.service.process(intent["intent_id"])
+
+        self.assertEqual((result["status"], result["result_code"]), (
+            "BLOCKED", "PREPARED_OPERATION",
+        ))
+        self.assertEqual(self.store.get_task("20260812-004")["state"], "IN_PROGRESS")
+
+    def test_resume_blocks_when_a_pending_approval_exists(self):
+        self.control.transition("20260812-004", "PAUSE_REQUESTED", "pause")
+        self.control.transition("20260812-004", "PAUSED", "checkpoint")
+        intent = self.submit("RESUME_REQUEST")
+        self.store.create_approval(
+            "20260812-004", "merge", self.head, "a" * 64,
+            "safe-approval-nonce-0001", 30,
+            "approval-idempotency-0001",
+        )
+
+        result = self.service.process(intent["intent_id"])
+
+        self.assertEqual((result["status"], result["result_code"]), (
+            "BLOCKED", "PENDING_APPROVAL",
+        ))
+        self.assertEqual(self.store.get_task("20260812-004")["state"], "PAUSED")
 
 if __name__ == "__main__":
     unittest.main()

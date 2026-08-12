@@ -11,6 +11,7 @@ from .contracts import (
     UUID_RE,
 )
 from .errors import ContractError
+from .errors import BoundaryError, GitStateError, TransitionError
 
 
 CONFIRMATION_HASH_DOMAIN = b"team-control/intent-confirmation/v1\n"
@@ -141,3 +142,109 @@ def request_hash(request):
     return hashlib.sha256(
         REQUEST_HASH_DOMAIN + request_json.encode("utf-8")
     ).hexdigest()
+
+
+class IntentService:
+    """Codex-only adapter from durable browser intents to trusted transitions."""
+
+    def __init__(self, context, store, control_plane):
+        self.context = context
+        self.store = store
+        self.control_plane = control_plane
+
+    def submit(self, request):
+        normalized = validate_intent_request(request)
+        return self.store.create_intent(
+            normalized["dispatch_id"],
+            normalized["action"],
+            normalized["target_sha"],
+            request_hash(request),
+            normalized["parameters"].get("confirmation_hash"),
+            normalized["idempotency_key"],
+        )
+
+    def process(self, intent_id):
+        if type(intent_id) is not str:
+            raise ContractError("intent_id must be a string")
+        try:
+            uuid.UUID(intent_id)
+        except (ValueError, AttributeError) as error:
+            raise ContractError("intent_id must be a UUID") from error
+
+        with self.store.controlled_operation():
+            session = _IntentSession(self.store)
+            intent = self.store.get_intent(intent_id)
+            if intent is None:
+                raise KeyError(intent_id)
+            if intent["status"] != "PENDING":
+                return intent
+
+            task = self.store.get_task(intent["dispatch_id"])
+            if task is None:
+                return session.finish_intent(
+                    intent_id, "BLOCKED", "TASK_UNAVAILABLE"
+                )
+            if any(
+                operation["dispatch_id"] == intent["dispatch_id"]
+                for operation in self.store.prepared_operations()
+            ):
+                return session.finish_intent(
+                    intent_id, "BLOCKED", "PREPARED_OPERATION"
+                )
+            try:
+                actual_sha, _ = self.control_plane._trusted_actual_head(task)
+            except (BoundaryError, GitStateError, OSError):
+                return session.finish_intent(
+                    intent_id, "BLOCKED", "TASK_UNAVAILABLE"
+                )
+            if not (
+                actual_sha == intent["target_sha"] == task["current_head_sha"]
+            ):
+                return session.finish_intent(intent_id, "REJECTED", "STALE_HEAD")
+
+            if intent["action"] == "APPROVAL_REQUEST":
+                return session.finish_intent(
+                    intent_id,
+                    "APPLIED",
+                    "APPROVAL_PREPARATION_REQUESTED",
+                    event_type="APPROVAL_PREPARATION_REQUESTED",
+                )
+            if intent["action"] == "RESUME_REQUEST" and self.store.pending_approvals(
+                intent["dispatch_id"]
+            ):
+                return session.finish_intent(
+                    intent_id, "BLOCKED", "PENDING_APPROVAL"
+                )
+            target = (
+                "PAUSE_REQUESTED"
+                if intent["action"] == "PAUSE_REQUEST"
+                else task["resume_state"]
+            )
+            if intent["action"] == "RESUME_REQUEST" and task["state"] != "PAUSED":
+                return session.finish_intent(
+                    intent_id, "REJECTED", "STATE_CONFLICT"
+                )
+            try:
+                session.transition(
+                    intent["dispatch_id"], target, "processed bounded intent"
+                )
+            except (TransitionError, ContractError):
+                return session.finish_intent(
+                    intent_id, "REJECTED", "STATE_CONFLICT"
+                )
+            return session.finish_intent(intent_id, "APPLIED", target)
+
+
+class _IntentSession:
+    """Small adapter over lock-held store primitives."""
+
+    def __init__(self, store):
+        self._store = store
+
+    def transition(self, dispatch_id, target, reason):
+        return self._store._transition_durable(dispatch_id, target, reason)
+
+    def finish_intent(self, intent_id, status, result_code, event_type=None):
+        return self._store._finish_intent_durable(
+            intent_id, status, result_code, event_type=event_type
+        )

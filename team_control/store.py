@@ -318,6 +318,14 @@ class _ControlledOperationSession:
     def get_task(self, dispatch_id):
         return self._store.get_task(dispatch_id)
 
+    def transition(self, dispatch_id, target, reason):
+        return self._store._transition_durable(dispatch_id, target, reason)
+
+    def finish_intent(self, intent_id, status, result_code, event_type=None):
+        return self._store._finish_intent_durable(
+            intent_id, status, result_code, event_type=event_type
+        )
+
     def prepared_operations(self):
         return self._store.prepared_operations()
 
@@ -806,7 +814,9 @@ class ControlStore:
             ).fetchone()
             return self._intent_from_row(row)
 
-    def finish_intent(self, intent_id, status, result_code):
+    def _finish_intent_durable(
+        self, intent_id, status, result_code, event_type=None
+    ):
         if status not in TERMINAL_INTENT_STATUSES:
             raise ContractError("intent terminal status is invalid")
         if (
@@ -814,7 +824,7 @@ class ControlStore:
             or INTENT_RESULT_CODE_RE.fullmatch(result_code) is None
         ):
             raise ContractError("intent result code is invalid")
-        with self.mutation() as connection:
+        with self._transaction() as connection:
             row = connection.execute(
                 "SELECT * FROM intents WHERE intent_id = ?", (intent_id,)
             ).fetchone()
@@ -837,7 +847,10 @@ class ControlStore:
             )
             if cursor.rowcount != 1:
                 raise ReconciliationError("intent terminal update lost its guard")
-            event_type = "INTENT_%s" % status
+            if event_type is None:
+                event_type = "INTENT_%s" % status
+            if not isinstance(event_type, str) or not event_type:
+                raise ContractError("intent terminal event type is invalid")
             event = {
                 "schema_version": 1,
                 "dispatch_id": current["dispatch_id"],
@@ -867,6 +880,12 @@ class ControlStore:
                 "SELECT * FROM intents WHERE intent_id = ?", (intent_id,)
             ).fetchone()
             return self._intent_from_row(updated)
+
+    def finish_intent(self, intent_id, status, result_code, event_type=None):
+        with self._control_lock():
+            return self._finish_intent_durable(
+                intent_id, status, result_code, event_type=event_type
+            )
 
     def get_intent(self, intent_id):
         with self.read_connection() as connection:
@@ -1431,53 +1450,59 @@ class ControlStore:
             task, events, approvals, agents, blockers, reviews, evidence
         )
 
+    def _transition_in_transaction(self, connection, dispatch_id, target, reason):
+        now = utc_now()
+        row = connection.execute(
+            "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(dispatch_id)
+
+        target_state, resume_state = next_state(
+            row["state"], target, row["resume_state"]
+        )
+        sequence = self._next_event_sequence(connection, dispatch_id)
+        connection.execute(
+            """UPDATE tasks
+               SET state = ?, resume_state = ?, updated_at = ?
+               WHERE dispatch_id = ?""",
+            (target_state, resume_state, now, dispatch_id),
+        )
+        payload_json = json.dumps(
+            {"from": row["state"], "to": target_state, "reason": reason},
+            sort_keys=True,
+        )
+        event = {
+            "schema_version": 1,
+            "dispatch_id": dispatch_id,
+            "sequence": sequence,
+            "event_type": "STATE_CHANGED",
+            "created_at": now,
+        }
+        validate_record("event", event)
+        connection.execute(
+            "INSERT INTO events VALUES (?, ?, ?, ?, ?)",
+            (
+                event["dispatch_id"], event["sequence"], event["event_type"],
+                payload_json, event["created_at"],
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+        ).fetchone()
+        return dict(row)
+
+    def _transition_durable(self, dispatch_id, target, reason):
+        with self._transaction() as connection:
+            return self._transition_in_transaction(
+                connection, dispatch_id, target, reason
+            )
+
     def transition(self, dispatch_id, target, reason):
         with self.mutation() as connection:
-            now = utc_now()
-            row = connection.execute(
-                "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
-            ).fetchone()
-            if row is None:
-                raise KeyError(dispatch_id)
-
-            target_state, resume_state = next_state(
-                row["state"], target, row["resume_state"]
+            return self._transition_in_transaction(
+                connection, dispatch_id, target, reason
             )
-            sequence = connection.execute(
-                """SELECT COALESCE(MAX(sequence), 0) + 1
-                     FROM events WHERE dispatch_id = ?""",
-                (dispatch_id,),
-            ).fetchone()[0]
-            connection.execute(
-                """UPDATE tasks
-                   SET state = ?, resume_state = ?, updated_at = ?
-                   WHERE dispatch_id = ?""",
-                (target_state, resume_state, now, dispatch_id),
-            )
-            payload_json = json.dumps(
-                {"from": row["state"], "to": target_state, "reason": reason},
-                sort_keys=True,
-            )
-            event = {
-                "schema_version": 1,
-                "dispatch_id": dispatch_id,
-                "sequence": sequence,
-                "event_type": "STATE_CHANGED",
-                "created_at": now,
-            }
-            validate_record("event", event)
-            connection.execute(
-                "INSERT INTO events VALUES (?, ?, ?, ?, ?)",
-                (
-                    event["dispatch_id"], event["sequence"], event["event_type"],
-                    payload_json, event["created_at"],
-                ),
-            )
-            row = connection.execute(
-                "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
-            ).fetchone()
-            task = dict(row)
-        return task
 
     def reserve_worktree_identity(self, dispatch_id, agent, slug, branch):
         with self.mutation() as connection:
