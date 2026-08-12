@@ -202,6 +202,10 @@ class IntentService:
                 return session.finish_intent(intent_id, "REJECTED", "STALE_HEAD")
 
             if intent["action"] == "APPROVAL_REQUEST":
+                if task["state"] in {"CLOSED", "RELEASED"}:
+                    return session.finish_intent(
+                        intent_id, "REJECTED", "STATE_CONFLICT"
+                    )
                 return session.finish_intent(
                     intent_id,
                     "APPLIED",

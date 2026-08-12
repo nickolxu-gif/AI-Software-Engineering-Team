@@ -381,6 +381,27 @@ class IntentServiceTests(unittest.TestCase):
             "APPROVAL_PREPARATION_REQUESTED",
         )
 
+    def test_approval_request_rejects_a_closed_task(self):
+        intent = self.submit(
+            "APPROVAL_REQUEST",
+            {
+                "requested_action": "merge",
+                "requested_parameters": {},
+                "confirmation": "yes",
+            },
+        )
+        with self.store.mutation() as connection:
+            connection.execute(
+                "UPDATE tasks SET state = 'CLOSED' WHERE dispatch_id = ?",
+                ("20260812-004",),
+            )
+
+        result = self.service.process(intent["intent_id"])
+
+        self.assertEqual((result["status"], result["result_code"]), (
+            "REJECTED", "STATE_CONFLICT",
+        ))
+
     def test_process_blocks_when_an_operation_is_prepared(self):
         intent = self.submit("PAUSE_REQUEST")
         self.store.prepare_operation(
