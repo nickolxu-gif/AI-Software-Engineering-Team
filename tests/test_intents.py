@@ -321,12 +321,12 @@ class IntentServiceTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def submit(self, action, parameters=None):
+    def submit(self, action, parameters=None, idempotency_key="123e4567-e89b-12d3-a456-426614174000"):
         request = {
             "dispatch_id": "20260812-004",
             "action": action,
             "target_sha": self.head,
-            "idempotency_key": "123e4567-e89b-12d3-a456-426614174000",
+            "idempotency_key": idempotency_key,
             "parameters": parameters or {},
         }
         return self.service.submit(request)
@@ -381,26 +381,38 @@ class IntentServiceTests(unittest.TestCase):
             "APPROVAL_PREPARATION_REQUESTED",
         )
 
-    def test_approval_request_rejects_a_closed_task(self):
-        intent = self.submit(
-            "APPROVAL_REQUEST",
-            {
-                "requested_action": "merge",
-                "requested_parameters": {},
-                "confirmation": "yes",
-            },
-        )
-        with self.store.mutation() as connection:
-            connection.execute(
-                "UPDATE tasks SET state = 'CLOSED' WHERE dispatch_id = ?",
-                ("20260812-004",),
-            )
+    def test_approval_request_rejects_a_terminal_task(self):
+        for terminal_state in ("CLOSED", "RELEASED"):
+            with self.subTest(state=terminal_state):
+                intent = self.submit(
+                    "APPROVAL_REQUEST",
+                    {
+                        "requested_action": "merge",
+                        "requested_parameters": {},
+                        "confirmation": "yes",
+                    },
+                    idempotency_key=(
+                        "123e4567-e89b-12d3-a456-426614174000"
+                        if terminal_state == "CLOSED"
+                        else "123e4567-e89b-12d3-a456-426614174001"
+                    ),
+                )
+                with self.store.mutation() as connection:
+                    connection.execute(
+                        "UPDATE tasks SET state = ? WHERE dispatch_id = ?",
+                        (terminal_state, "20260812-004"),
+                    )
 
-        result = self.service.process(intent["intent_id"])
+                result = self.service.process(intent["intent_id"])
 
-        self.assertEqual((result["status"], result["result_code"]), (
-            "REJECTED", "STATE_CONFLICT",
-        ))
+                self.assertEqual((result["status"], result["result_code"]), (
+                    "REJECTED", "STATE_CONFLICT",
+                ))
+                with self.store.mutation() as connection:
+                    connection.execute(
+                        "UPDATE tasks SET state = 'IN_PROGRESS' WHERE dispatch_id = ?",
+                        ("20260812-004",),
+                    )
 
     def test_process_blocks_when_an_operation_is_prepared(self):
         intent = self.submit("PAUSE_REQUEST")
