@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from team_control.git_context import RepoContext
+from team_control.intents import IntentService
 from team_control.service import ControlPlane
 from team_control.store import ControlStore
 from tests.helpers import make_repo, run
@@ -80,7 +81,10 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(
             set(subparser_action.choices),
-            {"approvals", "doctor", "init", "start", "status", "transition"},
+            {
+                "approvals", "doctor", "init", "intents", "process-intent",
+                "start", "status", "transition",
+            },
         )
         for command, subparser in subparser_action.choices.items():
             with self.subTest(command=command):
@@ -283,6 +287,37 @@ class CliTests(unittest.TestCase):
                 consumed_payload["approvals"][0]["consumed_at"]
             )
             self.assertEqual(store.pending_approvals("20260808-008"), [])
+            prepared = store.prepared_operations()
+            self.assertEqual(len(prepared), 1)
+            store.finish_operation(
+                prepared[0]["operation_id"],
+                "COMMITTED",
+                {"verified": True, "callback_status": "PENDING"},
+            )
+
+            intents = IntentService(context, store, control)
+            submitted = intents.submit({
+                "dispatch_id": "20260808-008",
+                "action": "PAUSE_REQUEST",
+                "target_sha": task["current_head_sha"],
+                "idempotency_key": "123e4567-e89b-12d3-a456-426614174000",
+                "parameters": {},
+            })
+            listed = run_cli(repo, "intents", "--dispatch-id", "20260808-008")
+            listed_payload = assert_single_json_line(self, listed)
+            self.assertEqual(
+                [item["intent_id"] for item in listed_payload["intents"]],
+                [submitted["intent_id"]],
+            )
+            self.assertNotIn("confirmation", listed.stdout)
+            processed = run_cli(
+                repo, "process-intent", "--intent-id", submitted["intent_id"]
+            )
+            processed_payload = assert_single_json_line(self, processed)
+            self.assertEqual(
+                (processed_payload["status"], processed_payload["result_code"]),
+                ("APPLIED", "PAUSE_REQUESTED"),
+            )
 
             all_approvals = run_cli(repo, "approvals")
             all_payload = assert_single_json_line(self, all_approvals)

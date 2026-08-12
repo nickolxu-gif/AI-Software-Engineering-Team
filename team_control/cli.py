@@ -6,11 +6,15 @@ from pathlib import Path
 from .doctor import WorktreeDoctor
 from .errors import BoundaryError, ContractError, TeamControlError
 from .git_context import RepoContext
+from .intents import IntentService
 from .service import ControlPlane
 from .store import ControlStore
 
 
-COMMANDS = ("approvals", "doctor", "init", "start", "status", "transition")
+COMMANDS = (
+    "approvals", "doctor", "init", "intents", "process-intent", "start",
+    "status", "transition",
+)
 COMMAND_USAGE = {
     "approvals": "team-control --repo PATH approvals [--dispatch-id ID]",
     "doctor": (
@@ -18,6 +22,8 @@ COMMAND_USAGE = {
         "--agent AGENT --slug SLUG --base-sha SHA"
     ),
     "init": "team-control --repo PATH init",
+    "intents": "team-control --repo PATH intents [--dispatch-id ID]",
+    "process-intent": "team-control --repo PATH process-intent --intent-id UUID",
     "start": (
         "team-control --repo PATH start --dispatch-id ID --title TITLE "
         "--objective OBJECTIVE --risk {L1,L2,L3} --agent AGENT --slug SLUG"
@@ -78,6 +84,12 @@ def build_parser():
     approvals = commands.add_parser("approvals")
     approvals.add_argument("--dispatch-id")
 
+    intents = commands.add_parser("intents")
+    intents.add_argument("--dispatch-id")
+
+    process_intent = commands.add_parser("process-intent")
+    process_intent.add_argument("--intent-id", required=True)
+
     doctor = commands.add_parser("doctor")
     doctor.add_argument("mode", choices=("inspect", "repair"))
     doctor.add_argument("--dispatch-id", required=True)
@@ -134,6 +146,13 @@ def _repo_context(raw_path):
     return RepoContext.discover(resolved)
 
 
+def _safe_intent(intent):
+    return {
+        key: value for key, value in intent.items()
+        if key not in {"confirmation_hash"}
+    }
+
+
 def execute(args):
     context = _repo_context(args.repo)
     store = ControlStore.for_repo(context)
@@ -159,6 +178,14 @@ def execute(args):
         return control.transition(args.dispatch_id, args.to, args.reason)
     if args.command == "approvals":
         return {"approvals": store.list_approvals(args.dispatch_id)}
+    if args.command == "intents":
+        return {
+            "intents": [
+                _safe_intent(intent) for intent in store.list_intents(args.dispatch_id)
+            ]
+        }
+    if args.command == "process-intent":
+        return _safe_intent(IntentService(context, store, control).process(args.intent_id))
     if args.command == "doctor":
         doctor = WorktreeDoctor(context, store)
         report = doctor.inspect(
