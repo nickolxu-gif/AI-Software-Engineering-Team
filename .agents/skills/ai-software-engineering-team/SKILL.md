@@ -40,7 +40,7 @@ Use tested internal APIs only. Reconcile `PREPARED` through `OperationCoordinato
 
 ## Approval boundaries
 
-Use `NEEDS_HUMAN_APPROVAL` before destructive, external, production, sensitive, privileged, irreversible, or expanded work. MVP 3, GitHub Remote, and Claude review degradation remain Human decisions. Claude fallback needs quota evidence and a current-session explicit yes.
+Use `NEEDS_HUMAN_APPROVAL` before destructive, external, production, sensitive, privileged, irreversible, or expanded work. MVP 2/3, GitHub Remote, and Claude review degradation remain Human decisions. Claude fallback needs quota evidence and a current-session explicit yes.
 
 Treat `NEEDS_HUMAN_APPROVAL` as the status `effective_state` overlay while the lifecycle remains in `task.state`, not as a normal lifecycle transition.
 
