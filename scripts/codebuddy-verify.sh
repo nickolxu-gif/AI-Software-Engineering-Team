@@ -29,6 +29,8 @@ work_dir=$(mktemp -d /tmp/codebuddy-verify.XXXXXX) || die "temporary directory c
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
 file_manifest=$work_dir/files
 : > "$file_manifest"
+file_candidates=$work_dir/candidates
+: > "$file_candidates"
 
 validate_utf8() {
     if ! printf '%s' "$1" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
@@ -39,6 +41,9 @@ validate_utf8() {
 validate_relative_path() {
     value=$1
     validate_utf8 "$value"
+    if printf '%s' "$value" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+        die "path must not contain control characters"
+    fi
     case "$value" in ''|/*|*/) die "path must be a non-empty relative project path" ;; esac
     lowered=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')
     case "/$lowered/" in */runtime/*|*/vault/*|*/rebo-vault/*|*/home/*|*/.obsidian/*) die "runtime, vault, and home paths are not allowed" ;; esac
@@ -56,8 +61,16 @@ validate_relative_path() {
 
 validate_source_file() {
     validate_relative_path "$1"
+    lowered=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    case "$lowered" in
+        .env|.env.*|reports/*|.review-evidence/*|.git|.git/*|runtime/*|vault/*|rebo-vault/*|home/*|.obsidian/*)
+            die "source path is not reviewable"
+            ;;
+    esac
     path=$project_root/$1
     [ -f "$path" ] || die "source must be an existing regular file"
+    git -C "$project_root" ls-files --error-unmatch -- "$1" >/dev/null 2>&1 || die "source must be tracked"
+    git -C "$project_root" diff --quiet "$base_ref..$head_ref" -- "$1" && die "source must be changed in selected range"
     /usr/bin/python3 -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' < "$path" >/dev/null 2>&1 || die "source must be UTF-8 text"
     if LC_ALL=C grep -Eiq -- '-----BEGIN [^-]*PRIVATE KEY[^-]*-----' "$path"; then
         die "source contains private key material"
@@ -66,10 +79,11 @@ validate_source_file() {
 
 validate_report_path() {
     validate_relative_path "$1"
+    case "$1" in reports/*) ;; *) die "report path must be under reports" ;; esac
     path=$project_root/$1
     parent=${path%/*}
     [ -d "$parent" ] || die "report parent must be an existing directory"
-    [ ! -e "$path" ] || [ -f "$path" ] || die "report must be a regular file"
+    [ ! -e "$path" ] || die "report path already exists"
 }
 
 validate_safe_text() {
@@ -103,7 +117,7 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --prompt) [ "$#" -ge 2 ] || die "--prompt requires a value"; [ "$prompt_seen" -eq 0 ] || die "--prompt may only be supplied once"; prompt=$2; prompt_seen=1; shift 2 ;;
         --report) [ "$#" -ge 2 ] || die "--report requires a value"; [ "$report_seen" -eq 0 ] || die "--report may only be supplied once"; report=$2; report_seen=1; shift 2 ;;
-        --file) [ "$#" -ge 2 ] || die "--file requires a value"; validate_source_file "$2"; printf '%s\n' "$2" >> "$file_manifest"; file_count=$((file_count + 1)); shift 2 ;;
+        --file) [ "$#" -ge 2 ] || die "--file requires a value"; printf '%s\n' "$2" >> "$file_candidates"; file_count=$((file_count + 1)); shift 2 ;;
         --base-ref) [ "$#" -ge 2 ] || die "--base-ref requires a value"; base_ref=$2; shift 2 ;;
         --head-ref) [ "$#" -ge 2 ] || die "--head-ref requires a value"; head_ref=$2; shift 2 ;;
         *) die "unknown argument" ;;
@@ -114,6 +128,21 @@ done
 [ "$file_count" -gt 0 ] || die "at least one --file is required"
 validate_utf8 "$prompt"
 validate_safe_text "$prompt" "prompt"
+validate_ref() {
+    value=$1
+    validate_utf8 "$value"
+    case "$value" in ''|-*) die "Git ref is invalid" ;; esac
+    if printf '%s' "$value" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+        die "Git ref must not contain control characters"
+    fi
+    git -C "$project_root" rev-parse --verify --quiet "$value^{commit}" >/dev/null 2>&1 || die "Git ref is not a commit"
+}
+validate_ref "$base_ref"
+validate_ref "$head_ref"
+while IFS= read -r source_file; do
+    validate_source_file "$source_file"
+    printf '%s\n' "$source_file" >> "$file_manifest"
+done < "$file_candidates"
 validate_report_path "$report"
 report_path=$project_root/$report
 report_parent=${report_path%/*}
@@ -158,8 +187,8 @@ check_selected_diff || { write_report BLOCKED local_diff_check_failed "$fingerpr
 
 node_executable=$(PATH=$original_path command -v node 2>/dev/null || true)
 case "$node_executable" in /opt/homebrew/bin/node|/usr/local/bin/node|/usr/bin/node) node_runtime_dir=${node_executable%/node} ;; *) write_report BLOCKED approved_node_unavailable "$fingerprint"; die "approved_node_unavailable" ;; esac
-codebuddy_executable=$(PATH=$original_path command -v codebuddy 2>/dev/null || true)
-[ -n "$codebuddy_executable" ] || { write_report BLOCKED codebuddy_unavailable "$fingerprint"; die "codebuddy_unavailable"; }
+codebuddy_executable=/Users/qinxu/.local/bin/codebuddy
+[ -x "$codebuddy_executable" ] || { write_report BLOCKED codebuddy_unavailable "$fingerprint"; die "codebuddy_unavailable"; }
 
 printf '%s\n' '{"mcpServers":{}}' > "$work_dir/empty-mcp.json"
 request_file=$work_dir/review-request.md
@@ -176,7 +205,7 @@ stderr_file=$work_dir/stderr.txt
 verifier_timeout_seconds=300
 if env -i PATH="$node_runtime_dir:$PATH" LC_ALL=C /usr/bin/python3 "$stream_runner" \
     --request-file "$request_file" --result-file "$result_file" --events-file "$events_file" --state-file "$state_file" --stderr-file "$stderr_file" --timeout-seconds "$verifier_timeout_seconds" --model glm-5.2 -- \
-    "$codebuddy_executable" -p --model glm-5.2 --effort medium --append-system-prompt 'Read only the immutable packet. Do not use tools or explain reasoning. Return exactly one V4 JSON verdict.' --tools '' --no-session-persistence --strict-mcp-config --mcp-config "$work_dir/empty-mcp.json" --permission-mode dontAsk --max-turns 1 --setting-sources project,local --settings '{"disableAllHooks":true}' --output-format stream-json --json-schema "$packet_dir/review-schema.json"
+    "$codebuddy_executable" -p --model glm-5.2 --effort medium --append-system-prompt 'Read only the immutable packet. Do not use tools or explain reasoning. Return exactly one V4 JSON verdict.' --tools '' --no-session-persistence --strict-mcp-config --mcp-config "$work_dir/empty-mcp.json" --permission-mode dontAsk --max-turns 1 --setting-sources '' --settings '{"disableAllHooks":true}' --output-format stream-json --json-schema "$packet_dir/review-schema.json"
 then
     runner_status=0
 else
@@ -217,5 +246,10 @@ PY
     die "$validation_reason"
 }
 verdict=$(printf '%s' "$validated" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["verdict"])')
+if [ "$verdict" != "PASS" ]; then
+    /usr/bin/python3 "$review_packet" receipt --receipt-file "$receipt_file" --fingerprint "$fingerprint" --provider codebuddy --model glm-5.2 --packet-dir "$packet_dir" --packet-bytes "$packet_bytes" --preflight pass --provider-started yes --event-count "$event_count" --final-result-seen "$final_seen" --verdict-parse pass --failure-class M --model-verdict "$verdict" --reason-code verdict_not_pass >/dev/null 2>&1 || { write_report BLOCKED receipt_failure "$fingerprint"; die "receipt_failure"; }
+    write_report "$verdict" verdict_not_pass "$fingerprint"
+    die "verdict_not_pass"
+fi
 /usr/bin/python3 "$review_packet" receipt --receipt-file "$receipt_file" --fingerprint "$fingerprint" --provider codebuddy --model glm-5.2 --packet-dir "$packet_dir" --packet-bytes "$packet_bytes" --preflight pass --provider-started yes --event-count "$event_count" --final-result-seen "$final_seen" --verdict-parse pass --failure-class none --model-verdict "$verdict" --reason-code none >/dev/null 2>&1 || { write_report BLOCKED receipt_failure "$fingerprint"; die "receipt_failure"; }
 write_report "$verdict" none "$fingerprint"

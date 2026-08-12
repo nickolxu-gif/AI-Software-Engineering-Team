@@ -33,3 +33,15 @@
 - Safe receipt: `.review-evidence/receipts/6f3de2128a2b22e1600162a5b16bc77c82fb8bee981878f2cc008ae13bb4f499.json`.
 - Report: `reports/codebuddy-verifier-20260813-010.md`.
 - Result: `PASS_WITH_WARNINGS`; this is not strict acceptance. The original MVP 2D candidate remains blocked and no merge is authorized by this result.
+
+## Independent review remediation
+
+The independent read-only review returned `MODIFY`. Its findings were verified against the wrapper and fixed before any further provider attempt:
+
+- Non-`PASS` verdicts now publish a model-failure receipt and exit non-zero with `verdict_not_pass`.
+- Reports are restricted to new files below `reports/`; existing files cannot be overwritten.
+- Source scope is restricted to changed, tracked files; `.env`, reports, evidence, Git metadata, runtime, vault, and control-character paths are rejected.
+- Base and head refs must resolve to commits; CodeBuddy is bound to `/Users/qinxu/.local/bin/codebuddy`; setting sources are empty.
+- A fake-provider runtime test proves a valid `PASS_WITH_WARNINGS` result blocks the shell command.
+
+The CodeBuddy attempt above is not retried after this adapter change because the changed adapter produces a new review fingerprint and requires a fresh explicit fallback authorization.

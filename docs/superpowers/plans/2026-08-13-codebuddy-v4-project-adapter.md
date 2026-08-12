@@ -84,6 +84,23 @@ Record provider, model, verdict, packet fingerprint, and receipt path. `PASS_WIT
 
 Run `python3 -m unittest discover -s tests -q`, `/opt/homebrew/bin/python3.14 -m unittest discover -s tests -q`, and `git diff --check`. A green adapter test does not replace the project regression.
 
+### Task 6: Harden the adapter after independent review
+
+**Files:**
+- Modify: `scripts/codebuddy-verify.sh`
+- Modify: `tests/test_codebuddy_adapter.py`
+- Modify: `artifacts/dispatches/20260813-010/dispatch.md`
+
+- [x] **Step 1: Close provider and file-boundary findings**
+
+The adapter now requires a strict `PASS`, accepts only new `reports/` paths, validates refs, requires changed tracked source files, excludes sensitive/runtime paths, fixes the CodeBuddy executable, and clears setting sources.
+
+- [x] **Step 2: Add runtime fake-provider coverage**
+
+The test harness executes a temporary wrapper copy against a fake V4 stream and proves `PASS_WITH_WARNINGS` returns non-zero while retaining only the sanitized report.
+
+- [ ] **Step 3: Re-run both full interpreter suites and obtain fresh fallback authorization before any new CodeBuddy call**
+
 ### Task 5: Commit the adapter only after its checks pass
 
 **Files:**

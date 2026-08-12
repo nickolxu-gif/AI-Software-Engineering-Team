@@ -1,7 +1,11 @@
 import os
+import json
+import shlex
 import stat
 import subprocess
+import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 
@@ -29,6 +33,12 @@ class CodeBuddyAdapterTests(unittest.TestCase):
             "V4.10.3",
             "validate-verdict",
             "receipt",
+            "if [ \"$verdict\" != \"PASS\" ]",
+            "report path must be under reports",
+            "ls-files --error-unmatch",
+            "rev-parse --verify",
+            "setting-sources ''",
+            "codebuddy_executable=/Users/qinxu/.local/bin/codebuddy",
         )
         for value in required:
             with self.subTest(value=value):
@@ -51,6 +61,75 @@ class CodeBuddyAdapterTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("source must be an existing regular file", result.stderr)
+
+    def test_adapter_rejects_report_outside_reports_directory(self):
+        result = subprocess.run(
+            [
+                str(WRAPPER),
+                "--base-ref", "55c195e",
+                "--head-ref", "HEAD",
+                "--prompt", "bounded adapter report path probe",
+                "--report", ".git/config",
+                "--file", "scripts/codebuddy-verify.sh",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            env={"PATH": os.environ.get("PATH", "")},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("report path must be under reports", result.stderr)
+
+    def test_non_pass_verdict_is_a_blocking_process_result(self):
+        verdict = {
+            "verdict": "PASS_WITH_WARNINGS",
+            "findings": [],
+            "scope_ack": ["scripts/codebuddy-verify.sh"],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            fake = Path(temporary) / "codebuddy"
+            init_line = json.dumps({
+                "type": "system", "subtype": "init", "model": "glm-5.2", "tools": [],
+            }, separators=(",", ":"))
+            result_line = json.dumps({
+                "type": "result", "subtype": "success", "result": json.dumps(verdict),
+            }, separators=(",", ":"))
+            fake.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' " + shlex.quote(init_line) + "\n"
+                "printf '%s\\n' " + shlex.quote(result_line) + "\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            test_wrapper = Path(temporary) / "wrapper.sh"
+            wrapper_text = WRAPPER.read_text(encoding="utf-8").replace(
+                "codebuddy_executable=/Users/qinxu/.local/bin/codebuddy",
+                "codebuddy_executable=" + str(fake),
+            )
+            test_wrapper.write_text(wrapper_text, encoding="utf-8")
+            test_wrapper.chmod(0o755)
+            report = ROOT / "reports" / ".codebuddy-adapter-nonpass-test.md"
+            if report.exists():
+                report.unlink()
+            try:
+                result = subprocess.run(
+                    [
+                        str(test_wrapper),
+                        "--base-ref", "55c195e",
+                        "--head-ref", "HEAD",
+                        "--prompt", "bounded adapter non pass probe " + uuid.uuid4().hex,
+                        "--report", "reports/.codebuddy-adapter-nonpass-test.md",
+                        "--file", "scripts/codebuddy-verify.sh",
+                    ],
+                    cwd=ROOT,
+                    text=True,
+                    capture_output=True,
+                    env={"PATH": os.environ.get("PATH", "")},
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Verdict: PASS_WITH_WARNINGS", report.read_text(encoding="utf-8"))
+            finally:
+                report.unlink(missing_ok=True)
 
     def test_adapter_binds_local_report_and_packet_evidence(self):
         text = WRAPPER.read_text(encoding="utf-8")
