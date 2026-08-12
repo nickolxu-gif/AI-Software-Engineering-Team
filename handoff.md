@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-**Git 治理、MVP 0 控制平面与 MVP 1 本地只读工作台均已完成并整合到 `main`。**
+**Git 治理、MVP 0 控制平面、MVP 1 本地工作台与 MVP 2A 受控意图入口均已完成并整合到 `main`。**
 
 - `main` 是唯一稳定主线；Git bootstrap 历史基线 SHA 为 `cd459565b8bb24156f92e400a11769d254eccda9`。
 - MVP 0 任务分支已 fast-forward 整合到 `main`；MVP 0 集成 SHA 为 `f4b60ab4a4f3112912641fd8b56667b27d6fb819`。
@@ -23,7 +23,7 @@
 - 控制平面设计：`docs/superpowers/specs/2026-08-08-ai-engineering-team-control-plane-design.md`。
 - MVP 0 实施计划：`docs/superpowers/plans/2026-08-08-mvp0-control-plane.md`。
 - 这里的 `Minor` 指 `git worktree add` 失败后可能残留目录、分支或 Worktree metadata；不是对象存储。Codex 必须先检查实际 Git 状态，再决定安全重建或转为 `BLOCKED`，不得自动强删未知数据。
-- 当前授权阶段：MVP 0、MVP 1 已完成；MVP 2、MVP 3 和 GitHub Remote 尚未进入实施。
+- 当前授权阶段：MVP 0、MVP 1、MVP 2A 已完成；MVP 2B、MVP 3 和 GitHub Remote 尚未进入实施。
 
 ### MVP 0 Control Plane
 
@@ -55,6 +55,18 @@
 - 已知边界：任务 `current_head_sha` 尚无受控推进入口，因此真实任务可能显示 `HEAD_DRIFT`；该状态不会被伪装成有效验收。并发 writer 回归、真实浏览器自动化和 HTTP 线程限制属于后续改进。
 - 收尾修复任务 `20260810-001` 已整合于 `8e91a6e98e8b706980904776153d8e6ee63bda3c`：`CLOSED` 任务完成 Worktree 生命周期后不再因 Worktree 缺失或漂移把项目升级为 `ATTENTION`；任务详情仍可保留历史 `head_drift` 事实。活跃任务继续失败关闭。
 - MVP 2 前不得从浏览器直接执行状态变更、调 Agent、审批、merge、push 或发布；所有工程动作继续回到 Codex 控制平面。
+
+### MVP 2A Bounded Task Intent Adapter
+
+**状态：ACCEPTED and integrated**
+
+- 任务：`20260812-004`；本地 `main` 整合 SHA：`9a5eeed403ca2549ee767e35abed7d9b362283b2`。
+- 工作台可提交且仅可提交 `PAUSE_REQUEST`、`RESUME_REQUEST`、`APPROVAL_REQUEST` 三类受控意图；提交只形成 `PENDING` inbox 记录，处理仍由 Codex 显式执行。
+- 每次处理在控制锁中重新核验任务、实际 Git HEAD、控制库 HEAD、状态、待审批项和已准备操作。浏览器不能执行 Git、merge、push、发布、审批 nonce 消费或自动处理。
+- 写入端点只允许 loopback Host、同源 Origin、进程内 token、精确 `application/json` 和最多 8 KiB 正文；HTTP、CLI 和读模型都只返回显式白名单字段。
+- 独立验收：Claude Code / Sonnet V4.10.3 对核心终态拦截 delta 与 HTTP/CLI 白名单 delta 均为 `PASS`；安全记录见 `artifacts/dispatches/20260812-004/verification.md`。未使用 fallback Reviewer。
+- 整合后验证：默认 Python、Python 3.14 全量测试、`git diff --check` 和 `./scripts/repo-health.sh` 均通过。
+- MiMo 当前没有可用独立执行入口；未伪造盘点结论。可复用验收器改进已在 `claude-emergency-verifier` V4.10.3 保存：完整传入 immutable packet，且强制精确 scope acknowledgement。
 
 可使用以下命令复核最终 Worktree 和分支状态：
 
