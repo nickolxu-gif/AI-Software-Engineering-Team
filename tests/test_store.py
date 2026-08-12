@@ -42,6 +42,9 @@ EXPECTED_COLUMNS = {
         "intake_id", "title", "objective", "context", "request_hash",
         "status", "result_code", "idempotency_key", "created_at", "updated_at",
     ),
+    "task_intake_handlings": (
+        "intake_id", "dispatch_id", "disposition", "handled_at",
+    ),
     "evidence": (
         "evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha",
         "created_at",
@@ -67,6 +70,7 @@ EXPECTED_PRIMARY_KEYS = {
     "operations": {"operation_id": 1},
     "intents": {"intent_id": 1},
     "task_intake_requests": {"intake_id": 1},
+    "task_intake_handlings": {"intake_id": 1},
     "evidence": {"evidence_id": 1},
     "agents": {"dispatch_id": 1, "agent_id": 2},
     "reviews": {"review_id": 1},
@@ -80,6 +84,7 @@ EXPECTED_NULLABLE = {
     "operations": {"result_json"},
     "intents": {"confirmation_hash"},
     "task_intake_requests": {"context"},
+    "task_intake_handlings": set(),
     "evidence": {"source_sha"},
     "agents": {"model"},
     "reviews": set(),
@@ -188,7 +193,9 @@ class StoreTests(unittest.TestCase):
                         }
                         self.assertEqual(nullable, EXPECTED_NULLABLE[table])
 
-                for table in set(EXPECTED_COLUMNS) - {"tasks", "task_intake_requests"}:
+                for table in set(EXPECTED_COLUMNS) - {
+                    "tasks", "task_intake_requests", "task_intake_handlings",
+                }:
                     with self.subTest(foreign_key_table=table):
                         foreign_keys = connection.execute(
                             "PRAGMA foreign_key_list(%s)" % table
@@ -199,6 +206,17 @@ class StoreTests(unittest.TestCase):
                              foreign_keys[0]["to"]),
                             ("tasks", "dispatch_id", "dispatch_id"),
                         )
+
+                handling_keys = connection.execute(
+                    "PRAGMA foreign_key_list(task_intake_handlings)"
+                ).fetchall()
+                self.assertEqual(
+                    {(row["table"], row["from"], row["to"]) for row in handling_keys},
+                    {
+                        ("task_intake_requests", "intake_id", "intake_id"),
+                        ("tasks", "dispatch_id", "dispatch_id"),
+                    },
+                )
 
                 for table in ("approvals", "operations", "intents", "task_intake_requests"):
                     unique_columns = set()
