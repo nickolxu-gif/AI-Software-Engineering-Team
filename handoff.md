@@ -95,9 +95,9 @@
 
 ### 控制库 Schema 兼容性预检
 
-**状态：ACCEPTED — pending local main integration**
+**状态：ACCEPTED and integrated**
 
-- 任务：`20260812-007`；候选 HEAD：`703db23`；基线：`b1703b7`。
+- 任务：`20260812-007`；本地 `main` 整合 SHA：`659fc602322e70fd727a840764254827c9189150`；基线：`b1703b7`。
 - 任何非 `init` 控制 CLI 先用只读连接校验完整控制面表、SQLite object type 和必需列。缺少已知表时返回 `SCHEMA_MIGRATION_REQUIRED`；同名 view 或缺列时返回 `SCHEMA_UNSUPPORTED`，不再退化为 `INTERNAL_ERROR`。
 - 工作台 `intents` 表缺失时 `/api/health` 返回 503 + `SCHEMA_MIGRATION_REQUIRED`；view 或字段不兼容返回 `SCHEMA_UNSUPPORTED`。
 - 恢复仍必须由 Codex 显式调用已有幂等 `scripts/team-control init`；严格只读请求不能恢复，且不得直接编辑 SQLite。`SCHEMA_UNSUPPORTED` 保持 `BLOCKED`，不假设 init 能无损修复。
