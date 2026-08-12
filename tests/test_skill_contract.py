@@ -180,6 +180,9 @@ class SkillContractTests(unittest.TestCase):
         for required in (
             "process-pending-intents --limit 10",
             "once per request",
+            "control database exists",
+            "init fails",
+            "do not run the queue",
             "strictly read-only",
             "Dashboard open/view intents",
             "non-zero",
@@ -190,6 +193,11 @@ class SkillContractTests(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, text)
+
+    def test_skill_preserves_production_and_future_mvp_human_gates(self):
+        text = SKILL_PATH.read_text(encoding="utf-8")
+        self.assertIn("production", text)
+        self.assertIn("MVP 3", text)
 
     def test_guide_documents_mvp1_actual_usage_and_limits(self):
         guide = GUIDE_PATH.read_text(encoding="utf-8")
