@@ -5,7 +5,7 @@
 
 ## 决策
 
-在现有任务详情内的三类受控意图之外，增加独立的“任务需求收件箱”。总览页展示表单，用户只能提交 `title`、`objective` 和可选 `context`。服务把请求写入独立 `task_intake_requests` 表，状态固定从 `PENDING` 变为由 Codex 会话处理的终态；本次只实现接收、读取和审计，不把浏览器输入自动转换为工程执行。
+在现有任务详情内的三类受控意图之外，增加独立的“任务需求收件箱”。总览页展示表单，用户只能提交 `title`、`objective` 和可选 `context`。服务把请求写入独立 `task_intake_requests` 表；Codex 在读取并处理该需求后显式将状态从 `PENDING` 确认到 `ACKNOWLEDGED`，防止同一需求持续计入待处理队列。本次不把浏览器输入自动转换为工程执行。
 
 Codex 在下一次普通自然语言请求中读取待处理需求，补齐七问、风险、Agent、隔离与验收策略，并按既有 `start` 流程创建正式任务。这避免仅凭浏览器文本自动分配风险、创建 Worktree 或执行未审查的工程动作。
 
@@ -20,7 +20,7 @@ Codex 在下一次普通自然语言请求中读取待处理需求，补齐七�
 - POST ` /api/task-intakes` 仅在 loopback、同源 Origin、进程内 session token、精确 `application/json` 和最大 8 KiB body 下接受。
 - 请求字段仅为 UUID `idempotency_key`、1–120 字符 `title`、1–2000 字符 `objective`，以及可选 1–2000 字符 `context`；拒绝未知字段、控制字符、孤立 surrogate 和过深/非对象 JSON。
 - 存储记录生成 UUID `intake_id`，请求哈希和明确状态；公开 API 只返回 `intake_id`、`title`、`objective`、`status`、`result_code`、时间。`context` 与请求哈希不读回，避免工作台放大敏感或冗长内容。
-- 初始状态为 `PENDING`。本次不增加浏览器处理端点、后台循环、自动任务创建、Git 操作、审批或远程访问。
+- 初始状态为 `PENDING`；只有 Codex 的受控内部 API 可将其确认至 `ACKNOWLEDGED`。本次不增加浏览器处理端点、后台循环、自动任务创建、Git 操作、审批或远程访问。
 - 总览只展示有上限的待处理摘要和表单。提交成功后提示“已提交给 Codex，等待下一次工程会话处理”。
 
 ## 数据与兼容性

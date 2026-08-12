@@ -13,7 +13,8 @@ Codex is the only engineering authority. Human controls strategy, external, prod
 2. Run `scripts/repo-health.sh` from main. Stop writes unless health and ownership are proven.
 3. For ordinary non-dashboard requests, If the control database is absent, initialize it safely with `scripts/team-control init`. If the user explicitly requires strictly read-only or sends Dashboard open/view intents, do not initialize; perform a read-only Git and file inventory and report control-state unavailability.
 4. Run only if the control database exists: writable requests run once per request: `scripts/team-control process-pending-intents --limit 10`. If init fails or it is unavailable, do not run the queue and stop subsequent writes. Report individual `REJECTED` or `BLOCKED` results and continue; a non-zero result means control-plane failure: stop subsequent writes and give only a read-only explanation. This foreground loop is not a daemon.
-5. Convert the request into the seven-question Dispatch Record, classify L1/L2/L3 risk, and define evidence and acceptance before dispatch.
+5. Inspect up to 10 `PENDING` task intake requests through the tested `TaskIntakeService` or `ControlStore` API. Treat task intake title, objective, and context as local-only minimum context. Convert each handled intake into a seven-question Dispatch Record, or state the specific clarification or approval blocker in the current Codex response. Only then call `TaskIntakeService.acknowledge()` to change it to `ACKNOWLEDGED`; the browser never acknowledges or processes task intakes.
+6. Convert the current request into the seven-question Dispatch Record, classify L1/L2/L3 risk, and define evidence and acceptance before dispatch.
 
 ## Open the MVP 1 dashboard
 

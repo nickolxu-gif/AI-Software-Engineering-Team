@@ -258,6 +258,31 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "ORIGIN_REJECTED")
         self.assertEqual(self.database_digest(), before)
 
+    def test_task_intake_rejects_wrong_content_type_and_oversized_body(self):
+        origin = "http://127.0.0.1:%d" % self.port
+        token = self.session_token()
+        before = self.database_digest()
+        response, payload, body = self.request(
+            "POST", "/api/task-intakes",
+            headers={"Origin": origin, "X-Team-Intent-Token": token},
+        )
+        self.assertEqual(response.status, 415)
+        self.assertEqual(payload["error"]["code"], "CONTENT_TYPE_REJECTED")
+        self.assertEqual(self.database_digest(), before)
+
+        oversized_length = 8193
+        status, headers, body = self.raw_request(
+            (
+                "POST /api/task-intakes HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n"
+                "Origin: %s\r\nContent-Type: application/json\r\n"
+                "X-Team-Intent-Token: %s\r\nContent-Length: %d\r\n\r\n"
+                % (self.port, origin, token, oversized_length)
+            ).encode("ascii")
+        )
+        self.assertEqual(status, 413)
+        self.assertIn(b"BODY_TOO_LARGE", body)
+        self.assertEqual(self.database_digest(), before)
+
     def test_intent_submission_rejects_oversized_or_malformed_requests(self):
         origin = "http://127.0.0.1:%d" % self.port
         response, payload, body = self.request(

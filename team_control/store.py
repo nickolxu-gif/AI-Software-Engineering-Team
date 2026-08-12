@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS task_intake_requests (
     objective TEXT NOT NULL,
     context TEXT,
     request_hash TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('PENDING')),
+    status TEXT NOT NULL CHECK (status IN ('PENDING', 'ACKNOWLEDGED')),
     result_code TEXT NOT NULL,
     idempotency_key TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
@@ -192,7 +192,7 @@ INTENT_STATUSES = frozenset(("PENDING", "APPLIED", "REJECTED", "BLOCKED"))
 TERMINAL_INTENT_STATUSES = INTENT_STATUSES - {"PENDING"}
 INTENT_RESULT_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 MAX_PENDING_INTENT_BATCH = 25
-TASK_INTAKE_STATUSES = frozenset(("PENDING",))
+TASK_INTAKE_STATUSES = frozenset(("PENDING", "ACKNOWLEDGED"))
 REQUIRED_SCHEMA_COLUMNS = {
     "tasks": frozenset((
         "dispatch_id", "schema_version", "title", "objective", "risk_level",
@@ -454,6 +454,7 @@ class ControlStore:
                     if statement:
                         connection.execute(statement)
                 self._migrate_reviews_schema(connection)
+                self._migrate_task_intake_schema(connection)
 
     def _migrate_reviews_schema(self, connection):
         columns = {
@@ -537,6 +538,55 @@ class ControlStore:
         )
         connection.execute("DROP TABLE reviews")
         connection.execute("ALTER TABLE reviews_migrated RENAME TO reviews")
+
+    def _migrate_task_intake_schema(self, connection):
+        schema = connection.execute(
+            """SELECT sql FROM sqlite_master
+               WHERE type = 'table' AND name = 'task_intake_requests'"""
+        ).fetchone()
+        if schema is None:
+            raise ReconciliationError("task intake schema is missing after initialization")
+        if "ACKNOWLEDGED" in schema["sql"]:
+            return
+        rows = connection.execute(
+            "SELECT * FROM task_intake_requests"
+        ).fetchall()
+        if any(row["status"] != "PENDING" for row in rows):
+            raise ReconciliationError("legacy task intake status is unsupported")
+        residue = connection.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'task_intake_requests_migrated'"""
+        ).fetchone()
+        if residue is not None:
+            raise ReconciliationError("task intake migration residue is present")
+        connection.execute(
+            """CREATE TABLE task_intake_requests_migrated (
+                   intake_id TEXT PRIMARY KEY,
+                   title TEXT NOT NULL,
+                   objective TEXT NOT NULL,
+                   context TEXT,
+                   request_hash TEXT NOT NULL,
+                   status TEXT NOT NULL CHECK (
+                       status IN ('PENDING', 'ACKNOWLEDGED')
+                   ),
+                   result_code TEXT NOT NULL,
+                   idempotency_key TEXT NOT NULL UNIQUE,
+                   created_at TEXT NOT NULL,
+                   updated_at TEXT NOT NULL
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO task_intake_requests_migrated (
+                   intake_id, title, objective, context, request_hash, status,
+                   result_code, idempotency_key, created_at, updated_at
+               ) SELECT intake_id, title, objective, context, request_hash, status,
+                        result_code, idempotency_key, created_at, updated_at
+                 FROM task_intake_requests"""
+        )
+        connection.execute("DROP TABLE task_intake_requests")
+        connection.execute(
+            "ALTER TABLE task_intake_requests_migrated RENAME TO task_intake_requests"
+        )
 
     def _connect(self):
         connection = sqlite3.connect(str(self.path), timeout=5.0)
@@ -1179,6 +1229,35 @@ class ControlStore:
                 (limit,),
             ).fetchall()
         return [self._task_intake_from_row(row) for row in rows]
+
+    def acknowledge_task_intake(self, intake_id):
+        if not isinstance(intake_id, str) or UUID_RE.fullmatch(intake_id) is None:
+            raise ContractError("task intake ID is invalid")
+        with self._control_lock():
+            with self._transaction() as connection:
+                row = connection.execute(
+                    "SELECT * FROM task_intake_requests WHERE intake_id = ?",
+                    (intake_id,),
+                ).fetchone()
+                current = self._task_intake_from_row(row)
+                if current is None:
+                    raise KeyError(intake_id)
+                if current["status"] == "ACKNOWLEDGED":
+                    return current
+                cursor = connection.execute(
+                    """UPDATE task_intake_requests
+                       SET status = 'ACKNOWLEDGED', result_code = 'ACKNOWLEDGED',
+                           updated_at = ?
+                       WHERE intake_id = ? AND status = 'PENDING'""",
+                    (utc_now(), intake_id),
+                )
+                if cursor.rowcount != 1:
+                    raise ReconciliationError("task intake acknowledgement lost its guard")
+                updated = connection.execute(
+                    "SELECT * FROM task_intake_requests WHERE intake_id = ?",
+                    (intake_id,),
+                ).fetchone()
+                return self._task_intake_from_row(updated)
 
     @staticmethod
     def _operation_from_row(row):

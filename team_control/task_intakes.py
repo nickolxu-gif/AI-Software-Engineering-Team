@@ -80,3 +80,6 @@ class TaskIntakeService:
             task_intake_request_hash(normalized),
             normalized["idempotency_key"],
         )
+
+    def acknowledge(self, intake_id):
+        return self.store.acknowledge_task_intake(intake_id)

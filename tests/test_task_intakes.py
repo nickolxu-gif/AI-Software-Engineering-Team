@@ -83,6 +83,19 @@ class TaskIntakeTests(unittest.TestCase):
             [intake["intake_id"]],
         )
 
+    def test_codex_acknowledgement_removes_an_intake_from_pending_queue(self):
+        intake = self.service.submit(self.request)
+
+        acknowledged = self.service.acknowledge(intake["intake_id"])
+
+        self.assertEqual(acknowledged["status"], "ACKNOWLEDGED")
+        self.assertEqual(acknowledged["result_code"], "ACKNOWLEDGED")
+        self.assertEqual(self.store.list_pending_task_intakes(limit=1), [])
+        self.assertEqual(
+            self.service.acknowledge(intake["intake_id"])["status"],
+            "ACKNOWLEDGED",
+        )
+
     def test_schema_preflight_reports_missing_or_incompatible_task_intake_table(self):
         with self.store.mutation() as connection:
             connection.execute("DROP TABLE task_intake_requests")
@@ -95,3 +108,31 @@ class TaskIntakeTests(unittest.TestCase):
             connection.execute("CREATE VIEW task_intake_requests AS SELECT 1 AS intake_id")
         with self.assertRaises(SchemaUnsupportedError):
             self.store.require_schema_compatible()
+
+    def test_initialize_migrates_legacy_pending_only_task_intake_schema(self):
+        self.service.submit(self.request)
+        with self.store.mutation() as connection:
+            row = connection.execute(
+                "SELECT * FROM task_intake_requests"
+            ).fetchone()
+            connection.execute("DROP TABLE task_intake_requests")
+            connection.execute(
+                """CREATE TABLE task_intake_requests (
+                       intake_id TEXT PRIMARY KEY, title TEXT NOT NULL,
+                       objective TEXT NOT NULL, context TEXT, request_hash TEXT NOT NULL,
+                       status TEXT NOT NULL CHECK (status IN ('PENDING')),
+                       result_code TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
+                       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                   )"""
+            )
+            connection.execute(
+                """INSERT INTO task_intake_requests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                tuple(row),
+            )
+
+        self.store.initialize()
+
+        self.assertEqual(
+            self.service.acknowledge(row["intake_id"])["status"],
+            "ACKNOWLEDGED",
+        )

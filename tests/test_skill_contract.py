@@ -217,6 +217,11 @@ class SkillContractTests(unittest.TestCase):
         guide = GUIDE_PATH.read_text(encoding="utf-8")
         self.assertIn("MVP 2A 的既有三类受限意图", guide)
 
+    def test_skill_requires_codex_to_acknowledge_handled_task_intakes(self):
+        text = SKILL_PATH.read_text(encoding="utf-8")
+        self.assertIn("task intake", text)
+        self.assertIn("ACKNOWLEDGED", text)
+
 
 if __name__ == "__main__":
     unittest.main()
