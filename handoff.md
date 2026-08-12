@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-**Git 治理、MVP 0 控制平面、MVP 1 本地工作台、MVP 2A 受控意图入口与 MVP 2B Codex 意图队列均已完成并整合到 `main`。**
+**Git 治理、MVP 0 控制平面、MVP 1 本地工作台、MVP 2A 受控意图入口与 MVP 2B Codex 意图队列已整合到 `main`；MVP 2C 已验收，等待本地 `main` 整合。**
 
 - `main` 是唯一稳定主线；Git bootstrap 历史基线 SHA 为 `cd459565b8bb24156f92e400a11769d254eccda9`。
 - MVP 0 任务分支已 fast-forward 整合到 `main`；MVP 0 集成 SHA 为 `f4b60ab4a4f3112912641fd8b56667b27d6fb819`。
@@ -23,11 +23,11 @@
 - 控制平面设计：`docs/superpowers/specs/2026-08-08-ai-engineering-team-control-plane-design.md`。
 - MVP 0 实施计划：`docs/superpowers/plans/2026-08-08-mvp0-control-plane.md`。
 - 这里的 `Minor` 指 `git worktree add` 失败后可能残留目录、分支或 Worktree metadata；不是对象存储。Codex 必须先检查实际 Git 状态，再决定安全重建或转为 `BLOCKED`，不得自动强删未知数据。
-- 当前授权阶段：MVP 0、MVP 1、MVP 2A、MVP 2B 已完成；MVP 2C、MVP 3 和 GitHub Remote 尚未进入实施。
+- 当前授权阶段：MVP 0、MVP 1、MVP 2A、MVP 2B 已整合，MVP 2C 已验收待整合；MVP 3 和 GitHub Remote 尚未进入实施。
 
 ### MVP 0 Control Plane
 
-**状态：ACCEPTED and integrated**
+**状态：ACCEPTED — pending local main integration**
 
 - 集成 SHA：`f4b60ab4a4f3112912641fd8b56667b27d6fb819`。
 - 最终独立验收：Claude Code 2.1.224，结论 `ACCEPT`；CodeBuddy / GLM 5.2 降级未使用。
@@ -79,6 +79,18 @@
 - 独立验收：Claude Code / Sonnet V4.10.3 对修复后的浏览器边界 delta 给出 `PASS`；安全记录见 `artifacts/dispatches/20260812-005/verification.md`。未使用 fallback Reviewer。
 - 整合后验证：默认 Python、Python 3.14 全量测试、`git diff --check` 与 `./scripts/repo-health.sh` 均通过。
 - 下一阶段建议为 MVP 2C：由 Codex 会话/调度层把“检查并处理至多 N 条队列”接入固定工作循环；仍不引入后台 daemon、远程访问或浏览器执行权。
+
+### MVP 2C Codex Foreground Intent Loop
+
+**状态：ACCEPTED and integrated**
+
+- 任务：`20260812-006`；本地 `main` 整合 SHA：`PENDING_LOCAL_MERGE`。
+- 项目 Skill 规定：每次普通可写 Codex 工程请求在健康通过且控制数据库存在（必要时安全 `init` 成功）后，最多一次调用 `scripts/team-control process-pending-intents --limit 10`。
+- 严格只读与 Dashboard open/view 不初始化、不处理队列。初始化失败、控制库不可用或队列命令非零时停止后续写入，只提供只读说明；单条 `REJECTED`/`BLOCKED` 仍继续当前请求。
+- 这是前台固定循环，不是后台 daemon、timer、webhook 或网络监听；没有新增浏览器处理、Git/merge/push/发布、审批 nonce 消费、远程或权限扩大。
+- 独立验收：Claude Code / Sonnet V4.10.3 首次完整候选为 `PASS_WITH_WARNINGS`，三项警告修复后的 delta 为 `PASS`。安全记录见 `artifacts/dispatches/20260812-006/verification.md`；未使用 fallback Reviewer。
+- 整合前验证：默认 Python、Python 3.14 全量测试与 `git diff --check` 均通过；`repo-health` 必须从 `main` 根 Worktree 运行。
+- 下一阶段为 MVP 3 或 GitHub Remote，均仍需 Human 明确的新任务授权；不得由 MVP 2C 自动进入。
 
 可使用以下命令复核最终 Worktree 和分支状态：
 
