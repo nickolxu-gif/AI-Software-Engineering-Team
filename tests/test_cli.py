@@ -83,7 +83,7 @@ class CliTests(unittest.TestCase):
             set(subparser_action.choices),
             {
                 "approvals", "doctor", "init", "intents", "process-intent",
-                "start", "status", "transition",
+                "process-pending-intents", "start", "status", "transition",
             },
         )
         for command, subparser in subparser_action.choices.items():
@@ -330,6 +330,37 @@ class CliTests(unittest.TestCase):
                 [approval["approval_id"]],
             )
             self.assertEqual(all_payload["approvals"][0]["status"], "CONSUMED")
+
+    def test_process_pending_intents_emits_safe_bounded_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_cli_repo(Path(tmp) / "repo")
+            run_cli(repo, "init")
+            context = RepoContext.discover(repo)
+            store = ControlStore.for_repo(context)
+            control = ControlPlane(context, store)
+            task = control.create_task(
+                "20260812-005", "Queue", "Process pending safely", "L2"
+            )
+            control.transition(task["dispatch_id"], "DISPATCHED", "start")
+            control.transition(task["dispatch_id"], "IN_PROGRESS", "start")
+            IntentService(context, store, control).submit({
+                "dispatch_id": task["dispatch_id"],
+                "action": "PAUSE_REQUEST",
+                "target_sha": task["current_head_sha"],
+                "idempotency_key": "123e4567-e89b-12d3-a456-426614174012",
+                "parameters": {},
+            })
+
+            processed = run_cli(repo, "process-pending-intents", "--limit", "1")
+            payload = assert_single_json_line(self, processed)
+
+            self.assertEqual(payload["attempted"], 1)
+            self.assertEqual(payload["results"][0]["status"], "APPLIED")
+            self.assertEqual(set(payload["results"][0]), {
+                "intent_id", "dispatch_id", "action", "target_sha", "status",
+                "result_code", "created_at", "updated_at",
+            })
+            self.assertNotIn("confirmation", processed.stdout)
 
     def test_doctor_inspect_and_repair_emit_single_json_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
