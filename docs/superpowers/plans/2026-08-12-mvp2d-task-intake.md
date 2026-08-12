@@ -86,8 +86,13 @@ def test_task_intake_requires_session_token_and_returns_safe_summary(self):
     self.assertNotIn("context", body.decode("utf-8"))
 
 def test_task_intake_rejects_wrong_origin_or_missing_token(self):
-    # Reuse the existing request helpers and assert 403 with no database write.
-    ...
+    before = self.database_digest()
+    response, payload, body = self.request_json(
+        "POST", "/api/task-intakes", self.task_intake_request(),
+    )
+    self.assertEqual(response.status, 403)
+    self.assertEqual(payload["error"]["code"], "TOKEN_REJECTED")
+    self.assertEqual(self.database_digest(), before)
 ```
 
 - [ ] **Step 2: Run focused tests to verify RED**
