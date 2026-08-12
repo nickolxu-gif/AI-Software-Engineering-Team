@@ -321,6 +321,11 @@ class _ControlledOperationSession:
     def transition(self, dispatch_id, target, reason):
         return self._store._transition_durable(dispatch_id, target, reason)
 
+    def transition_to_resume_state(self, dispatch_id, reason):
+        return self._store._transition_to_resume_state_durable(
+            dispatch_id, reason
+        )
+
     def finish_intent(self, intent_id, status, result_code, event_type=None):
         return self._store._finish_intent_durable(
             intent_id, status, result_code, event_type=event_type
@@ -773,17 +778,37 @@ class ControlStore:
                 raise KeyError(dispatch_id)
             now = utc_now()
             intent_id = str(uuid.uuid4())
-            connection.execute(
-                """INSERT INTO intents (
-                       intent_id, dispatch_id, action, target_sha, request_hash,
-                       confirmation_hash, status, result_code, idempotency_key,
-                       created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', 'PENDING', ?, ?, ?)""",
-                (
-                    intent_id, dispatch_id, action, target_sha, request_hash,
-                    confirmation_hash, idempotency_key, now, now,
-                ),
-            )
+            try:
+                connection.execute(
+                    """INSERT INTO intents (
+                           intent_id, dispatch_id, action, target_sha, request_hash,
+                           confirmation_hash, status, result_code, idempotency_key,
+                           created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', 'PENDING', ?, ?, ?)""",
+                    (
+                        intent_id, dispatch_id, action, target_sha, request_hash,
+                        confirmation_hash, idempotency_key, now, now,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                existing = connection.execute(
+                    "SELECT * FROM intents WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+                identity = {
+                    "dispatch_id": dispatch_id,
+                    "action": action,
+                    "target_sha": target_sha,
+                    "request_hash": request_hash,
+                    "confirmation_hash": confirmation_hash,
+                }
+                if existing is not None and all(
+                    existing[field] == value for field, value in identity.items()
+                ):
+                    return self._intent_from_row(existing)
+                raise ReconciliationError(
+                    "intent idempotency key was used for another request"
+                ) from error
             event = {
                 "schema_version": 1,
                 "dispatch_id": dispatch_id,
@@ -1496,6 +1521,18 @@ class ControlStore:
         with self._transaction() as connection:
             return self._transition_in_transaction(
                 connection, dispatch_id, target, reason
+            )
+
+    def _transition_to_resume_state_durable(self, dispatch_id, reason):
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT resume_state FROM tasks WHERE dispatch_id = ?",
+                (dispatch_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(dispatch_id)
+            return self._transition_in_transaction(
+                connection, dispatch_id, row["resume_state"], reason
             )
 
     def transition(self, dispatch_id, target, reason):

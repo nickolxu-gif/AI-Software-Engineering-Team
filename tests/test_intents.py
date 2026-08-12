@@ -2,6 +2,7 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from team_control.contracts import INTENT_ACTIONS
 from team_control.errors import ContractError
@@ -404,6 +405,24 @@ class IntentServiceTests(unittest.TestCase):
             "BLOCKED", "PENDING_APPROVAL",
         ))
         self.assertEqual(self.store.get_task("20260812-004")["state"], "PAUSED")
+
+    def test_resume_uses_the_fresh_resume_state_held_in_the_transition_transaction(self):
+        self.control.transition("20260812-004", "PAUSE_REQUESTED", "pause")
+        self.control.transition("20260812-004", "PAUSED", "checkpoint")
+        intent = self.submit("RESUME_REQUEST")
+        stale_task = self.store.get_task("20260812-004")
+        with self.store.mutation() as connection:
+            connection.execute(
+                "UPDATE tasks SET resume_state = 'REVIEWING' WHERE dispatch_id = ?",
+                ("20260812-004",),
+            )
+        with mock.patch.object(self.store, "get_task", return_value=stale_task):
+            result = self.service.process(intent["intent_id"])
+
+        self.assertEqual((result["status"], result["result_code"]), (
+            "APPLIED", "REVIEWING",
+        ))
+        self.assertEqual(self.store.get_task("20260812-004")["state"], "REVIEWING")
 
 if __name__ == "__main__":
     unittest.main()

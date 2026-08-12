@@ -214,21 +214,25 @@ class IntentService:
                 return session.finish_intent(
                     intent_id, "BLOCKED", "PENDING_APPROVAL"
                 )
-            target = (
-                "PAUSE_REQUESTED"
-                if intent["action"] == "PAUSE_REQUEST"
-                else task["resume_state"]
-            )
             if intent["action"] == "RESUME_REQUEST" and task["state"] != "PAUSED":
                 return session.finish_intent(
                     intent_id, "REJECTED", "STATE_CONFLICT"
                 )
             try:
-                session.transition(
-                    intent["dispatch_id"], target, "processed bounded intent"
-                )
+                if intent["action"] == "RESUME_REQUEST":
+                    transitioned = session.transition_to_resume_state(
+                        intent["dispatch_id"], "processed bounded intent"
+                    )
+                else:
+                    transitioned = session.transition(
+                        intent["dispatch_id"],
+                        "PAUSE_REQUESTED",
+                        "processed bounded intent",
+                    )
             except (TransitionError, ContractError):
                 return session.finish_intent(
                     intent_id, "REJECTED", "STATE_CONFLICT"
                 )
-            return session.finish_intent(intent_id, "APPLIED", target)
+            return session.finish_intent(
+                intent_id, "APPLIED", transitioned["state"]
+            )
