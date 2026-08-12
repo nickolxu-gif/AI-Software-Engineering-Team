@@ -341,6 +341,39 @@ class IntentServiceTests(unittest.TestCase):
         self.assertEqual(self.store.get_task("20260812-004")["state"], "PAUSE_REQUESTED")
         self.assertEqual(self.service.process(intent["intent_id"]), result)
 
+    def test_process_pending_uses_stable_order_and_continues_after_rejection(self):
+        rejected = self.submit(
+            "RESUME_REQUEST",
+            idempotency_key="123e4567-e89b-12d3-a456-426614174010",
+        )
+        applied = self.submit(
+            "PAUSE_REQUEST",
+            idempotency_key="123e4567-e89b-12d3-a456-426614174011",
+        )
+
+        result = self.service.process_pending(2)
+
+        self.assertEqual(result["attempted"], 2)
+        self.assertEqual(
+            [item["intent_id"] for item in result["results"]],
+            [rejected["intent_id"], applied["intent_id"]],
+        )
+        self.assertEqual(result["results"][0]["status"], "REJECTED")
+        self.assertEqual(result["results"][1]["status"], "APPLIED")
+        self.assertEqual(
+            self.store.get_task("20260812-004")["state"], "PAUSE_REQUESTED"
+        )
+
+    def test_process_pending_rejects_invalid_limits_and_empty_queue_is_safe(self):
+        for limit in (True, 0, 26, "1"):
+            with self.subTest(limit=limit):
+                with self.assertRaises(ContractError):
+                    self.service.process_pending(limit)
+
+        self.assertEqual(
+            self.service.process_pending(1), {"attempted": 0, "results": []}
+        )
+
     def test_process_rejects_noncanonical_intent_identifiers(self):
         intent = self.submit("PAUSE_REQUEST")
 
