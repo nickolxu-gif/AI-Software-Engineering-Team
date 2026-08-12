@@ -2,7 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from team_control.errors import ContractError
+from team_control.errors import (
+    ContractError,
+    SchemaMigrationRequiredError,
+    SchemaUnsupportedError,
+)
 from team_control.git_context import RepoContext
 from team_control.store import ControlStore
 from team_control.task_intakes import (
@@ -67,3 +71,27 @@ class TaskIntakeTests(unittest.TestCase):
         self.assertNotIn("context", summary)
         self.assertNotIn("request_hash", summary)
 
+    def test_codex_can_read_one_or_a_bounded_pending_list(self):
+        intake = self.service.submit(self.request)
+
+        self.assertEqual(
+            self.store.get_task_intake(intake["intake_id"])["context"],
+            self.request["context"],
+        )
+        self.assertEqual(
+            [item["intake_id"] for item in self.store.list_task_intakes(limit=1)],
+            [intake["intake_id"]],
+        )
+
+    def test_schema_preflight_reports_missing_or_incompatible_task_intake_table(self):
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_requests")
+        with self.assertRaises(SchemaMigrationRequiredError):
+            self.store.require_schema_compatible()
+
+        self.store.initialize()
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_requests")
+            connection.execute("CREATE VIEW task_intake_requests AS SELECT 1 AS intake_id")
+        with self.assertRaises(SchemaUnsupportedError):
+            self.store.require_schema_compatible()

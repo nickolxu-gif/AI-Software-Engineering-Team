@@ -48,6 +48,25 @@ async function submitIntent(request) {
   }
   return assertSourceHead(payload, state.sourceHeadSha);
 }
+async function submitTaskIntake(request) {
+  const session = assertSourceHead(await getJson('/api/session'), state.sourceHeadSha);
+  const response = await fetch('/api/task-intakes', {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'X-Team-Intent-Token': session.data.intent_token
+    },
+    body: JSON.stringify(request)
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    const error = new Error(payload.error?.message || '工程需求提交失败');
+    error.code = payload.error?.code || 'TASK_INTAKE_SUBMIT_FAILED';
+    throw error;
+  }
+  return assertSourceHead(payload, state.sourceHeadSha);
+}
 
 function runSecondary(operation) {
   return new Promise((resolve, reject) => {
@@ -132,11 +151,37 @@ function bindTaskLinks() {
 }
 function renderOverview() {
   const project = state.data.project; const counts = project.counts; const queue = project.attention_items || [];
+  const intake = `<section class="panel task-intake"><h2>提交新工程需求</h2><p class="meta">仅进入本地收件箱；Codex 会在下一次工程会话补全七问、风险和执行方案。此处不会创建任务、分支或 Worktree。</p><label>标题 <input id="intake-title" maxlength="120" required></label><label>目标 <textarea id="intake-objective" maxlength="2000" required></textarea></label><label>补充背景（可选） <textarea id="intake-context" maxlength="2000"></textarea></label><button id="submit-task-intake">提交给 Codex</button></section>`;
   content.innerHTML = `<h1>工程总览</h1><p class="subhead">异常优先 · 所有工程动作仍由 Codex 执行</p>
     <section class="banner"><div><strong>${project.health === 'ATTENTION' ? `项目状态 ATTENTION · ${escapeHtml(STATUS_ZH.ATTENTION)}${queue.length ? ` · ${escapeHtml(queue.length)} 项异常` : ''}` : `项目状态 HEALTHY · ${escapeHtml(STATUS_ZH.HEALTHY)}`}</strong><div class="meta">来源 HEAD ${escapeHtml(project.head_sha)}</div></div><div>请回到 Codex 处理</div></section>
-    <section class="cards"><div class="card">活跃任务<div class="metric">${escapeHtml(counts.active_tasks)}</div></div><div class="card">阻塞任务<div class="metric">${escapeHtml(counts.blocked_tasks)}</div></div><div class="card">待处理意图<div class="metric">${escapeHtml(counts.pending_intents)}</div></div><div class="card">待审批<div class="metric">${escapeHtml(counts.pending_approvals)}</div></div><div class="card">过期证据<div class="metric">${escapeHtml(counts.stale_reviews + counts.stale_evidence)}</div></div></section>
-    <div class="grid"><section class="panel"><h2>优先队列</h2>${queue.length ? queue.map(taskRow).join('') : renderEmpty('暂无异常任务')}</section><aside class="panel"><h2>Codex 建议</h2><p>优先处理审批、阻塞和方向问题。此页面不会执行修改。</p><p class="meta">分支 ${escapeHtml(project.branch)} · Worktree ${escapeHtml(project.worktree_count)}</p></aside></div>`;
+    <section class="cards"><div class="card">活跃任务<div class="metric">${escapeHtml(counts.active_tasks)}</div></div><div class="card">阻塞任务<div class="metric">${escapeHtml(counts.blocked_tasks)}</div></div><div class="card">待处理意图<div class="metric">${escapeHtml(counts.pending_intents)}</div></div><div class="card">待处理需求<div class="metric">${escapeHtml(counts.pending_task_intakes)}</div></div><div class="card">待审批<div class="metric">${escapeHtml(counts.pending_approvals)}</div></div><div class="card">过期证据<div class="metric">${escapeHtml(counts.stale_reviews + counts.stale_evidence)}</div></div></section>
+    <div class="grid"><section class="panel"><h2>优先队列</h2>${queue.length ? queue.map(taskRow).join('') : renderEmpty('暂无异常任务')}</section><aside class="panel"><h2>Codex 建议</h2><p>优先处理审批、阻塞和方向问题。此页面不会执行修改。</p><p class="meta">分支 ${escapeHtml(project.branch)} · Worktree ${escapeHtml(project.worktree_count)}</p></aside></div>${intake}`;
   bindTaskLinks();
+  bindTaskIntakeControl();
+}
+
+function bindTaskIntakeControl() {
+  const submit = document.querySelector('#submit-task-intake');
+  if (!submit) return;
+  submit.addEventListener('click', async () => {
+    const title = document.querySelector('#intake-title').value.trim();
+    const objective = document.querySelector('#intake-objective').value.trim();
+    const context = document.querySelector('#intake-context').value.trim();
+    if (!title || !objective) {
+      statusRegion.textContent = '请填写标题和目标';
+      return;
+    }
+    submit.disabled = true;
+    statusRegion.textContent = '正在提交工程需求给 Codex…';
+    try {
+      await submitTaskIntake({ title, objective, context: context || null, idempotency_key: newIntentId() });
+      statusRegion.textContent = '已提交给 Codex，等待下一次工程会话处理';
+      await refresh();
+    } catch (error) {
+      statusRegion.textContent = `提交失败：${error.code || 'TASK_INTAKE_SUBMIT_FAILED'}；请回到 Codex 处理`;
+      submit.disabled = false;
+    }
+  });
 }
 function renderTimeline(page) {
   if (page === null) return renderEmpty('正在读取生命周期事件…');

@@ -168,8 +168,10 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("受控意图", page)
         self.assertIn("/api/session", app)
         self.assertIn("/api/intents", app)
+        self.assertIn("/api/task-intakes", app)
         self.assertIn("method: 'POST'", app)
         self.assertIn("待处理意图", app)
+        self.assertIn("提交新工程需求", app)
         for action in ("PAUSE_REQUEST", "RESUME_REQUEST", "APPROVAL_REQUEST"):
             self.assertIn(action, app)
         for forbidden in (
@@ -235,6 +237,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["data"]["status"], "PENDING")
         self.assertNotIn("context", body.decode("utf-8"))
         self.assertNotIn("request_hash", body.decode("utf-8"))
+        response, project, body = self.request("GET", "/api/project")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(project["data"]["counts"]["pending_task_intakes"], 1)
 
     def test_task_intake_wrong_origin_has_no_side_effect(self):
         before = self.database_digest()

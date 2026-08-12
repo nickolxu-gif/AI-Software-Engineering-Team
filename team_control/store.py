@@ -1160,6 +1160,26 @@ class ControlStore:
             ).fetchall()
         return [self._task_intake_from_row(row) for row in rows]
 
+    def get_task_intake(self, intake_id):
+        if not isinstance(intake_id, str) or UUID_RE.fullmatch(intake_id) is None:
+            raise ContractError("task intake ID is invalid")
+        with self.read_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM task_intake_requests WHERE intake_id = ?", (intake_id,)
+            ).fetchone()
+        return self._task_intake_from_row(row)
+
+    def list_task_intakes(self, limit):
+        if type(limit) is not int or not 1 <= limit <= MAX_PENDING_INTENT_BATCH:
+            raise ContractError("task intake limit must be an integer from 1 to 25")
+        with self.read_connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM task_intake_requests
+                   ORDER BY created_at, intake_id LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [self._task_intake_from_row(row) for row in rows]
+
     @staticmethod
     def _operation_from_row(row):
         if row is None:
