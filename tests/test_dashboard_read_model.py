@@ -380,6 +380,22 @@ class DashboardReadModelTests(unittest.TestCase):
             })
             self.assertNotIn("confirmation", repr(detail))
 
+    def test_project_counts_pending_intents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, store, model = self.make_model(Path(tmp))
+            context = RepoContext.discover(repo)
+            control = ControlPlane(context, store)
+            task = control.create_task("20260812-111", "Queue", "Count", "L2")
+            IntentService(context, store, control).submit({
+                "dispatch_id": task["dispatch_id"],
+                "action": "PAUSE_REQUEST",
+                "target_sha": task["current_head_sha"],
+                "idempotency_key": "123e4567-e89b-12d3-a456-426614174013",
+                "parameters": {},
+            })
+
+            self.assertEqual(model.project()["counts"]["pending_intents"], 1)
+
     def test_task_filters_pagination_and_search_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, store, model = self.make_model(Path(tmp))

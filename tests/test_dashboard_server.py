@@ -145,6 +145,7 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("/api/session", app)
         self.assertIn("/api/intents", app)
         self.assertIn("method: 'POST'", app)
+        self.assertIn("待处理意图", app)
         for action in ("PAUSE_REQUEST", "RESUME_REQUEST", "APPROVAL_REQUEST"):
             self.assertIn(action, app)
         for forbidden in ("process-intent", "git merge", "git push", "nonce", "localStorage"):
