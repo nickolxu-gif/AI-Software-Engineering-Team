@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-**Git 治理、MVP 0 控制平面、MVP 1 本地工作台与 MVP 2A 受控意图入口均已完成并整合到 `main`。**
+**Git 治理、MVP 0 控制平面、MVP 1 本地工作台、MVP 2A 受控意图入口与 MVP 2B Codex 意图队列均已完成并整合到 `main`。**
 
 - `main` 是唯一稳定主线；Git bootstrap 历史基线 SHA 为 `cd459565b8bb24156f92e400a11769d254eccda9`。
 - MVP 0 任务分支已 fast-forward 整合到 `main`；MVP 0 集成 SHA 为 `f4b60ab4a4f3112912641fd8b56667b27d6fb819`。
@@ -23,7 +23,7 @@
 - 控制平面设计：`docs/superpowers/specs/2026-08-08-ai-engineering-team-control-plane-design.md`。
 - MVP 0 实施计划：`docs/superpowers/plans/2026-08-08-mvp0-control-plane.md`。
 - 这里的 `Minor` 指 `git worktree add` 失败后可能残留目录、分支或 Worktree metadata；不是对象存储。Codex 必须先检查实际 Git 状态，再决定安全重建或转为 `BLOCKED`，不得自动强删未知数据。
-- 当前授权阶段：MVP 0、MVP 1、MVP 2A 已完成；MVP 2B、MVP 3 和 GitHub Remote 尚未进入实施。
+- 当前授权阶段：MVP 0、MVP 1、MVP 2A、MVP 2B 已完成；MVP 2C、MVP 3 和 GitHub Remote 尚未进入实施。
 
 ### MVP 0 Control Plane
 
@@ -67,6 +67,18 @@
 - 独立验收：Claude Code / Sonnet V4.10.3 对核心终态拦截 delta 与 HTTP/CLI 白名单 delta 均为 `PASS`；安全记录见 `artifacts/dispatches/20260812-004/verification.md`。未使用 fallback Reviewer。
 - 整合后验证：默认 Python、Python 3.14 全量测试、`git diff --check` 和 `./scripts/repo-health.sh` 均通过。
 - MiMo 当前没有可用独立执行入口；未伪造盘点结论。可复用验收器改进已在 `claude-emergency-verifier` V4.10.3 保存：完整传入 immutable packet，且强制精确 scope acknowledgement。
+
+### MVP 2B Codex Intent Queue
+
+**状态：ACCEPTED and integrated**
+
+- 任务：`20260812-005`；本地 `main` 整合 SHA：`9882f3538de640001185a8fcbce4bd5ed807af0c`。
+- 新增 Codex 专用 `process-pending-intents --limit 1..25`：按 `created_at, intent_id` 选择有限 PENDING snapshot，逐条复用 MVP 2A 的完整核验与审计链路。
+- `REJECTED` 或 `BLOCKED` 的单条意图不会中断后续处理；未预期系统错误会停止批次，保留已完成条目的事实。浏览器仍无队列处理、Git、merge、push、发布或审批消费能力。
+- 工作台总览新增“待处理意图”只读计数；所有公开意图结果继续使用显式白名单字段。
+- 独立验收：Claude Code / Sonnet V4.10.3 对修复后的浏览器边界 delta 给出 `PASS`；安全记录见 `artifacts/dispatches/20260812-005/verification.md`。未使用 fallback Reviewer。
+- 整合后验证：默认 Python、Python 3.14 全量测试、`git diff --check` 与 `./scripts/repo-health.sh` 均通过。
+- 下一阶段建议为 MVP 2C：由 Codex 会话/调度层把“检查并处理至多 N 条队列”接入固定工作循环；仍不引入后台 daemon、远程访问或浏览器执行权。
 
 可使用以下命令复核最终 Worktree 和分支状态：
 
