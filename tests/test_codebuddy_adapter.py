@@ -26,6 +26,7 @@ class CodeBuddyAdapterTests(unittest.TestCase):
             "--strict-mcp-config",
             "--max-turns 1",
             "--output-format stream-json",
+            "V4.10.3",
             "validate-verdict",
             "receipt",
         )

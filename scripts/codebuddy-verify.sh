@@ -125,7 +125,7 @@ write_report() {
     report_tmp=$(mktemp "$report_parent/.codebuddy-verify.XXXXXX") || die "report_publication_failed"
     if ! {
         printf '%s\n' '# CodeBuddy verification report'
-        printf '%s\n' 'Verifier: CodeBuddy / GLM 5.2 / V4.1'
+        printf '%s\n' 'Verifier: CodeBuddy / GLM 5.2 / V4.10.3'
         printf '%s\n' 'Model: glm-5.2'
         printf '%s\n' "Verdict: $verdict"
         printf '%s\n' "Reason code: $reason_code"
