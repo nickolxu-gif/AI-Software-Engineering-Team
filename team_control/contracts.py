@@ -17,11 +17,20 @@ AGENT_STATES = frozenset({"IN_PROGRESS", "COMPLETED", "BLOCKED", "NEEDS_DIRECTIO
 REVIEW_DISPOSITIONS = frozenset({"ACCEPT", "MODIFY", "BLOCK", "ESCALATE"})
 BLOCKER_STATUSES = frozenset({"OPEN", "RESOLVED"})
 APPROVAL_STATUSES = frozenset({"PENDING", "CONSUMED"})
+INTENT_ACTIONS = frozenset({
+    "PAUSE_REQUEST", "RESUME_REQUEST", "APPROVAL_REQUEST",
+})
+INTENT_REQUEST_FIELDS = frozenset({
+    "action", "dispatch_id", "target_sha", "idempotency_key", "parameters",
+})
 
 DISPATCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 COMMIT_SHA_RE = SHA_RE
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+UUID_RE = re.compile(
+    r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+)
 RFC3339_RE = re.compile(
     r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt]"
     r"(?:[01]\d|2[0-3]):[0-5]\d:(?P<second>[0-5]\d|60)(?:\.\d+)?"
