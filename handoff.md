@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-**Git 治理、MVP 0 控制平面、MVP 1 本地工作台、MVP 2A 受控意图入口与 MVP 2B Codex 意图队列已整合到 `main`；MVP 2C 已验收，等待本地 `main` 整合。**
+**Git 治理、MVP 0 控制平面、MVP 1 本地工作台、MVP 2A 受控意图入口、MVP 2B Codex 意图队列与 MVP 2C 前台主动循环均已整合到 `main`。**
 
 - `main` 是唯一稳定主线；Git bootstrap 历史基线 SHA 为 `cd459565b8bb24156f92e400a11769d254eccda9`。
 - MVP 0 任务分支已 fast-forward 整合到 `main`；MVP 0 集成 SHA 为 `f4b60ab4a4f3112912641fd8b56667b27d6fb819`。
@@ -23,11 +23,11 @@
 - 控制平面设计：`docs/superpowers/specs/2026-08-08-ai-engineering-team-control-plane-design.md`。
 - MVP 0 实施计划：`docs/superpowers/plans/2026-08-08-mvp0-control-plane.md`。
 - 这里的 `Minor` 指 `git worktree add` 失败后可能残留目录、分支或 Worktree metadata；不是对象存储。Codex 必须先检查实际 Git 状态，再决定安全重建或转为 `BLOCKED`，不得自动强删未知数据。
-- 当前授权阶段：MVP 0、MVP 1、MVP 2A、MVP 2B 已整合，MVP 2C 已验收待整合；MVP 3 和 GitHub Remote 尚未进入实施。
+- 当前授权阶段：MVP 0、MVP 1、MVP 2A、MVP 2B、MVP 2C 已整合；MVP 3 和 GitHub Remote 尚未进入实施。
 
 ### MVP 0 Control Plane
 
-**状态：ACCEPTED — pending local main integration**
+**状态：ACCEPTED and integrated**
 
 - 集成 SHA：`f4b60ab4a4f3112912641fd8b56667b27d6fb819`。
 - 最终独立验收：Claude Code 2.1.224，结论 `ACCEPT`；CodeBuddy / GLM 5.2 降级未使用。
@@ -84,7 +84,7 @@
 
 **状态：ACCEPTED and integrated**
 
-- 任务：`20260812-006`；本地 `main` 整合 SHA：`PENDING_LOCAL_MERGE`。
+- 任务：`20260812-006`；本地 `main` 整合 SHA：`b081f43d66d18aa090ccefbe1a491d7de2ecee61`。
 - 项目 Skill 规定：每次普通可写 Codex 工程请求在健康通过且控制数据库存在（必要时安全 `init` 成功）后，最多一次调用 `scripts/team-control process-pending-intents --limit 10`。
 - 严格只读与 Dashboard open/view 不初始化、不处理队列。初始化失败、控制库不可用或队列命令非零时停止后续写入，只提供只读说明；单条 `REJECTED`/`BLOCKED` 仍继续当前请求。
 - 这是前台固定循环，不是后台 daemon、timer、webhook 或网络监听；没有新增浏览器处理、Git/merge/push/发布、审批 nonce 消费、远程或权限扩大。
