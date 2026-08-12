@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from team_control import store as store_module
-from team_control.errors import BoundaryError
+from team_control.errors import BoundaryError, ReconciliationError
 from team_control.git_context import RepoContext
 from tests.helpers import make_repo, run
 
@@ -33,6 +33,11 @@ EXPECTED_COLUMNS = {
         "operation_id", "dispatch_id", "action", "request_hash", "target_sha",
         "phase", "result_json", "idempotency_key", "created_at", "updated_at",
     ),
+    "intents": (
+        "intent_id", "dispatch_id", "action", "target_sha", "request_hash",
+        "confirmation_hash", "status", "result_code", "idempotency_key",
+        "created_at", "updated_at",
+    ),
     "evidence": (
         "evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha",
         "created_at",
@@ -56,6 +61,7 @@ EXPECTED_PRIMARY_KEYS = {
     "events": {"dispatch_id": 1, "sequence": 2},
     "approvals": {"approval_id": 1},
     "operations": {"operation_id": 1},
+    "intents": {"intent_id": 1},
     "evidence": {"evidence_id": 1},
     "agents": {"dispatch_id": 1, "agent_id": 2},
     "reviews": {"review_id": 1},
@@ -67,6 +73,7 @@ EXPECTED_NULLABLE = {
     "events": set(),
     "approvals": {"consumed_at"},
     "operations": {"result_json"},
+    "intents": {"confirmation_hash"},
     "evidence": {"source_sha"},
     "agents": {"model"},
     "reviews": set(),
@@ -187,7 +194,7 @@ class StoreTests(unittest.TestCase):
                             ("tasks", "dispatch_id", "dispatch_id"),
                         )
 
-                for table in ("approvals", "operations"):
+                for table in ("approvals", "operations", "intents"):
                     unique_columns = set()
                     for index in connection.execute(
                         "PRAGMA index_list(%s)" % table
@@ -210,6 +217,63 @@ class StoreTests(unittest.TestCase):
 
             with store.read_connection() as connection:
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 1)
+
+    def test_create_intent_is_idempotent_and_records_one_safe_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+            with store.mutation() as connection:
+                _insert_task(connection, "intent-task")
+
+            created = store.create_intent(
+                "intent-task", "PAUSE_REQUEST", "a" * 40, "b" * 64,
+                None, "123e4567-e89b-12d3-a456-426614174000",
+            )
+            replayed = store.create_intent(
+                "intent-task", "PAUSE_REQUEST", "a" * 40, "b" * 64,
+                None, "123e4567-e89b-12d3-a456-426614174000",
+            )
+
+            self.assertEqual(created, replayed)
+            self.assertEqual(created["status"], "PENDING")
+            self.assertEqual(created["result_code"], "PENDING")
+            self.assertNotIn("confirmation_hash", {
+                key for key in store.list_events("intent-task")[0]["payload"]
+            })
+            self.assertEqual(
+                store.list_events("intent-task")[0]["event_type"],
+                "INTENT_SUBMITTED",
+            )
+
+    def test_intent_idempotency_conflict_and_terminal_event_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+            with store.mutation() as connection:
+                _insert_task(connection, "intent-task")
+
+            intent = store.create_intent(
+                "intent-task", "PAUSE_REQUEST", "a" * 40, "b" * 64,
+                None, "123e4567-e89b-12d3-a456-426614174000",
+            )
+            with self.assertRaises(ReconciliationError):
+                store.create_intent(
+                    "intent-task", "RESUME_REQUEST", "a" * 40, "c" * 64,
+                    None, "123e4567-e89b-12d3-a456-426614174000",
+                )
+
+            finished = store.finish_intent(intent["intent_id"], "REJECTED", "STALE_HEAD")
+            self.assertEqual(finished["status"], "REJECTED")
+            self.assertEqual(finished["result_code"], "STALE_HEAD")
+            events = store.list_events("intent-task")
+            self.assertEqual([event["event_type"] for event in events], [
+                "INTENT_SUBMITTED", "INTENT_REJECTED",
+            ])
+            self.assertEqual(
+                store.finish_intent(intent["intent_id"], "REJECTED", "STALE_HEAD"),
+                finished,
+            )
+            self.assertEqual(len(store.list_events("intent-task")), 2)
 
     def test_regular_repo_and_linked_worktree_share_store(self):
         with tempfile.TemporaryDirectory() as tmp:
