@@ -457,6 +457,35 @@ class CliTests(unittest.TestCase):
                 "CONTRACT_ERROR",
             )
 
+    def test_missing_intents_table_requires_schema_migration_before_queue_processing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_cli_repo(Path(tmp) / "repo")
+            run_cli(repo, "init")
+            store = ControlStore.for_repo(RepoContext.discover(repo))
+            with store.mutation() as connection:
+                connection.execute("DROP TABLE intents")
+
+            blocked = run_cli(
+                repo,
+                "process-pending-intents",
+                "--limit",
+                "1",
+                check=False,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertEqual(blocked.stdout, "")
+            self.assertEqual(
+                assert_single_json_line(self, blocked, "stderr")["error"]["code"],
+                "SCHEMA_MIGRATION_REQUIRED",
+            )
+
+            run_cli(repo, "init")
+            recovered = run_cli(repo, "process-pending-intents", "--limit", "1")
+            self.assertEqual(
+                assert_single_json_line(self, recovered),
+                {"attempted": 0, "results": []},
+            )
+
     def test_unexpected_error_is_redacted_without_traceback(self):
         from team_control import cli
 

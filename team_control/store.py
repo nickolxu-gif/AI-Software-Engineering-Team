@@ -23,6 +23,7 @@ from .errors import (
     BoundaryError,
     ContractError,
     ReconciliationError,
+    SchemaMigrationRequiredError,
     TeamControlError,
 )
 from .git_context import canonical_under, run_argv
@@ -178,6 +179,12 @@ INTENT_STATUSES = frozenset(("PENDING", "APPLIED", "REJECTED", "BLOCKED"))
 TERMINAL_INTENT_STATUSES = INTENT_STATUSES - {"PENDING"}
 INTENT_RESULT_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 MAX_PENDING_INTENT_BATCH = 25
+REQUIRED_SCHEMA_TABLES = frozenset(
+    (
+        "tasks", "events", "approvals", "operations", "intents", "evidence",
+        "agents", "reviews", "blockers",
+    )
+)
 
 
 def validate_approval_nonce(value, error_type):
@@ -558,6 +565,21 @@ class ControlStore:
             yield connection
         finally:
             connection.close()
+
+    def require_schema_tables(self):
+        with self.read_connection() as connection:
+            tables = {
+                row["name"]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+        missing = sorted(REQUIRED_SCHEMA_TABLES - tables)
+        if missing:
+            raise SchemaMigrationRequiredError(
+                "control database is missing required tables: %s; run init"
+                % ", ".join(missing)
+            )
 
     def create_task(self, record):
         validate_record("task", record)
