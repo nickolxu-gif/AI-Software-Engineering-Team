@@ -104,6 +104,51 @@ class TaskIntakeTests(unittest.TestCase):
         self.assertEqual(handling["dispatch_id"], dispatch_id)
         self.assertEqual(handling["disposition"], "DISPATCHED")
 
+    def test_codex_acknowledgement_rejects_a_dispatch_already_bound_to_another_intake(self):
+        first = self.service.submit(self.request)
+        second = self.service.submit({
+            **self.request,
+            "idempotency_key": "123e4567-e89b-12d3-a456-426614174001",
+        })
+        dispatch_id = self._create_formal_task()
+        self.codex_service.acknowledge(first["intake_id"], dispatch_id)
+
+        with self.assertRaises(ContractError):
+            self.codex_service.acknowledge(second["intake_id"], dispatch_id)
+        self.assertEqual(
+            self.store.get_task_intake(second["intake_id"])["status"], "PENDING"
+        )
+
+    def test_codex_acknowledgement_rejects_conflicting_replay_disposition(self):
+        intake = self.service.submit(self.request)
+        dispatch_id = self._create_formal_task()
+        self.codex_service.acknowledge(intake["intake_id"], dispatch_id)
+
+        with self.assertRaises(ContractError):
+            self.codex_service.acknowledge(
+                intake["intake_id"], dispatch_id, disposition="BLOCKED"
+            )
+
+    def test_codex_can_acknowledge_blocked_intake_only_with_open_blocker(self):
+        intake = self.service.submit(self.request)
+        dispatch_id = self._create_formal_task()
+
+        with self.assertRaises(ContractError):
+            self.codex_service.acknowledge(
+                intake["intake_id"], dispatch_id, disposition="BLOCKED"
+            )
+        self.store.add_blocker(dispatch_id, "Needs a decision", "Codex", None)
+        blocked = self.codex_service.acknowledge(
+            intake["intake_id"], dispatch_id, disposition="BLOCKED"
+        )
+
+        self.assertEqual(blocked["status"], "ACKNOWLEDGED")
+        self.assertEqual(blocked["result_code"], "BLOCKED")
+        self.assertEqual(
+            self.store.get_task_intake_handling(intake["intake_id"])["disposition"],
+            "BLOCKED",
+        )
+
     def test_schema_preflight_reports_missing_or_incompatible_task_intake_table(self):
         with self.store.mutation() as connection:
             connection.execute("DROP TABLE task_intake_requests")

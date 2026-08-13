@@ -122,6 +122,9 @@ REQUIRED_SCHEMA = {
         "intake_id", "title", "objective", "status", "result_code",
         "created_at", "updated_at",
     },
+    "task_intake_handlings": {
+        "intake_id", "dispatch_id", "disposition", "handled_at",
+    },
 }
 SQLITE_BUSY_CODES = frozenset(
     {

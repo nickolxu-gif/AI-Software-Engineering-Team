@@ -1304,7 +1304,11 @@ class ControlStore:
                     handling = connection.execute(
                         "SELECT * FROM task_intake_handlings WHERE intake_id = ?", (intake_id,)
                     ).fetchone()
-                    if handling is None or handling["dispatch_id"] != dispatch_id:
+                    if (
+                        handling is None
+                        or handling["dispatch_id"] != dispatch_id
+                        or handling["disposition"] != disposition
+                    ):
                         raise ContractError("task intake is already handled by another record")
                     return current
                 task = connection.execute(
@@ -1321,12 +1325,23 @@ class ControlStore:
                     if blocker is None:
                         raise ContractError("blocked task intake requires an open blocker")
                 now = utc_now()
-                connection.execute(
-                    """INSERT INTO task_intake_handlings (
-                           intake_id, dispatch_id, disposition, handled_at
-                       ) VALUES (?, ?, ?, ?)""",
-                    (intake_id, dispatch_id, disposition, now),
-                )
+                existing_dispatch = connection.execute(
+                    "SELECT intake_id FROM task_intake_handlings WHERE dispatch_id = ?",
+                    (dispatch_id,),
+                ).fetchone()
+                if existing_dispatch is not None:
+                    raise ContractError("task intake dispatch is already bound")
+                try:
+                    connection.execute(
+                        """INSERT INTO task_intake_handlings (
+                               intake_id, dispatch_id, disposition, handled_at
+                           ) VALUES (?, ?, ?, ?)""",
+                        (intake_id, dispatch_id, disposition, now),
+                    )
+                except sqlite3.IntegrityError as error:
+                    raise ReconciliationError(
+                        "task intake handling insert lost its guard"
+                    ) from error
                 cursor = connection.execute(
                     """UPDATE task_intake_requests
                        SET status = 'ACKNOWLEDGED', result_code = ?,
