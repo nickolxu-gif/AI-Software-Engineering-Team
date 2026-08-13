@@ -199,6 +199,7 @@ INTENT_STATUSES = frozenset(("PENDING", "APPLIED", "REJECTED", "BLOCKED"))
 TERMINAL_INTENT_STATUSES = INTENT_STATUSES - {"PENDING"}
 INTENT_RESULT_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 MAX_PENDING_INTENT_BATCH = 25
+MAX_TASK_INTAKE_RECORDS = 100
 TASK_INTAKE_STATUSES = frozenset(("PENDING", "ACKNOWLEDGED"))
 TASK_INTAKE_LEGACY_SCHEMA = """CREATE TABLE task_intake_requests (
     intake_id TEXT PRIMARY KEY,
@@ -221,6 +222,15 @@ TASK_INTAKE_HANDLING_SCHEMA = """CREATE TABLE task_intake_handlings (
     disposition TEXT NOT NULL CHECK (disposition IN ('DISPATCHED', 'BLOCKED')),
     handled_at TEXT NOT NULL
 )"""
+TASK_INTAKE_REQUIRED_SCHEMA_COLUMNS = {
+    "task_intake_requests": frozenset((
+        "intake_id", "title", "objective", "context", "request_hash",
+        "status", "result_code", "idempotency_key", "created_at", "updated_at",
+    )),
+    "task_intake_handlings": frozenset((
+        "intake_id", "dispatch_id", "disposition", "handled_at",
+    )),
+}
 REQUIRED_SCHEMA_COLUMNS = {
     "tasks": frozenset((
         "dispatch_id", "schema_version", "title", "objective", "risk_level",
@@ -243,13 +253,7 @@ REQUIRED_SCHEMA_COLUMNS = {
         "confirmation_hash", "status", "result_code", "idempotency_key",
         "created_at", "updated_at",
     )),
-    "task_intake_requests": frozenset((
-        "intake_id", "title", "objective", "context", "request_hash",
-        "status", "result_code", "idempotency_key", "created_at", "updated_at",
-    )),
-    "task_intake_handlings": frozenset((
-        "intake_id", "dispatch_id", "disposition", "handled_at",
-    )),
+    **TASK_INTAKE_REQUIRED_SCHEMA_COLUMNS,
     "evidence": frozenset((
         "evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha",
         "created_at",
@@ -652,7 +656,7 @@ class ControlStore:
 
     @staticmethod
     def _normalized_schema_sql(value):
-        normalized = re.sub(r"\s+", " ", value).replace('"', "").strip().upper()
+        normalized = re.sub(r"\s+", " ", value).replace('"', "").strip()
         normalized = re.sub(r"\(\s+", "(", normalized)
         normalized = re.sub(r"\s+\)", ")", normalized)
         return re.sub(r"\s*,\s*", ",", normalized)
@@ -738,23 +742,26 @@ class ControlStore:
 
     def require_schema_compatible(self):
         with self.read_connection() as connection:
-            objects = {
-                row["name"]: row["type"]
-                for row in connection.execute(
-                    "SELECT name, type FROM sqlite_master "
-                    "WHERE name IN (%s)"
-                    % ", ".join("?" for _ in REQUIRED_SCHEMA_COLUMNS),
-                    tuple(REQUIRED_SCHEMA_COLUMNS),
-                )
+            self._require_schema_compatible_in_connection(connection)
+
+    def _require_schema_compatible_in_connection(self, connection):
+        objects = {
+            row["name"]: row["type"]
+            for row in connection.execute(
+                "SELECT name, type FROM sqlite_master "
+                "WHERE name IN (%s)"
+                % ", ".join("?" for _ in REQUIRED_SCHEMA_COLUMNS),
+                tuple(REQUIRED_SCHEMA_COLUMNS),
+            )
+        }
+        columns = {
+            table: {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(%s)" % table)
             }
-            columns = {
-                table: {
-                    row["name"]
-                    for row in connection.execute("PRAGMA table_info(%s)" % table)
-                }
-                for table, object_type in objects.items()
-                if object_type == "table"
-            }
+            for table, object_type in objects.items()
+            if object_type == "table"
+        }
         missing = sorted(set(REQUIRED_SCHEMA_COLUMNS) - set(objects))
         if missing:
             raise SchemaMigrationRequiredError(
@@ -782,6 +789,26 @@ class ControlStore:
             raise SchemaUnsupportedError(
                 "control database is missing required columns: %s" % details
             )
+        schemas = {
+            row["name"]: row["sql"]
+            for row in connection.execute(
+                "SELECT name, sql FROM sqlite_master WHERE name IN (?, ?)",
+                ("task_intake_requests", "task_intake_handlings"),
+            )
+        }
+        request_schema = self._normalized_schema_sql(
+            schemas["task_intake_requests"]
+        )
+        if request_schema == self._normalized_schema_sql(TASK_INTAKE_LEGACY_SCHEMA):
+            raise SchemaMigrationRequiredError(
+                "task intake schema requires initialization"
+            )
+        if request_schema != self._normalized_schema_sql(TASK_INTAKE_CURRENT_SCHEMA):
+            raise SchemaUnsupportedError("task intake schema is unsupported")
+        if self._normalized_schema_sql(schemas["task_intake_handlings"]) != (
+            self._normalized_schema_sql(TASK_INTAKE_HANDLING_SCHEMA)
+        ):
+            raise SchemaUnsupportedError("task intake handling schema is unsupported")
 
     def create_task(self, record):
         validate_record("task", record)
@@ -1222,6 +1249,7 @@ class ControlStore:
             title, objective, context, request_hash, idempotency_key,
         )
         with self.mutation() as connection:
+            self._require_schema_compatible_in_connection(connection)
             existing = connection.execute(
                 "SELECT * FROM task_intake_requests WHERE idempotency_key = ?",
                 (idempotency_key,),
@@ -1238,6 +1266,11 @@ class ControlStore:
                 raise ReconciliationError(
                     "task intake idempotency key was used for another request"
                 )
+            intake_count = connection.execute(
+                "SELECT COUNT(*) FROM task_intake_requests"
+            ).fetchone()[0]
+            if intake_count >= MAX_TASK_INTAKE_RECORDS:
+                raise ContractError("task intake inbox capacity is reached")
             now = utc_now()
             intake_id = str(uuid.uuid4())
             try:
@@ -1317,6 +1350,7 @@ class ControlStore:
             raise ContractError("task intake handling disposition is invalid")
         with self._control_lock():
             with self._transaction() as connection:
+                self._require_schema_compatible_in_connection(connection)
                 row = connection.execute(
                     "SELECT * FROM task_intake_requests WHERE intake_id = ?",
                     (intake_id,),

@@ -8,7 +8,7 @@ from team_control.errors import (
     SchemaUnsupportedError,
 )
 from team_control.git_context import RepoContext
-from team_control.store import ControlStore
+from team_control.store import ControlStore, MAX_TASK_INTAKE_RECORDS
 from team_control.task_intakes import (
     CodexTaskIntakeService,
     TaskIntakeSubmissionService,
@@ -60,6 +60,24 @@ class TaskIntakeTests(unittest.TestCase):
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM task_intake_requests").fetchone()[0],
                 1,
+            )
+
+    def test_submit_rejects_new_request_when_local_inbox_capacity_is_reached(self):
+        for index in range(MAX_TASK_INTAKE_RECORDS):
+            self.service.submit({
+                **self.request,
+                "idempotency_key": "123e4567-e89b-12d3-a456-%012d" % index,
+            })
+
+        with self.assertRaises(ContractError):
+            self.service.submit({
+                **self.request,
+                "idempotency_key": "123e4567-e89b-12d3-a456-999999999999",
+            })
+        with self.store.read_connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM task_intake_requests").fetchone()[0],
+                MAX_TASK_INTAKE_RECORDS,
             )
 
     def test_safe_summary_hides_context_and_request_hash(self):
@@ -160,6 +178,37 @@ class TaskIntakeTests(unittest.TestCase):
             "BLOCKED",
         )
 
+    def test_acknowledgement_rejects_legacy_task_intake_schema_before_writing(self):
+        intake = self.service.submit(self.request)
+        dispatch_id = self._create_formal_task()
+        with self.store.mutation() as connection:
+            row = connection.execute(
+                "SELECT * FROM task_intake_requests WHERE intake_id = ?",
+                (intake["intake_id"],),
+            ).fetchone()
+            connection.execute("DROP TABLE task_intake_requests")
+            connection.execute(
+                """CREATE TABLE task_intake_requests (
+                       intake_id TEXT PRIMARY KEY, title TEXT NOT NULL,
+                       objective TEXT NOT NULL, context TEXT, request_hash TEXT NOT NULL,
+                       status TEXT NOT NULL CHECK (status IN ('PENDING')),
+                       result_code TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
+                       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                   )"""
+            )
+            connection.execute(
+                "INSERT INTO task_intake_requests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                tuple(row),
+            )
+
+        with self.assertRaises(SchemaMigrationRequiredError):
+            self.codex_service.acknowledge(intake["intake_id"], dispatch_id)
+        with self.store.read_connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM task_intake_handlings").fetchone()[0],
+                0,
+            )
+
     def test_schema_preflight_reports_missing_or_incompatible_task_intake_table(self):
         with self.store.mutation() as connection:
             connection.execute("DROP TABLE task_intake_requests")
@@ -237,6 +286,20 @@ class TaskIntakeTests(unittest.TestCase):
                 "SELECT sql FROM sqlite_master WHERE name = 'task_intake_handlings'"
             ).fetchone()["sql"]
         self.assertNotIn("UNIQUE", schema.upper())
+
+    def test_initialize_rejects_task_intake_handling_schema_with_lowercase_check_values(self):
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_handlings")
+            connection.execute(
+                """CREATE TABLE task_intake_handlings (
+                       intake_id TEXT PRIMARY KEY REFERENCES task_intake_requests(intake_id),
+                       dispatch_id TEXT NOT NULL UNIQUE REFERENCES tasks(dispatch_id),
+                       disposition TEXT NOT NULL CHECK (disposition IN ('dispatched', 'blocked')),
+                       handled_at TEXT NOT NULL
+                   )"""
+            )
+        with self.assertRaises(SchemaUnsupportedError):
+            self.store.initialize()
 
     def _create_formal_task(self):
         dispatch_id = "20260813-009"

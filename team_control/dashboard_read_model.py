@@ -11,8 +11,15 @@ from pathlib import Path
 from pathlib import PurePosixPath
 
 from .contracts import RISK_LEVELS, SHA_RE, TASK_STATES
-from .errors import BoundaryError, GitStateError, TeamControlError
+from .errors import (
+    BoundaryError,
+    GitStateError,
+    SchemaMigrationRequiredError,
+    SchemaUnsupportedError,
+    TeamControlError,
+)
 from .git_context import canonical_under, run_argv, validate_component
+from .store import TASK_INTAKE_REQUIRED_SCHEMA_COLUMNS
 
 
 class DashboardError(TeamControlError):
@@ -118,13 +125,7 @@ REQUIRED_SCHEMA = {
         "intent_id", "dispatch_id", "action", "target_sha", "status",
         "result_code", "created_at", "updated_at",
     },
-    "task_intake_requests": {
-        "intake_id", "title", "objective", "status", "result_code",
-        "created_at", "updated_at",
-    },
-    "task_intake_handlings": {
-        "intake_id", "dispatch_id", "disposition", "handled_at",
-    },
+    **TASK_INTAKE_REQUIRED_SCHEMA_COLUMNS,
 }
 SQLITE_BUSY_CODES = frozenset(
     {
@@ -408,15 +409,25 @@ class DashboardReadModel:
     @contextmanager
     def snapshot(self):
         expected_storage = self._validate_storage_files()
-        manager = self.store.read_connection()
+        manager = None
         connection = None
         entered = False
         try:
+            self.store.require_schema_compatible()
+            manager = self.store.read_connection()
             connection = manager.__enter__()
             entered = True
             connection.execute("BEGIN")
             self._validate_schema(connection)
             self._verify_storage_identity(expected_storage)
+        except SchemaMigrationRequiredError as error:
+            raise DashboardUnavailableError(
+                "control database requires schema migration", code=error.code
+            ) from error
+        except SchemaUnsupportedError as error:
+            raise DashboardUnavailableError(
+                "control database schema is unsupported", code=error.code
+            ) from error
         except sqlite3.OperationalError as error:
             if entered:
                 manager.__exit__(*sys.exc_info())

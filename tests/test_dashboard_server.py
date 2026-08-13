@@ -343,6 +343,21 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "SCHEMA_UNSUPPORTED")
         self.assertEqual(self.database_digest(), before)
 
+    def test_health_rejects_task_intake_request_schema_missing_private_columns(self):
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_requests")
+            connection.execute(
+                """CREATE TABLE task_intake_requests (
+                       intake_id TEXT PRIMARY KEY, title TEXT NOT NULL,
+                       objective TEXT NOT NULL, status TEXT NOT NULL,
+                       result_code TEXT NOT NULL, created_at TEXT NOT NULL,
+                       updated_at TEXT NOT NULL
+                   )"""
+            )
+        response, payload, body = self.request("GET", "/api/health")
+        self.assertEqual(response.status, 503)
+        self.assertEqual(payload["error"]["code"], "SCHEMA_UNSUPPORTED")
+
     def test_intent_submission_rejects_oversized_or_malformed_requests(self):
         origin = "http://127.0.0.1:%d" % self.port
         response, payload, body = self.request(
