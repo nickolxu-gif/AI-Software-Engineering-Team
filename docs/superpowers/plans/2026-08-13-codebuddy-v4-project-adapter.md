@@ -134,3 +134,22 @@ Set the project adapter to V4.10.6 committed hashes for `review_packet.py`, `cod
 - [x] **Step 3: Verify both local interpreters**
 
 Run `python3 -m unittest tests.test_codebuddy_adapter -q`, `/opt/homebrew/bin/python3.14 -m unittest tests.test_codebuddy_adapter -q`, `bash -n scripts/codebuddy-verify.sh`, and `git diff --check`. Expected: all pass without a real provider call.
+
+### Task 8: Close clean-checkout, cache-isolation, and report-publication findings
+
+**Files:**
+- Modify: `scripts/codebuddy-verify.sh`
+- Modify: `tests/test_codebuddy_adapter.py`
+- Modify: `artifacts/dispatches/20260813-010/dispatch.md`
+
+- [x] **Step 1: Reproduce the clean-checkout report failure**
+
+Create a temporary Git project with a changed tracked source and no `reports/` directory. Use a fake V4 `PASS_WITH_WARNINGS` stream and require the safe report to exist before the shell exits non-zero.
+
+- [x] **Step 2: Isolate checked shared-core source and publish reports without replacement**
+
+Copy the three hash-checked global Python files to the invocation temporary directory before every Python execution. Create only a direct `reports/` directory, reject symlinks and nested output paths, then publish the completed temporary report via `ln` so an existing destination cannot be overwritten.
+
+- [x] **Step 3: Verify adapter regression**
+
+Run `python3 -m unittest tests.test_codebuddy_adapter -q`, `/opt/homebrew/bin/python3.14 -m unittest tests.test_codebuddy_adapter -q`, `bash -n scripts/codebuddy-verify.sh`, and `git diff --check`. Expected: 7 adapter checks pass in both interpreters with no provider call.

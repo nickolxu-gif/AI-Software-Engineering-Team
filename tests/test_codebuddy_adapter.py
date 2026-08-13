@@ -173,8 +173,67 @@ class CodeBuddyAdapterTests(unittest.TestCase):
         text = WRAPPER.read_text(encoding="utf-8")
         self.assertIn("report_path=$project_root/$report", text)
         self.assertIn("evidence_dir=$project_root/.review-evidence", text)
+        self.assertIn("isolated_core=$work_dir/global-core", text)
+        self.assertIn("ln \"$report_tmp\" \"$report_path\"", text)
         self.assertIn("--provider codebuddy", text)
         self.assertIn("--model glm-5.2", text)
+
+    def test_adapter_creates_a_new_reports_directory_in_a_clean_project(self):
+        verdict = {
+            "verdict": "PASS_WITH_WARNINGS",
+            "findings": [],
+            "scope_ack": ["scope.py"],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary = Path(temporary)
+            project = temporary / "project"
+            project.mkdir()
+            (project / "scope.py").write_text("value = 1\n", encoding="utf-8")
+            for command in (
+                ["git", "init", "-q", str(project)],
+                ["git", "-C", str(project), "config", "user.email", "test@example.invalid"],
+                ["git", "-C", str(project), "config", "user.name", "Test"],
+                ["git", "-C", str(project), "add", "scope.py"],
+                ["git", "-C", str(project), "commit", "-qm", "baseline"],
+            ):
+                subprocess.run(command, check=True)
+            (project / "scope.py").write_text("value = 2\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(project), "commit", "-am", "candidate", "-q"],
+                check=True,
+            )
+            fake = temporary / "codebuddy"
+            init_line = json.dumps({
+                "type": "system", "subtype": "init", "model": "glm-5.2", "tools": [],
+            }, separators=(",", ":"))
+            result_line = json.dumps({
+                "type": "result", "subtype": "success", "result": json.dumps(verdict),
+            }, separators=(",", ":"))
+            fake.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' " + shlex.quote(init_line) + "\n"
+                "printf '%s\\n' " + shlex.quote(result_line) + "\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            wrapper, _ = self.clean_global_wrapper(temporary)
+            wrapper.write_text(
+                wrapper.read_text(encoding="utf-8").replace(
+                    "codebuddy_executable=/Users/qinxu/.local/bin/codebuddy",
+                    "codebuddy_executable=" + str(fake),
+                ),
+                encoding="utf-8",
+            )
+            report = project / "reports" / "nonpass.md"
+            result = subprocess.run(
+                [str(wrapper), "--base-ref", "HEAD~1", "--head-ref", "HEAD",
+                 "--prompt", "bounded clean project probe", "--report", "reports/nonpass.md",
+                 "--file", "scope.py"],
+                cwd=project, text=True, capture_output=True,
+                env={"PATH": os.environ.get("PATH", "")},
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Verdict: PASS_WITH_WARNINGS", report.read_text(encoding="utf-8"))
 
     def test_adapter_rejects_dirty_global_core_before_packet_build(self):
         with tempfile.TemporaryDirectory() as temporary:

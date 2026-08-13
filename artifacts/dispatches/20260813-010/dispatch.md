@@ -49,3 +49,7 @@ The CodeBuddy attempt above is not retried after this adapter change because the
 ## Shared-core integrity remediation
 
 The initial adapter had pinned the working-copy hash of `codebuddy_stream_runner.py`. Read-only inspection proved that this was an uncommitted global-Skill change, while the committed Skill was V4.10.6. The adapter now pins the committed V4.10.6 packet builder, stream runner and its `normalize_review_result.py` dependency, and rejects a dirty relevant global worktree before packet construction. A fake clean global Git fixture proves this failure path without starting a provider. The global Skill remains untouched.
+
+## Independent review remediation II
+
+The latest read-only review found a clean-checkout reporting failure, a Python-cache isolation concern and a publication race. The adapter now creates only a direct, non-symlink `reports/` directory when needed; copies all hash-checked global core sources into its per-run temporary directory before executing Python; and publishes reports using an atomic no-overwrite hard link. A clean temporary Git project with no `reports/` directory proves a non-PASS result produces its safe report without a real provider.

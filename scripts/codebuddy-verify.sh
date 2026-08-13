@@ -37,6 +37,14 @@ git -C "$global_skill_root" diff --quiet -- scripts/review_packet.py scripts/cod
 
 work_dir=$(mktemp -d /tmp/codebuddy-verify.XXXXXX) || die "temporary directory creation failed"
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
+isolated_core=$work_dir/global-core
+mkdir "$isolated_core" || die "isolated core directory creation failed"
+cp "$review_packet" "$isolated_core/review_packet.py" || die "isolated packet copy failed"
+cp "$stream_runner" "$isolated_core/codebuddy_stream_runner.py" || die "isolated runner copy failed"
+cp "$normalizer" "$isolated_core/normalize_review_result.py" || die "isolated normalizer copy failed"
+review_packet=$isolated_core/review_packet.py
+stream_runner=$isolated_core/codebuddy_stream_runner.py
+normalizer=$isolated_core/normalize_review_result.py
 file_manifest=$work_dir/files
 : > "$file_manifest"
 file_candidates=$work_dir/candidates
@@ -89,10 +97,15 @@ validate_source_file() {
 
 validate_report_path() {
     validate_relative_path "$1"
-    case "$1" in reports/*) ;; *) die "report path must be under reports" ;; esac
-    path=$project_root/$1
-    parent=${path%/*}
-    [ -d "$parent" ] || die "report parent must be an existing directory"
+    case "$1" in reports/*/*|reports/|reports/*) ;; *) die "report path must be under reports" ;; esac
+    case "$1" in reports/*/*|reports/) die "report path must be directly under reports" ;; esac
+    reports_dir=$project_root/reports
+    if [ -e "$reports_dir" ] && { [ ! -d "$reports_dir" ] || [ -L "$reports_dir" ]; }; then
+        die "reports directory is unsafe"
+    fi
+    [ -d "$reports_dir" ] || mkdir "$reports_dir" || die "reports directory creation failed"
+    [ ! -L "$reports_dir" ] || die "reports directory is unsafe"
+    path=$reports_dir/${1#reports/}
     [ ! -e "$path" ] || die "report path already exists"
 }
 
@@ -161,7 +174,7 @@ write_report() {
     verdict=$1
     reason_code=$2
     fingerprint=${3-}
-    report_tmp=$(mktemp "$report_parent/.codebuddy-verify.XXXXXX") || die "report_publication_failed"
+    report_tmp=$(mktemp "$reports_dir/.codebuddy-verify.XXXXXX") || die "report_publication_failed"
     if ! {
         printf '%s\n' '# CodeBuddy verification report'
         printf '%s\n' 'Verifier: CodeBuddy / GLM 5.2 / V4.10.6'
@@ -172,7 +185,8 @@ write_report() {
         printf '%s\n' 'Scope:'
         while IFS= read -r source_file; do printf '%s\n' "- $source_file"; done < "$file_manifest"
     } > "$report_tmp"; then rm -f "$report_tmp"; die "report_publication_failed"; fi
-    mv -f "$report_tmp" "$report_path" || { rm -f "$report_tmp"; die "report_publication_failed"; }
+    ln "$report_tmp" "$report_path" || { rm -f "$report_tmp"; die "report_already_exists"; }
+    rm -f "$report_tmp"
 }
 
 set -- build --root "$project_root" --report-dir "$evidence_dir" --provider codebuddy --model glm-5.2 --runner-version "$stream_runner_sha256" --prompt-hash "$(printf '%s' "$prompt" | shasum -a 256 | awk '{print $1}')" --tier review-lite --focus "$prompt" --invariant 'Review only the immutable packet and emit one schema-valid verdict.' --scope-mode filter --base-ref "$base_ref" --head-ref "$head_ref" --max-packet-bytes 32768
