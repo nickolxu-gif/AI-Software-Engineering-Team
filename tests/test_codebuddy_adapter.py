@@ -64,9 +64,10 @@ class CodeBuddyAdapterTests(unittest.TestCase):
         text = WRAPPER.read_text(encoding="utf-8")
         required = (
             "global_skill_root=/Users/qinxu/.codex/skills/claude-emergency-verifier",
-            "review_packet=$global_skill_root/scripts/review_packet.py",
-            "stream_runner=$global_skill_root/scripts/codebuddy_stream_runner.py",
-            "normalizer=$global_skill_root/scripts/normalize_review_result.py",
+            "show HEAD:scripts/review_packet.py",
+            "show HEAD:scripts/codebuddy_stream_runner.py",
+            "show HEAD:scripts/normalize_review_result.py",
+            "review_packet=$isolated_core/review_packet.py",
             "7a970e656df08ea67b87e0c6b501d2258ee592759e0415995f42dbf2a4dcdcab",
             "3cfd6f2f9eee50a6e392ac56bd68bb3adc0bd9789816575d09a2aa252fe7934b",
             "8663b02839e591260ba30cd1e00612eb718a14db3fd2c004fcaf0177711b509e",
@@ -84,7 +85,6 @@ class CodeBuddyAdapterTests(unittest.TestCase):
             "rev-parse --verify",
             "setting-sources ''",
             "codebuddy_executable=/Users/qinxu/.local/bin/codebuddy",
-            "global core worktree is dirty",
         )
         for value in required:
             with self.subTest(value=value):
@@ -235,18 +235,43 @@ class CodeBuddyAdapterTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Verdict: PASS_WITH_WARNINGS", report.read_text(encoding="utf-8"))
 
-    def test_adapter_rejects_dirty_global_core_before_packet_build(self):
+    def test_adapter_uses_committed_global_core_when_worktree_is_dirty(self):
         with tempfile.TemporaryDirectory() as temporary:
             test_wrapper, global_root = self.clean_global_wrapper(temporary)
-            packet = global_root / "scripts" / "review_packet.py"
             runner = global_root / "scripts" / "codebuddy_stream_runner.py"
             runner.write_text("#!/bin/sh\n# dirty\nexit 0\n", encoding="utf-8")
+            fake = Path(temporary) / "codebuddy"
+            verdict = {
+                "verdict": "PASS_WITH_WARNINGS",
+                "findings": [],
+                "scope_ack": ["scripts/codebuddy-verify.sh"],
+            }
+            init_line = json.dumps({
+                "type": "system", "subtype": "init", "model": "glm-5.2", "tools": [],
+            }, separators=(",", ":"))
+            result_line = json.dumps({
+                "type": "result", "subtype": "success", "result": json.dumps(verdict),
+            }, separators=(",", ":"))
+            fake.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' " + shlex.quote(init_line) + "\n"
+                "printf '%s\\n' " + shlex.quote(result_line) + "\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            test_wrapper.write_text(
+                test_wrapper.read_text(encoding="utf-8").replace(
+                    "codebuddy_executable=/Users/qinxu/.local/bin/codebuddy",
+                    "codebuddy_executable=" + str(fake),
+                ),
+                encoding="utf-8",
+            )
             report = ROOT / "reports" / ".codebuddy-adapter-dirty-core-test.md"
             try:
                 result = subprocess.run(
                     [
                         str(test_wrapper), "--base-ref", "55c195e", "--head-ref", "HEAD",
-                        "--prompt", "bounded dirty core probe", "--report",
+                        "--prompt", "bounded dirty core probe " + uuid.uuid4().hex, "--report",
                         "reports/.codebuddy-adapter-dirty-core-test.md", "--file",
                         "scripts/codebuddy-verify.sh",
                     ],
@@ -254,8 +279,7 @@ class CodeBuddyAdapterTests(unittest.TestCase):
                     env={"PATH": os.environ.get("PATH", "")},
                 )
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("global core worktree is dirty", result.stderr)
-                self.assertFalse(report.exists())
+                self.assertIn("Verdict: PASS_WITH_WARNINGS", report.read_text(encoding="utf-8"))
             finally:
                 report.unlink(missing_ok=True)
 

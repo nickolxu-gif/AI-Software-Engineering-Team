@@ -4,7 +4,7 @@
 
 **Goal:** Add a project-local CodeBuddy/GLM-5.2 V4.10 adapter that reuses the approved global packet, stream-runner and result-normalizer core without modifying global configuration or the Hub checkout.
 
-**Architecture:** The adapter is a thin, project-owned shell boundary. It binds the current Git root, bounded changed-file scope, local `.review-evidence` receipt directory, and `reports/` report path to the global `claude-emergency-verifier` V4.10.6 `review_packet.py`, `codebuddy_stream_runner.py`, and `normalize_review_result.py`, checking their committed SHA-256 values and relevant global Git cleanliness before provider start. It keeps the global immutable packet, single-use claim, strict verdict validation, no-tools, no-session-persistence, one-turn, and sanitized receipt contract.
+**Architecture:** The adapter is a thin, project-owned shell boundary. It binds the current Git root, bounded changed-file scope, local `.review-evidence` receipt directory, and `reports/` report path to the global `claude-emergency-verifier` V4.10.6 `review_packet.py`, `codebuddy_stream_runner.py`, and `normalize_review_result.py`. It extracts their committed Git objects, verifies SHA-256, then runs only temporary copies. It keeps the global immutable packet, single-use claim, strict verdict validation, no-tools, no-session-persistence, one-turn, and sanitized receipt contract.
 
 **Tech Stack:** POSIX shell, Python 3, CodeBuddy 2.128 GLM-5.2, unittest, global V4.10.6 packet/stream utilities.
 
@@ -153,3 +153,22 @@ Copy the three hash-checked global Python files to the invocation temporary dire
 - [x] **Step 3: Verify adapter regression**
 
 Run `python3 -m unittest tests.test_codebuddy_adapter -q`, `/opt/homebrew/bin/python3.14 -m unittest tests.test_codebuddy_adapter -q`, `bash -n scripts/codebuddy-verify.sh`, and `git diff --check`. Expected: 7 adapter checks pass in both interpreters with no provider call.
+
+### Task 9: Read the committed shared core without modifying its worktree
+
+**Files:**
+- Modify: `scripts/codebuddy-verify.sh`
+- Modify: `tests/test_codebuddy_adapter.py`
+- Modify: `artifacts/dispatches/20260813-010/dispatch.md`
+
+- [x] **Step 1: Reproduce the dirty-global dependency problem**
+
+Modify the stream runner in a temporary global Git fixture after committing its source, then require the fake CodeBuddy review to use the committed source and emit a non-PASS report. The working copy itself must not be executed.
+
+- [x] **Step 2: Extract, hash-check, and execute only committed objects**
+
+Use `git show HEAD:<path>` for all three global Python files and `VERSION`, write them under the invocation temporary directory, verify their fixed hashes there, and invoke the temporary paths. Do not read, copy, clean, or change the global working-copy files.
+
+- [x] **Step 3: Verify both adapter suites**
+
+Run `python3 -m unittest tests.test_codebuddy_adapter -q`, `/opt/homebrew/bin/python3.14 -m unittest tests.test_codebuddy_adapter -q`, `bash -n scripts/codebuddy-verify.sh`, and `git diff --check`. Expected: 7 adapter checks pass in both interpreters with no real provider call.

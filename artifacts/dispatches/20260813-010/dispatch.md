@@ -48,7 +48,7 @@ The CodeBuddy attempt above is not retried after this adapter change because the
 
 ## Shared-core integrity remediation
 
-The initial adapter had pinned the working-copy hash of `codebuddy_stream_runner.py`. Read-only inspection proved that this was an uncommitted global-Skill change, while the committed Skill was V4.10.6. The adapter now pins the committed V4.10.6 packet builder, stream runner and its `normalize_review_result.py` dependency, and rejects a dirty relevant global worktree before packet construction. A fake clean global Git fixture proves this failure path without starting a provider. The global Skill remains untouched.
+The initial adapter had pinned the working-copy hash of `codebuddy_stream_runner.py`. Read-only inspection proved that this was an uncommitted global-Skill change, while the committed Skill was V4.10.6. The adapter now reads the committed V4.10.6 packet builder, stream runner and its `normalize_review_result.py` dependency directly from Git, verifies their hashes, and executes only temporary copies. A fake Git fixture proves a dirty global working copy cannot affect the result. The global Skill remains untouched.
 
 ## Independent review remediation II
 
