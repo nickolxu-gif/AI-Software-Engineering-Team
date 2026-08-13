@@ -12,18 +12,28 @@ PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin
 export PATH
 project_root=$(pwd -P)
 # Project adapter: the packet and stream utilities are the approved global
-# claude-emergency-verifier V4.10.3 core. Only this binding is project-local.
-review_packet=/Users/qinxu/.codex/skills/claude-emergency-verifier/scripts/review_packet.py
-stream_runner=/Users/qinxu/.codex/skills/claude-emergency-verifier/scripts/codebuddy_stream_runner.py
+# claude-emergency-verifier V4.10.6 core. Only this binding is project-local.
+global_skill_root=/Users/qinxu/.codex/skills/claude-emergency-verifier
+review_packet=$global_skill_root/scripts/review_packet.py
+stream_runner=$global_skill_root/scripts/codebuddy_stream_runner.py
+normalizer=$global_skill_root/scripts/normalize_review_result.py
+global_core_version=4.10.6
 review_packet_sha256=7a970e656df08ea67b87e0c6b501d2258ee592759e0415995f42dbf2a4dcdcab
-stream_runner_sha256=8bbb51770bebb50ee7da550be5fd5e2cff6d4c5d28912559b8353ef44707f11e
+stream_runner_sha256=3cfd6f2f9eee50a6e392ac56bd68bb3adc0bd9789816575d09a2aa252fe7934b
+normalizer_sha256=8663b02839e591260ba30cd1e00612eb718a14db3fd2c004fcaf0177711b509e
 evidence_dir=$project_root/.review-evidence
 
+[ -d "$global_skill_root/.git" ] || die "global core Git identity is unavailable"
+git -C "$global_skill_root" diff --quiet -- scripts/review_packet.py scripts/codebuddy_stream_runner.py scripts/normalize_review_result.py VERSION || die "global core worktree is dirty"
+[ "$(cat "$global_skill_root/VERSION")" = "$global_core_version" ] || die "global core version mismatch"
 [ -f "$review_packet" ] || die "review packet tool was not found"
 [ ! -L "$review_packet" ] || die "review packet tool must not be a symlink"
 [ "$(shasum -a 256 "$review_packet" | awk '{print $1}')" = "$review_packet_sha256" ] || die "review packet core hash mismatch"
 [ -x "$stream_runner" ] || die "V4.10 stream runner was not found or executable"
 [ "$(shasum -a 256 "$stream_runner" | awk '{print $1}')" = "$stream_runner_sha256" ] || die "stream runner core hash mismatch"
+[ -f "$normalizer" ] || die "V4.10 result normalizer was not found"
+[ ! -L "$normalizer" ] || die "V4.10 result normalizer must not be a symlink"
+[ "$(shasum -a 256 "$normalizer" | awk '{print $1}')" = "$normalizer_sha256" ] || die "result normalizer core hash mismatch"
 
 work_dir=$(mktemp -d /tmp/codebuddy-verify.XXXXXX) || die "temporary directory creation failed"
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
@@ -154,7 +164,7 @@ write_report() {
     report_tmp=$(mktemp "$report_parent/.codebuddy-verify.XXXXXX") || die "report_publication_failed"
     if ! {
         printf '%s\n' '# CodeBuddy verification report'
-        printf '%s\n' 'Verifier: CodeBuddy / GLM 5.2 / V4.10.3'
+        printf '%s\n' 'Verifier: CodeBuddy / GLM 5.2 / V4.10.6'
         printf '%s\n' 'Model: glm-5.2'
         printf '%s\n' "Verdict: $verdict"
         printf '%s\n' "Reason code: $reason_code"

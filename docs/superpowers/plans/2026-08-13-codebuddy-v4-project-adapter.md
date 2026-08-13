@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a project-local CodeBuddy/GLM-5.2 V4.10 adapter that reuses the approved global packet and stream-runner core without modifying global configuration or the Hub checkout.
+**Goal:** Add a project-local CodeBuddy/GLM-5.2 V4.10 adapter that reuses the approved global packet, stream-runner and result-normalizer core without modifying global configuration or the Hub checkout.
 
-**Architecture:** The adapter is a thin, project-owned shell boundary. It binds the current Git root, bounded changed-file scope, local `.review-evidence` receipt directory, and `reports/` report path to the global `claude-emergency-verifier` V4.10.3 `review_packet.py` and `codebuddy_stream_runner.py`, checking their pinned SHA-256 values before provider start. It keeps the global immutable packet, single-use claim, strict verdict validation, no-tools, no-session-persistence, one-turn, and sanitized receipt contract.
+**Architecture:** The adapter is a thin, project-owned shell boundary. It binds the current Git root, bounded changed-file scope, local `.review-evidence` receipt directory, and `reports/` report path to the global `claude-emergency-verifier` V4.10.6 `review_packet.py`, `codebuddy_stream_runner.py`, and `normalize_review_result.py`, checking their committed SHA-256 values and relevant global Git cleanliness before provider start. It keeps the global immutable packet, single-use claim, strict verdict validation, no-tools, no-session-persistence, one-turn, and sanitized receipt contract.
 
-**Tech Stack:** POSIX shell, Python 3, CodeBuddy 2.128 GLM-5.2, unittest, global V4.10.3 packet/stream utilities.
+**Tech Stack:** POSIX shell, Python 3, CodeBuddy 2.128 GLM-5.2, unittest, global V4.10.6 packet/stream utilities.
 
 ---
 
@@ -115,3 +115,22 @@ Run `git diff --cached --check` and `git status --short`; preserve unrelated unt
 - [x] **Step 2: Commit**
 
 Run `git add -- scripts/codebuddy-verify.sh .gitignore tests/test_codebuddy_adapter.py artifacts/dispatches/20260813-010/dispatch.md docs/superpowers/plans/2026-08-13-codebuddy-v4-project-adapter.md` followed by `git commit -m 'feat: add project CodeBuddy V4 adapter'`.
+
+### Task 7: Fail closed on uncommitted shared-core changes
+
+**Files:**
+- Modify: `scripts/codebuddy-verify.sh`
+- Modify: `tests/test_codebuddy_adapter.py`
+- Modify: `artifacts/dispatches/20260813-010/dispatch.md`
+
+- [x] **Step 1: Write the dirty-core regression test**
+
+Create a temporary clean Git copy of the three global core files, modify the stream runner after committing it, and assert the project wrapper exits with `global core worktree is dirty` before packet construction.
+
+- [x] **Step 2: Pin the full runtime dependency closure**
+
+Set the project adapter to V4.10.6 committed hashes for `review_packet.py`, `codebuddy_stream_runner.py`, and `normalize_review_result.py`. Require all three paths plus `VERSION` to have no Git diff before the provider boundary.
+
+- [x] **Step 3: Verify both local interpreters**
+
+Run `python3 -m unittest tests.test_codebuddy_adapter -q`, `/opt/homebrew/bin/python3.14 -m unittest tests.test_codebuddy_adapter -q`, `bash -n scripts/codebuddy-verify.sh`, and `git diff --check`. Expected: all pass without a real provider call.
