@@ -163,6 +163,16 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(response.status, 503)
         self.assertEqual(payload["error"]["code"], "SCHEMA_MIGRATION_REQUIRED")
 
+    def test_health_reports_schema_unsupported_for_incompatible_task_intake_handling_table(self):
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_handlings")
+            connection.execute(
+                "CREATE TABLE task_intake_handlings (intake_id TEXT PRIMARY KEY)"
+            )
+        response, payload, body = self.request("GET", "/api/health")
+        self.assertEqual(response.status, 503)
+        self.assertEqual(payload["error"]["code"], "SCHEMA_UNSUPPORTED")
+
     def test_business_write_methods_are_rejected_without_side_effects(self):
         before = self.database_digest()
         for method in ("POST", "PUT", "PATCH", "DELETE"):

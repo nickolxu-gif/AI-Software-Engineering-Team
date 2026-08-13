@@ -1339,8 +1339,8 @@ class ControlStore:
                         (intake_id, dispatch_id, disposition, now),
                     )
                 except sqlite3.IntegrityError as error:
-                    raise ReconciliationError(
-                        "task intake handling insert lost its guard"
+                    raise ContractError(
+                        "task intake dispatch is already bound"
                     ) from error
                 cursor = connection.execute(
                     """UPDATE task_intake_requests

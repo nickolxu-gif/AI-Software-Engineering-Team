@@ -118,6 +118,11 @@ class TaskIntakeTests(unittest.TestCase):
         self.assertEqual(
             self.store.get_task_intake(second["intake_id"])["status"], "PENDING"
         )
+        self.assertIsNone(self.store.get_task_intake_handling(second["intake_id"]))
+        self.assertEqual(
+            self.store.get_task_intake_handling(first["intake_id"])["dispatch_id"],
+            dispatch_id,
+        )
 
     def test_codex_acknowledgement_rejects_conflicting_replay_disposition(self):
         intake = self.service.submit(self.request)
