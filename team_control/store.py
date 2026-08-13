@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .contracts import (
+    DISPATCH_RE,
     HASH_RE,
     INTENT_ACTIONS,
     SHA_RE,
@@ -214,6 +215,12 @@ TASK_INTAKE_LEGACY_SCHEMA = """CREATE TABLE task_intake_requests (
 TASK_INTAKE_CURRENT_SCHEMA = TASK_INTAKE_LEGACY_SCHEMA.replace(
     "status IN ('PENDING')", "status IN ('PENDING', 'ACKNOWLEDGED')"
 )
+TASK_INTAKE_HANDLING_SCHEMA = """CREATE TABLE task_intake_handlings (
+    intake_id TEXT PRIMARY KEY REFERENCES task_intake_requests(intake_id),
+    dispatch_id TEXT NOT NULL UNIQUE REFERENCES tasks(dispatch_id),
+    disposition TEXT NOT NULL CHECK (disposition IN ('DISPATCHED', 'BLOCKED')),
+    handled_at TEXT NOT NULL
+)"""
 REQUIRED_SCHEMA_COLUMNS = {
     "tasks": frozenset((
         "dispatch_id", "schema_version", "title", "objective", "risk_level",
@@ -479,6 +486,7 @@ class ControlStore:
                         connection.execute(statement)
                 self._migrate_reviews_schema(connection)
                 self._migrate_task_intake_schema(connection)
+                self._validate_task_intake_handling_schema(connection)
 
     def _migrate_reviews_schema(self, connection):
         columns = {
@@ -625,6 +633,22 @@ class ControlStore:
         connection.execute(
             "ALTER TABLE task_intake_requests_migrated RENAME TO task_intake_requests"
         )
+
+    def _validate_task_intake_handling_schema(self, connection):
+        schema = connection.execute(
+            """SELECT sql FROM sqlite_master
+               WHERE type = 'table' AND name = 'task_intake_handlings'"""
+        ).fetchone()
+        if schema is None:
+            raise ReconciliationError(
+                "task intake handling schema is missing after initialization"
+            )
+        if self._normalized_schema_sql(schema["sql"]) != self._normalized_schema_sql(
+            TASK_INTAKE_HANDLING_SCHEMA
+        ):
+            raise SchemaUnsupportedError(
+                "task intake handling schema is unsupported"
+            )
 
     @staticmethod
     def _normalized_schema_sql(value):
@@ -1287,7 +1311,7 @@ class ControlStore:
     def acknowledge_task_intake(self, intake_id, dispatch_id, disposition="DISPATCHED"):
         if not isinstance(intake_id, str) or UUID_RE.fullmatch(intake_id) is None:
             raise ContractError("task intake ID is invalid")
-        if not isinstance(dispatch_id, str) or not dispatch_id:
+        if not isinstance(dispatch_id, str) or DISPATCH_RE.fullmatch(dispatch_id) is None:
             raise ContractError("task intake handling dispatch ID is invalid")
         if disposition not in ("DISPATCHED", "BLOCKED"):
             raise ContractError("task intake handling disposition is invalid")

@@ -73,6 +73,7 @@ class TaskIntakeSubmissionService:
 
     def submit(self, request):
         normalized = normalize_task_intake_request(request)
+        self.store.require_schema_compatible()
         return self.store.create_task_intake(
             normalized["title"],
             normalized["objective"],

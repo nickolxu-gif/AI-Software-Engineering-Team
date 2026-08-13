@@ -134,6 +134,12 @@ class TaskIntakeTests(unittest.TestCase):
                 intake["intake_id"], dispatch_id, disposition="BLOCKED"
             )
 
+    def test_codex_acknowledgement_rejects_invalid_dispatch_id_before_lookup(self):
+        intake = self.service.submit(self.request)
+
+        with self.assertRaisesRegex(ContractError, "handling dispatch ID is invalid"):
+            self.codex_service.acknowledge(intake["intake_id"], "invalid dispatch")
+
     def test_codex_can_acknowledge_blocked_intake_only_with_open_blocker(self):
         intake = self.service.submit(self.request)
         dispatch_id = self._create_formal_task()
@@ -212,6 +218,25 @@ class TaskIntakeTests(unittest.TestCase):
         with self.store.read_connection() as connection:
             columns = [row["name"] for row in connection.execute("PRAGMA table_info(task_intake_requests)")]
         self.assertIn("unexpected", columns)
+
+    def test_initialize_rejects_task_intake_handling_schema_without_constraints(self):
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_handlings")
+            connection.execute(
+                """CREATE TABLE task_intake_handlings (
+                       intake_id TEXT PRIMARY KEY REFERENCES task_intake_requests(intake_id),
+                       dispatch_id TEXT NOT NULL REFERENCES tasks(dispatch_id),
+                       disposition TEXT NOT NULL,
+                       handled_at TEXT NOT NULL
+                   )"""
+            )
+        with self.assertRaises(SchemaUnsupportedError):
+            self.store.initialize()
+        with self.store.read_connection() as connection:
+            schema = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'task_intake_handlings'"
+            ).fetchone()["sql"]
+        self.assertNotIn("UNIQUE", schema.upper())
 
     def _create_formal_task(self):
         dispatch_id = "20260813-009"

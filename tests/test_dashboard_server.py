@@ -316,6 +316,33 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn(b"BODY_TOO_LARGE", body)
         self.assertEqual(self.database_digest(), before)
 
+    def test_task_intake_reports_schema_migration_required_without_side_effect(self):
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_handlings")
+        before = self.database_digest()
+        response, payload, body = self.request_json(
+            "POST", "/api/task-intakes", self.task_intake_request(),
+            headers={"X-Team-Intent-Token": self.session_token()},
+        )
+        self.assertEqual(response.status, 503)
+        self.assertEqual(payload["error"]["code"], "SCHEMA_MIGRATION_REQUIRED")
+        self.assertEqual(self.database_digest(), before)
+
+    def test_task_intake_reports_schema_unsupported_without_side_effect(self):
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_handlings")
+            connection.execute(
+                "CREATE TABLE task_intake_handlings (intake_id TEXT PRIMARY KEY)"
+            )
+        before = self.database_digest()
+        response, payload, body = self.request_json(
+            "POST", "/api/task-intakes", self.task_intake_request(),
+            headers={"X-Team-Intent-Token": self.session_token()},
+        )
+        self.assertEqual(response.status, 503)
+        self.assertEqual(payload["error"]["code"], "SCHEMA_UNSUPPORTED")
+        self.assertEqual(self.database_digest(), before)
+
     def test_intent_submission_rejects_oversized_or_malformed_requests(self):
         origin = "http://127.0.0.1:%d" % self.port
         response, payload, body = self.request(

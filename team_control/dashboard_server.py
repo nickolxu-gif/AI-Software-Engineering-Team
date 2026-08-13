@@ -17,7 +17,12 @@ from .dashboard_read_model import (
 from .intents import IntentService, safe_intent_summary
 from .service import ControlPlane
 from .task_intakes import TaskIntakeSubmissionService, safe_task_intake_summary
-from .errors import ContractError, ReconciliationError
+from .errors import (
+    ContractError,
+    ReconciliationError,
+    SchemaMigrationRequiredError,
+    SchemaUnsupportedError,
+)
 
 
 STATIC_FILES = {
@@ -300,6 +305,10 @@ def make_handler(model, assets_dir, intent_token):
                 return
             try:
                 intake = task_intake_service.submit(request)
+            except SchemaMigrationRequiredError as error:
+                self._send_error(503, error.code, "Control database requires initialization")
+            except SchemaUnsupportedError as error:
+                self._send_error(503, error.code, "Control database schema is unsupported")
             except ContractError as error:
                 self._send_error(400, "INVALID_TASK_INTAKE", str(error))
             except ReconciliationError as error:
