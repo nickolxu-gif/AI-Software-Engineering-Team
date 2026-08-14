@@ -8,7 +8,11 @@ from team_control.errors import (
     SchemaUnsupportedError,
 )
 from team_control.git_context import RepoContext
-from team_control.store import ControlStore, MAX_TASK_INTAKE_RECORDS
+from team_control.store import (
+    ControlStore,
+    MAX_PENDING_INTENT_BATCH,
+    MAX_TASK_INTAKE_RECORDS,
+)
 from team_control.task_intakes import (
     CodexTaskIntakeService,
     TaskIntakeSubmissionService,
@@ -80,16 +84,44 @@ class TaskIntakeTests(unittest.TestCase):
                 MAX_TASK_INTAKE_RECORDS,
             )
 
-    def test_safe_summary_hides_context_and_request_hash(self):
-        intake = self.service.submit(self.request)
-        summary = safe_task_intake_summary(intake)
+    def test_submit_accepts_new_request_after_an_acknowledged_record_leaves_pending_inbox(self):
+        intakes = []
+        for index in range(MAX_TASK_INTAKE_RECORDS):
+            intakes.append(self.service.submit({
+                **self.request,
+                "idempotency_key": "123e4567-e89b-12d3-a456-%012d" % index,
+            }))
 
-        self.assertEqual(set(summary), {
+        dispatch_id = self._create_formal_task()
+        self.codex_service.acknowledge(intakes[0]["intake_id"], dispatch_id)
+
+        accepted = self.service.submit({
+            **self.request,
+            "idempotency_key": "123e4567-e89b-12d3-a456-999999999999",
+        })
+        self.assertEqual(accepted["status"], "PENDING")
+        self.assertEqual(
+            len(self.store.list_pending_task_intakes(limit=MAX_PENDING_INTENT_BATCH)),
+            MAX_PENDING_INTENT_BATCH,
+        )
+
+    def test_submit_returns_only_browser_safe_summary(self):
+        intake = self.service.submit(self.request)
+
+        self.assertEqual(set(intake), {
             "intake_id", "title", "objective", "status", "result_code",
             "created_at", "updated_at",
         })
-        self.assertNotIn("context", summary)
-        self.assertNotIn("request_hash", summary)
+        self.assertNotIn("context", intake)
+        self.assertNotIn("request_hash", intake)
+        self.assertNotIn("idempotency_key", intake)
+
+    def test_store_rejects_control_characters_from_direct_task_intake_callers(self):
+        with self.assertRaises(ContractError):
+            self.store.create_task_intake(
+                "unsafe\nintake", self.request["objective"], self.request["context"],
+                "0" * 64, self.request["idempotency_key"],
+            )
 
     def test_codex_can_read_one_or_a_bounded_pending_list(self):
         intake = self.service.submit(self.request)
@@ -152,6 +184,19 @@ class TaskIntakeTests(unittest.TestCase):
                 intake["intake_id"], dispatch_id, disposition="BLOCKED"
             )
 
+    def test_codex_acknowledgement_rejects_replay_with_a_different_dispatch(self):
+        intake = self.service.submit(self.request)
+        first_dispatch_id = self._create_formal_task()
+        second_dispatch_id = self._create_formal_task("20260813-010")
+        self.codex_service.acknowledge(intake["intake_id"], first_dispatch_id)
+
+        with self.assertRaises(ContractError):
+            self.codex_service.acknowledge(intake["intake_id"], second_dispatch_id)
+        self.assertEqual(
+            self.store.get_task_intake_handling(intake["intake_id"])["dispatch_id"],
+            first_dispatch_id,
+        )
+
     def test_codex_acknowledgement_rejects_invalid_dispatch_id_before_lookup(self):
         intake = self.service.submit(self.request)
 
@@ -208,6 +253,38 @@ class TaskIntakeTests(unittest.TestCase):
                 connection.execute("SELECT COUNT(*) FROM task_intake_handlings").fetchone()[0],
                 0,
             )
+
+    def test_task_intake_readers_reject_legacy_schema_before_returning_rows(self):
+        intake = self.service.submit(self.request)
+        with self.store.mutation() as connection:
+            row = connection.execute(
+                "SELECT * FROM task_intake_requests WHERE intake_id = ?",
+                (intake["intake_id"],),
+            ).fetchone()
+            connection.execute("DROP TABLE task_intake_requests")
+            connection.execute(
+                """CREATE TABLE task_intake_requests (
+                       intake_id TEXT PRIMARY KEY, title TEXT NOT NULL,
+                       objective TEXT NOT NULL, context TEXT, request_hash TEXT NOT NULL,
+                       status TEXT NOT NULL CHECK (status IN ('PENDING')),
+                       result_code TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
+                       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                   )"""
+            )
+            connection.execute(
+                "INSERT INTO task_intake_requests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                tuple(row),
+            )
+
+        for reader in (
+            lambda: self.store.list_pending_task_intakes(limit=1),
+            lambda: self.store.get_task_intake(intake["intake_id"]),
+            lambda: self.store.list_task_intakes(limit=1),
+            lambda: self.store.get_task_intake_handling(intake["intake_id"]),
+        ):
+            with self.subTest(reader=reader):
+                with self.assertRaises(SchemaMigrationRequiredError):
+                    reader()
 
     def test_schema_preflight_reports_missing_or_incompatible_task_intake_table(self):
         with self.store.mutation() as connection:
@@ -301,8 +378,7 @@ class TaskIntakeTests(unittest.TestCase):
         with self.assertRaises(SchemaUnsupportedError):
             self.store.initialize()
 
-    def _create_formal_task(self):
-        dispatch_id = "20260813-009"
+    def _create_formal_task(self, dispatch_id="20260813-009"):
         self.store.create_task({
             "schema_version": 1,
             "dispatch_id": dispatch_id,

@@ -2,7 +2,11 @@ import hashlib
 import json
 import uuid
 
-from .contracts import TASK_INTAKE_REQUEST_FIELDS, UUID_RE
+from .contracts import (
+    TASK_INTAKE_REQUEST_FIELDS,
+    UUID_RE,
+    validate_task_intake_text,
+)
 from .errors import ContractError
 
 
@@ -20,19 +24,9 @@ def _require_exact_fields(value):
 
 
 def _bounded_text(value, field, allow_none=False):
-    if allow_none and value is None:
-        return None
-    if type(value) is not str or not 1 <= len(value) <= _TEXT_LIMITS[field]:
-        raise ContractError(
-            "%s must contain 1 to %d characters" % (field, _TEXT_LIMITS[field])
-        )
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ContractError("%s must be valid UTF-8 text" % field) from error
-    if any(ord(character) < 32 or ord(character) == 127 for character in value):
-        raise ContractError("%s must not contain control characters" % field)
-    return value
+    return validate_task_intake_text(
+        value, field, _TEXT_LIMITS[field], allow_none=allow_none,
+    )
 
 
 def normalize_task_intake_request(request):
@@ -73,13 +67,14 @@ class TaskIntakeSubmissionService:
 
     def submit(self, request):
         normalized = normalize_task_intake_request(request)
-        return self.store.create_task_intake(
+        intake = self.store.create_task_intake(
             normalized["title"],
             normalized["objective"],
             normalized["context"],
             task_intake_request_hash(normalized),
             normalized["idempotency_key"],
         )
+        return safe_task_intake_summary(intake)
 
 
 class CodexTaskIntakeService:

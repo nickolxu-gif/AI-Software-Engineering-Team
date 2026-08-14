@@ -20,7 +20,7 @@ Codex 在下一次普通自然语言请求中读取待处理需求，补齐七�
 - POST ` /api/task-intakes` 仅在 loopback、同源 Origin、进程内 session token、精确 `application/json` 和最大 8 KiB body 下接受。
 - 请求字段仅为 UUID `idempotency_key`、1–120 字符 `title`、1–2000 字符 `objective`，以及可选 1–2000 字符 `context`；拒绝未知字段、控制字符、孤立 surrogate 和过深/非对象 JSON。
 - 存储记录生成 UUID `intake_id`，请求哈希和明确状态；公开 API 只返回 `intake_id`、`title`、`objective`、`status`、`result_code`、时间。`context` 与请求哈希不读回，避免工作台放大敏感或冗长内容。
-- 本机收件箱最多保留 100 条不可变 intake 审计记录；达到容量时拒绝新的 idempotency key，不自动删除、覆盖或归档历史记录。
+- 本机收件箱最多同时保留 100 条 `PENDING` intake；达到容量时拒绝新的 idempotency key。`ACKNOWLEDGED` 记录作为不可变审计历史保留，但不占用待处理容量；系统不自动删除、覆盖或归档历史记录。
 - 初始状态为 `PENDING`；只有 Codex 的受控内部 API 在同一事务中验证既有正式 `dispatch_id`、写入不可变处理关联并将其确认至 `ACKNOWLEDGED`。浏览器只有提交能力，没有确认能力。本次不增加浏览器处理端点、后台循环、自动任务创建、Git 操作、审批或远程访问。
 - 总览只展示有上限的待处理摘要和表单。提交成功后提示“已提交给 Codex，等待下一次工程会话处理”。
 

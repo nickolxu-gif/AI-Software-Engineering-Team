@@ -17,6 +17,7 @@ from .contracts import (
     INTENT_ACTIONS,
     SHA_RE,
     UUID_RE,
+    validate_task_intake_text,
     validate_record,
 )
 from .errors import (
@@ -1231,12 +1232,10 @@ class ControlStore:
             (title, "task intake title", 120),
             (objective, "task intake objective", 2000),
         ):
-            if not isinstance(value, str) or not 1 <= len(value) <= maximum:
-                raise ContractError("%s is invalid" % label)
-        if context is not None and (
-            not isinstance(context, str) or not 1 <= len(context) <= 2000
-        ):
-            raise ContractError("task intake context is invalid")
+            validate_task_intake_text(value, label, maximum)
+        validate_task_intake_text(
+            context, "task intake context", 2000, allow_none=True,
+        )
         if not isinstance(request_hash, str) or HASH_RE.fullmatch(request_hash) is None:
             raise ContractError("task intake request hash is invalid")
         if not isinstance(idempotency_key, str) or UUID_RE.fullmatch(idempotency_key) is None:
@@ -1267,7 +1266,7 @@ class ControlStore:
                     "task intake idempotency key was used for another request"
                 )
             intake_count = connection.execute(
-                "SELECT COUNT(*) FROM task_intake_requests"
+                "SELECT COUNT(*) FROM task_intake_requests WHERE status = 'PENDING'"
             ).fetchone()[0]
             if intake_count >= MAX_TASK_INTAKE_RECORDS:
                 raise ContractError("task intake inbox capacity is reached")
@@ -1305,6 +1304,7 @@ class ControlStore:
         if type(limit) is not int or not 1 <= limit <= MAX_PENDING_INTENT_BATCH:
             raise ContractError("pending task intake limit must be an integer from 1 to 25")
         with self.read_connection() as connection:
+            self._require_schema_compatible_in_connection(connection)
             rows = connection.execute(
                 """SELECT * FROM task_intake_requests WHERE status = 'PENDING'
                    ORDER BY created_at, intake_id LIMIT ?""",
@@ -1316,6 +1316,7 @@ class ControlStore:
         if not isinstance(intake_id, str) or UUID_RE.fullmatch(intake_id) is None:
             raise ContractError("task intake ID is invalid")
         with self.read_connection() as connection:
+            self._require_schema_compatible_in_connection(connection)
             row = connection.execute(
                 "SELECT * FROM task_intake_requests WHERE intake_id = ?", (intake_id,)
             ).fetchone()
@@ -1325,6 +1326,7 @@ class ControlStore:
         if type(limit) is not int or not 1 <= limit <= MAX_PENDING_INTENT_BATCH:
             raise ContractError("task intake limit must be an integer from 1 to 25")
         with self.read_connection() as connection:
+            self._require_schema_compatible_in_connection(connection)
             rows = connection.execute(
                 """SELECT * FROM task_intake_requests
                    ORDER BY created_at, intake_id LIMIT ?""",
@@ -1336,6 +1338,7 @@ class ControlStore:
         if not isinstance(intake_id, str) or UUID_RE.fullmatch(intake_id) is None:
             raise ContractError("task intake ID is invalid")
         with self.read_connection() as connection:
+            self._require_schema_compatible_in_connection(connection)
             row = connection.execute(
                 "SELECT * FROM task_intake_handlings WHERE intake_id = ?", (intake_id,)
             ).fetchone()

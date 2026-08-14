@@ -27,6 +27,20 @@ TASK_INTAKE_REQUEST_FIELDS = frozenset({
     "title", "objective", "context", "idempotency_key",
 })
 
+
+def validate_task_intake_text(value, field, maximum, allow_none=False):
+    if allow_none and value is None:
+        return None
+    if type(value) is not str or not 1 <= len(value) <= maximum:
+        raise ContractError("%s must contain 1 to %d characters" % (field, maximum))
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ContractError("%s must be valid UTF-8 text" % field) from error
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ContractError("%s must not contain control characters" % field)
+    return value
+
 DISPATCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 COMMIT_SHA_RE = SHA_RE
