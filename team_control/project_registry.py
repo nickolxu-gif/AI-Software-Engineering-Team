@@ -66,6 +66,10 @@ class _UnsupportedTargetSchema(Exception):
     pass
 
 
+class _MissingTargetDatabase(Exception):
+    pass
+
+
 class ProjectSnapshotReader:
     """Read a single registered project without changing its repository or DB."""
 
@@ -118,7 +122,7 @@ class ProjectSnapshotReader:
             entry["%s_mode" % name],
         )
 
-    def _identity_is_current(self):
+    def _registered_identity_snapshot(self):
         try:
             root, root_identity = self._identity(self.entry["root_path"])
             common_dir, common_dir_identity = self._identity(
@@ -126,12 +130,18 @@ class ProjectSnapshotReader:
             )
         except (OSError, TypeError, ValueError):
             return False
-        return (
+        matches_registered_entry = (
             str(root) == self.entry["root_path"]
             and str(common_dir) == self.entry["common_dir_path"]
             and root_identity == self._stored_identity(self.entry, "root")
             and common_dir_identity == self._stored_identity(self.entry, "common_dir")
         )
+        if not matches_registered_entry:
+            return False
+        return str(root), root_identity, str(common_dir), common_dir_identity
+
+    def _identity_is_current(self):
+        return self._registered_identity_snapshot() is not False
 
     @staticmethod
     def _git_environment():
@@ -203,8 +213,14 @@ class ProjectSnapshotReader:
                     raise OSError("target database path is unavailable")
         except FileNotFoundError as error:
             raise OSError("target database parent is unavailable") from error
-        metadata_before = database.lstat()
-        resolved = database.resolve(strict=True)
+        try:
+            metadata_before = database.lstat()
+        except FileNotFoundError as error:
+            raise _MissingTargetDatabase() from error
+        try:
+            resolved = database.resolve(strict=True)
+        except FileNotFoundError as error:
+            raise OSError("target database is unavailable") from error
         metadata_after = database.lstat()
         resolved_metadata = resolved.lstat()
         file_metadata = (metadata_before, metadata_after, resolved_metadata)
@@ -218,7 +234,21 @@ class ProjectSnapshotReader:
             }) != 1
         ):
             raise OSError("target database is unavailable")
-        return resolved
+        return resolved, (
+            resolved_metadata.st_dev,
+            resolved_metadata.st_ino,
+            resolved_metadata.st_mode,
+        )
+
+    @classmethod
+    def _database_identity_snapshot(cls, common_dir):
+        try:
+            database, identity = cls._regular_database(common_dir)
+        except _MissingTargetDatabase:
+            return ("MISSING",)
+        except OSError:
+            return ("UNAVAILABLE",)
+        return ("PRESENT", str(database), identity)
 
     @staticmethod
     def _validate_target_schema(connection):
@@ -249,13 +279,7 @@ class ProjectSnapshotReader:
         latest = connection.execute("SELECT MAX(updated_at) FROM tasks").fetchone()[0]
         return counts, latest
 
-    def _read_control_summary(self):
-        try:
-            database = self._regular_database(self.entry["common_dir_path"])
-        except FileNotFoundError:
-            return "UNINITIALIZED", None, None
-        except OSError:
-            return "UNAVAILABLE", None, None
+    def _read_control_summary(self, database):
         connection = None
         try:
             connection = sqlite3.connect(
@@ -285,10 +309,19 @@ class ProjectSnapshotReader:
 
     def snapshot(self):
         card = self._public_card(self.entry)
-        if not self._identity_is_current():
+        registered_before = self._registered_identity_snapshot()
+        if registered_before is False:
             card["control_status"] = "IDENTITY_MISMATCH"
             return card
-        control_status, counts, latest = self._read_control_summary()
+        database_before = self._database_identity_snapshot(registered_before[2])
+        if database_before[0] == "MISSING":
+            control_status, counts, latest = "UNINITIALIZED", None, None
+        elif database_before[0] == "UNAVAILABLE":
+            control_status, counts, latest = "UNAVAILABLE", None, None
+        else:
+            control_status, counts, latest = self._read_control_summary(
+                Path(database_before[1])
+            )
         card["control_status"] = control_status
         if counts is not None:
             card["task_counts"] = counts
@@ -297,6 +330,15 @@ class ProjectSnapshotReader:
             card["head_sha"] = self._head_sha()
         except (GitStateError, OSError, subprocess.TimeoutExpired):
             pass
+        registered_after = self._registered_identity_snapshot()
+        database_after = (
+            self._database_identity_snapshot(registered_after[2])
+            if registered_after is not False
+            else None
+        )
+        if registered_after != registered_before or database_after != database_before:
+            card = self._public_card(self.entry, sampled_at=card["sampled_at"])
+            card["control_status"] = "IDENTITY_MISMATCH"
         return card
 
 

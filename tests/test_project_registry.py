@@ -1,4 +1,5 @@
 import hashlib
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -311,6 +312,19 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertEqual(card["control_status"], "UNINITIALIZED")
         self.assertFalse(database.exists())
 
+    def test_snapshot_reader_marks_a_broken_database_link_unavailable(self):
+        entry = self.registered_entry()
+        database = RepoContext.discover(self.target_root).common_dir / "team" / "runtime" / "team.db"
+        database.parent.mkdir(parents=True)
+        try:
+            database.symlink_to(self.root / "missing-team.db")
+        except (NotImplementedError, OSError) as error:
+            self.skipTest("platform cannot create a symbolic-link fixture: %s" % error)
+
+        card = ProjectSnapshotReader(entry).snapshot()
+
+        self.assertEqual(card["control_status"], "UNAVAILABLE")
+
     def test_snapshot_reader_marks_a_missing_runtime_parent_unavailable(self):
         entry = self.registered_entry()
 
@@ -450,6 +464,48 @@ class ProjectRegistryTests(unittest.TestCase):
         after = {str(path): self.file_fingerprint(path) for path in tracked}
         self.assertEqual(card["control_status"], "HEALTHY")
         self.assertEqual(after, before)
+
+    def test_snapshot_reader_discards_data_when_target_replaced_during_read_window(self):
+        self.make_compatible_target_database(self.target_root, "BLOCKED")
+        entry = self.registered_entry()
+        reader = ProjectSnapshotReader(entry)
+        real_head = reader._head_sha
+
+        def replace_target_before_result():
+            self.target_root.rename(self.root / "read-window-original-target")
+            replacement = self.make_target("read-window-replacement-target")
+            replacement.rename(self.target_root)
+            return real_head()
+
+        with mock.patch.object(reader, "_head_sha", side_effect=replace_target_before_result):
+            card = reader.snapshot()
+
+        self.assertEqual(card["control_status"], "IDENTITY_MISMATCH")
+        self.assertEqual(card["head_sha"], "HEAD_UNAVAILABLE")
+        self.assertEqual(card["task_counts"], {
+            state: 0 for state in sorted(ProjectSnapshotReader._public_card(entry)["task_counts"])
+        })
+        self.assertIsNone(card["latest_task_updated_at"])
+
+    def test_snapshot_reader_discards_data_when_database_replaced_during_read_window(self):
+        database = self.make_compatible_target_database(self.target_root, "BLOCKED")
+        entry = self.registered_entry()
+        reader = ProjectSnapshotReader(entry)
+        real_head = reader._head_sha
+
+        def replace_database_before_result():
+            original = database.with_name("original-team.db")
+            database.rename(original)
+            shutil.copy2(original, database)
+            return real_head()
+
+        with mock.patch.object(reader, "_head_sha", side_effect=replace_database_before_result):
+            card = reader.snapshot()
+
+        self.assertEqual(card["control_status"], "IDENTITY_MISMATCH")
+        self.assertEqual(card["head_sha"], "HEAD_UNAVAILABLE")
+        self.assertTrue(all(count == 0 for count in card["task_counts"].values()))
+        self.assertIsNone(card["latest_task_updated_at"])
 
 
 if __name__ == "__main__":
