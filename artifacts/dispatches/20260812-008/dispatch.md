@@ -1,6 +1,6 @@
 # Dispatch Record：20260812-008 MVP 2D 受控任务需求入口
 
-> 状态：`IN_PROGRESS`
+> 状态：`ACCEPTED — pending local main integration`
 > Owner / Builder：Codex
 > 风险：L2（本地受控写入与浏览器边界）
 > 基线：`6858bb715b4b8bb738a3d4e62fc2542ea616169c`
