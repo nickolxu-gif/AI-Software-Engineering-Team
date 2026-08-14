@@ -22,15 +22,32 @@ class ProjectRegistryService:
         if not candidate.is_absolute():
             raise BoundaryError("project %s must be an absolute path" % label)
         try:
-            metadata = candidate.lstat()
-            if stat.S_ISLNK(metadata.st_mode):
-                raise BoundaryError("project %s must not be a symbolic link" % label)
+            pre_resolve_metadata = candidate.lstat()
             resolved = candidate.resolve(strict=True)
+            post_resolve_metadata = candidate.lstat()
+            resolved_metadata = resolved.lstat()
         except OSError as error:
             raise BoundaryError("project %s is unavailable" % label) from error
-        if not resolved.is_dir():
+        metadata_records = (
+            pre_resolve_metadata,
+            post_resolve_metadata,
+            resolved_metadata,
+        )
+        if any(stat.S_ISLNK(metadata.st_mode) for metadata in metadata_records):
+            raise BoundaryError("project %s must not be a symbolic link" % label)
+        if not all(stat.S_ISDIR(metadata.st_mode) for metadata in metadata_records):
             raise BoundaryError("project %s must be a directory" % label)
-        return resolved, (metadata.st_dev, metadata.st_ino, metadata.st_mode)
+        identities = {
+            (metadata.st_dev, metadata.st_ino, metadata.st_mode)
+            for metadata in metadata_records
+        }
+        if len(identities) != 1:
+            raise BoundaryError("project %s changed during identity capture" % label)
+        return resolved, (
+            resolved_metadata.st_dev,
+            resolved_metadata.st_ino,
+            resolved_metadata.st_mode,
+        )
 
     @classmethod
     def _non_symlink_directory(cls, raw_path, label):

@@ -90,6 +90,26 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertEqual(self.store.list_project_registry_entries(), [])
         self.assertEqual(self.store.list_project_registry_events(), [])
 
+    def test_directory_identity_rejects_replacement_between_lstat_and_resolve(self):
+        original_lstat = Path.lstat
+        replacement_performed = False
+
+        def replace_target_after_lstat(path):
+            nonlocal replacement_performed
+            metadata = original_lstat(path)
+            if path == self.target_root and not replacement_performed:
+                self.target_root.rename(self.root / "pre-resolve-original-target")
+                replacement = self.make_target("pre-resolve-replacement-target")
+                replacement.rename(self.target_root)
+                replacement_performed = True
+            return metadata
+
+        with mock.patch.object(Path, "lstat", new=replace_target_after_lstat):
+            with self.assertRaises(BoundaryError):
+                self.registry._directory_identity(self.target_root, "target root")
+
+        self.assertTrue(replacement_performed)
+
     def test_register_rejects_a_repository_replaced_at_the_same_path(self):
         outer = self
 
