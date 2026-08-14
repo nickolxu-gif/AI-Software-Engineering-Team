@@ -83,7 +83,8 @@ class CliTests(unittest.TestCase):
             set(subparser_action.choices),
             {
                 "approvals", "doctor", "init", "intents", "process-intent",
-                "process-pending-intents", "start", "status", "transition",
+                "process-pending-intents", "projects", "start", "status",
+                "transition",
             },
         )
         for command, subparser in subparser_action.choices.items():
@@ -121,6 +122,18 @@ class CliTests(unittest.TestCase):
                 self, module_doctor_help, command="doctor"
             )
             self.assertEqual(doctor_payload["modes"], ["inspect", "repair"])
+
+            module_projects_help = run_cli(repo, "projects", "--help")
+            projects_payload = assert_json_help(
+                self, module_projects_help, command="projects"
+            )
+            self.assertEqual(
+                projects_payload["subcommands"], ["register", "retire", "list"]
+            )
+            self.assertEqual(
+                projects_payload["usage"],
+                "team-control --repo PATH projects {register,retire,list}",
+            )
 
             wrapper_help = run(
                 [str(repo / "scripts" / "team-control"), "--help"],
@@ -394,6 +407,121 @@ class CliTests(unittest.TestCase):
             repaired_payload = assert_single_json_line(self, repaired)
             self.assertEqual(repaired_payload["classification"], "HEALTHY")
             self.assertTrue(Path(repaired_payload["path"]).is_dir())
+
+    def test_projects_commands_register_list_and_retire_safe_summaries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            central = make_cli_repo(tmp_path / "central")
+            target = make_repo(tmp_path / "target project")
+            target_database = (
+                RepoContext.discover(target).common_dir / "team" / "runtime" / "team.db"
+            )
+            self.assertFalse(target_database.exists())
+            run_cli(central, "init")
+
+            registered = run_cli(
+                central,
+                "projects",
+                "register",
+                "--display-name",
+                "Local Target",
+                "--path",
+                str(target),
+            )
+            registered_payload = assert_single_json_line(self, registered)
+            self.assertEqual(set(registered_payload), {
+                "project_id", "display_name", "status", "created_at", "updated_at",
+            })
+            self.assertEqual(registered_payload["display_name"], "Local Target")
+            self.assertEqual(registered_payload["status"], "ACTIVE")
+            self.assertNotIn(str(target), registered.stdout)
+            self.assertFalse(target_database.exists())
+
+            listed = run_cli(central, "projects", "list")
+            listed_payload = assert_single_json_line(self, listed)
+            self.assertEqual(list(listed_payload), ["projects"])
+            self.assertEqual(listed_payload["projects"], [registered_payload])
+            self.assertNotIn(str(target), listed.stdout)
+
+            retired = run_cli(
+                central,
+                "projects",
+                "retire",
+                "--project-id",
+                registered_payload["project_id"],
+            )
+            retired_payload = assert_single_json_line(self, retired)
+            self.assertEqual(set(retired_payload), {
+                "project_id", "display_name", "status", "created_at", "updated_at",
+            })
+            self.assertEqual(retired_payload["status"], "RETIRED")
+            self.assertNotIn(str(target), retired.stdout)
+            self.assertEqual(
+                assert_single_json_line(self, run_cli(central, "projects", "list")),
+                {"projects": []},
+            )
+            self.assertFalse(target_database.exists())
+
+            # Existing central commands remain available after registry activity.
+            self.assertEqual(
+                assert_single_json_line(
+                    self,
+                    run_cli(central, "intents"),
+                ),
+                {"intents": []},
+            )
+
+    def test_projects_reject_unknown_subcommands_and_missing_required_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            central = make_cli_repo(tmp_path / "central")
+            run_cli(central, "init")
+
+            unknown = run_cli(central, "projects", "scan", check=False)
+            self.assertNotEqual(unknown.returncode, 0)
+            self.assertEqual(unknown.stdout, "")
+            self.assertEqual(
+                assert_single_json_line(self, unknown, "stderr")["error"]["code"],
+                "CONTRACT_ERROR",
+            )
+
+            missing_path = run_cli(
+                central,
+                "projects",
+                "register",
+                "--display-name",
+                "Missing Path",
+                check=False,
+            )
+            self.assertNotEqual(missing_path.returncode, 0)
+            self.assertEqual(missing_path.stdout, "")
+            self.assertEqual(
+                assert_single_json_line(
+                    self, missing_path, "stderr"
+                )["error"]["code"],
+                "CONTRACT_ERROR",
+            )
+
+            absent_target = tmp_path / "private target path"
+            invalid_target = run_cli(
+                central,
+                "projects",
+                "register",
+                "--display-name",
+                "Unavailable",
+                "--path",
+                str(absent_target),
+                check=False,
+            )
+            self.assertNotEqual(invalid_target.returncode, 0)
+            self.assertEqual(invalid_target.stdout, "")
+            self.assertEqual(
+                assert_single_json_line(
+                    self, invalid_target, "stderr"
+                )["error"]["code"],
+                "BOUNDARY_ERROR",
+            )
+            self.assertNotIn(str(absent_target), invalid_target.stderr)
 
     def test_domain_and_argparse_errors_are_machine_readable(self):
         with tempfile.TemporaryDirectory() as tmp:

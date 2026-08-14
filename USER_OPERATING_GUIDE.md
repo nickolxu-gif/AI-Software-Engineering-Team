@@ -460,6 +460,20 @@ scripts/worktree-doctor inspect --dispatch-id ID --agent AGENT --slug SLUG --bas
 scripts/worktree-doctor repair --dispatch-id ID --agent AGENT --slug SLUG --base-sha SHA
 ```
 
+### 13.1 MVP 3A 中央项目登记册（仅 Codex 操作）
+
+项目登记册是**手工、显式的本地 allowlist**，不是扫描器，也不在浏览器工作台提供登记、退休、删除或修复入口。你只需在 Codex 中明确要求登记或退休；Codex 先完成七问、风险与路径核验，再在中央控制仓库执行下列命令。`--repo PATH` 始终是中央控制仓库，绝不是被登记项目的路径。
+
+```bash
+team-control --repo PATH projects register --display-name NAME --path ABSOLUTE_PATH
+team-control --repo PATH projects retire --project-id UUID
+team-control --repo PATH projects list
+```
+
+登记最多保留 20 个 `ACTIVE` 项目。登记会只读核验目标是本地 Git 仓库并记录其身份；不会扫描目录、读取 remote、递归枚举项目，也**不会初始化、迁移、修复或写入**目标项目的 `team/runtime` 控制平面。`list` 只返回活跃项目的安全摘要，绝不返回目标路径或身份元数据。
+
+`retire` 不删除中央记录：它把项目改为 `RETIRED`，并保留不可变的中央审计事件。已退休项目不会出现在 `list` 中；若需要再次纳入，必须作为新的明确登记动作重新经 Codex 核验。
+
 这些 wrapper 已绑定所属仓库，输出机器可读 JSON。它们不提供全局 list tasks/blockers、批量暂停、Agent/Blocker/Review/Evidence 登记、approval create/consume、通用 `PREPARED` reconcile 或 Mimo 入口。
 
 Codex仍必须先读 `handoff.md` 并检查健康。需要处理 `PREPARED` 时只能使用已有测试覆盖的内部 `OperationCoordinator` API；不得直接修改 SQLite。内部 API 不是用户稳定接口，命令或方法存在也不等于动作已获授权。
