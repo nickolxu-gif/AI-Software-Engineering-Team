@@ -17,6 +17,7 @@ from .contracts import (
     INTENT_ACTIONS,
     SHA_RE,
     UUID_RE,
+    validate_project_registry_display_name,
     validate_task_intake_text,
     validate_record,
 )
@@ -169,6 +170,24 @@ CREATE TABLE IF NOT EXISTS blockers (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS project_registry (
+    project_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL UNIQUE,
+    root_path TEXT NOT NULL UNIQUE,
+    common_dir_path TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RETIRED')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    retired_at TEXT
+);
+CREATE TABLE IF NOT EXISTS project_registry_events (
+    event_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES project_registry(project_id),
+    event_type TEXT NOT NULL CHECK (
+        event_type IN ('PROJECT_REGISTERED', 'PROJECT_RETIRED')
+    ),
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -211,6 +230,8 @@ INTENT_RESULT_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 MAX_PENDING_INTENT_BATCH = 25
 MAX_TASK_INTAKE_RECORDS = 100
 MAX_TASK_INTAKE_LIST_OFFSET = 10000
+MAX_PROJECT_REGISTRY_ENTRIES = 20
+PROJECT_REGISTRY_STATUSES = frozenset(("ACTIVE", "RETIRED"))
 TASK_INTAKE_STATUSES = frozenset(("PENDING", "ACKNOWLEDGED"))
 TASK_INTAKE_LEGACY_SCHEMA = """CREATE TABLE task_intake_requests (
     intake_id TEXT PRIMARY KEY,
@@ -280,6 +301,13 @@ REQUIRED_SCHEMA_COLUMNS = {
     "blockers": frozenset((
         "blocker_id", "dispatch_id", "reason", "owner", "status",
         "resolution_condition", "created_at", "updated_at",
+    )),
+    "project_registry": frozenset((
+        "project_id", "display_name", "root_path", "common_dir_path",
+        "status", "created_at", "updated_at", "retired_at",
+    )),
+    "project_registry_events": frozenset((
+        "event_id", "project_id", "event_type", "created_at",
     )),
 }
 
@@ -985,6 +1013,180 @@ class ControlStore:
                 "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
             ).fetchone()
         return dict(row) if row is not None else None
+
+    @staticmethod
+    def _project_registry_entry_from_row(row):
+        if row is None:
+            return None
+        if row["status"] not in PROJECT_REGISTRY_STATUSES:
+            raise ReconciliationError("stored project registry status is invalid")
+        return {
+            "project_id": row["project_id"],
+            "display_name": row["display_name"],
+            "root_path": row["root_path"],
+            "common_dir_path": row["common_dir_path"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "retired_at": row["retired_at"],
+        }
+
+    @staticmethod
+    def _validate_project_registry_project_id(project_id):
+        if not isinstance(project_id, str) or UUID_RE.fullmatch(project_id) is None:
+            raise ContractError("project registry project_id is invalid")
+        return project_id
+
+    @classmethod
+    def _validate_project_registry_entry_inputs(
+        cls, project_id, display_name, root_path, common_dir_path
+    ):
+        cls._validate_project_registry_project_id(project_id)
+        validate_project_registry_display_name(display_name)
+        for value, label in ((root_path, "root_path"),
+                             (common_dir_path, "common_dir_path")):
+            if (
+                not isinstance(value, str)
+                or not value
+                or "\0" in value
+                or not Path(value).is_absolute()
+            ):
+                raise ContractError("project registry %s is invalid" % label)
+
+    @staticmethod
+    def _validate_project_registry_limit(limit):
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= MAX_PROJECT_REGISTRY_ENTRIES
+        ):
+            raise ContractError(
+                "project registry limit must be an integer from 1 to %d"
+                % MAX_PROJECT_REGISTRY_ENTRIES
+            )
+        return limit
+
+    def create_project_registry_entry(
+        self, project_id, display_name, root_path, common_dir_path
+    ):
+        self._validate_project_registry_entry_inputs(
+            project_id, display_name, root_path, common_dir_path
+        )
+        created_at = utc_now()
+        try:
+            with self.mutation() as connection:
+                self._require_schema_compatible_in_connection(connection)
+                active_count = connection.execute(
+                    "SELECT COUNT(*) FROM project_registry WHERE status = 'ACTIVE'"
+                ).fetchone()[0]
+                if active_count >= MAX_PROJECT_REGISTRY_ENTRIES:
+                    raise ContractError(
+                        "project registry has reached its active project limit"
+                    )
+                connection.execute(
+                    """INSERT INTO project_registry (
+                           project_id, display_name, root_path, common_dir_path,
+                           status, created_at, updated_at, retired_at
+                       ) VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?, NULL)""",
+                    (
+                        project_id, display_name, root_path, common_dir_path,
+                        created_at, created_at,
+                    ),
+                )
+                connection.execute(
+                    """INSERT INTO project_registry_events (
+                           event_id, project_id, event_type, created_at
+                       ) VALUES (?, ?, 'PROJECT_REGISTERED', ?)""",
+                    (str(uuid.uuid4()), project_id, created_at),
+                )
+                row = connection.execute(
+                    "SELECT * FROM project_registry WHERE project_id = ?",
+                    (project_id,),
+                ).fetchone()
+        except sqlite3.IntegrityError as error:
+            raise ContractError(
+                "project registry entry conflicts with an existing project"
+            ) from error
+        return self._project_registry_entry_from_row(row)
+
+    def get_project_registry_entry(self, project_id):
+        self._validate_project_registry_project_id(project_id)
+        with self.read_connection() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            row = connection.execute(
+                "SELECT * FROM project_registry WHERE project_id = ?", (project_id,)
+            ).fetchone()
+        return self._project_registry_entry_from_row(row)
+
+    def list_project_registry_entries(
+        self, status=None, limit=MAX_PROJECT_REGISTRY_ENTRIES
+    ):
+        if status is not None and status not in PROJECT_REGISTRY_STATUSES:
+            raise ContractError("project registry status is invalid")
+        self._validate_project_registry_limit(limit)
+        query = "SELECT * FROM project_registry"
+        parameters = []
+        if status is not None:
+            query += " WHERE status = ?"
+            parameters.append(status)
+        query += " ORDER BY created_at, project_id LIMIT ?"
+        parameters.append(limit)
+        with self.read_connection() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            rows = connection.execute(query, tuple(parameters)).fetchall()
+        return [self._project_registry_entry_from_row(row) for row in rows]
+
+    def retire_project_registry_entry(self, project_id):
+        self._validate_project_registry_project_id(project_id)
+        retired_at = utc_now()
+        with self.mutation() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            row = connection.execute(
+                "SELECT * FROM project_registry WHERE project_id = ?", (project_id,)
+            ).fetchone()
+            entry = self._project_registry_entry_from_row(row)
+            if entry is None:
+                raise ContractError("project registry entry was not found")
+            if entry["status"] != "ACTIVE":
+                raise ContractError("project registry entry is already retired")
+            connection.execute(
+                """UPDATE project_registry
+                   SET status = 'RETIRED', updated_at = ?, retired_at = ?
+                   WHERE project_id = ?""",
+                (retired_at, retired_at, project_id),
+            )
+            connection.execute(
+                """INSERT INTO project_registry_events (
+                       event_id, project_id, event_type, created_at
+                   ) VALUES (?, ?, 'PROJECT_RETIRED', ?)""",
+                (str(uuid.uuid4()), project_id, retired_at),
+            )
+            row = connection.execute(
+                "SELECT * FROM project_registry WHERE project_id = ?", (project_id,)
+            ).fetchone()
+        return self._project_registry_entry_from_row(row)
+
+    def list_project_registry_events(self, project_id=None):
+        if project_id is not None:
+            self._validate_project_registry_project_id(project_id)
+        query = "SELECT project_id, event_type, created_at FROM project_registry_events"
+        parameters = ()
+        if project_id is not None:
+            query += " WHERE project_id = ?"
+            parameters = (project_id,)
+        query += " ORDER BY created_at, event_id LIMIT ?"
+        parameters += (MAX_PROJECT_REGISTRY_ENTRIES,)
+        with self.read_connection() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            rows = connection.execute(query, parameters).fetchall()
+        return [
+            {
+                "event_type": row["event_type"],
+                "project_id": row["project_id"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
 
     @staticmethod
     def _intent_from_row(row):

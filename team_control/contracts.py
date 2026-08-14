@@ -17,6 +17,7 @@ EVIDENCE_KINDS = frozenset({"commit", "diff", "test", "review", "approval", "art
 AGENT_STATES = frozenset({"IN_PROGRESS", "COMPLETED", "BLOCKED", "NEEDS_DIRECTION"})
 REVIEW_DISPOSITIONS = frozenset({"ACCEPT", "MODIFY", "BLOCK", "ESCALATE"})
 BLOCKER_STATUSES = frozenset({"OPEN", "RESOLVED"})
+MAX_PROJECT_REGISTRY_DISPLAY_NAME_LENGTH = 80
 APPROVAL_STATUSES = frozenset({"PENDING", "CONSUMED"})
 INTENT_ACTIONS = frozenset({
     "PAUSE_REQUEST", "RESUME_REQUEST", "APPROVAL_REQUEST",
@@ -27,6 +28,16 @@ INTENT_REQUEST_FIELDS = frozenset({
 TASK_INTAKE_REQUEST_FIELDS = frozenset({
     "title", "objective", "context", "idempotency_key",
 })
+
+
+def validate_project_registry_display_name(value):
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise ContractError("project display name must be a string")
+    if not value.strip() or len(value) > MAX_PROJECT_REGISTRY_DISPLAY_NAME_LENGTH:
+        raise ContractError("project display name must contain 1 to 80 visible characters")
+    if any(unicodedata.category(character).startswith("C") for character in value):
+        raise ContractError("project display name must not contain control characters")
+    return value
 
 
 def validate_task_intake_text(value, field, maximum, allow_none=False):

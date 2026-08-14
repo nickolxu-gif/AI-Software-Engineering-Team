@@ -8,7 +8,11 @@ from pathlib import Path
 from unittest import mock
 
 from team_control import store as store_module
-from team_control.errors import BoundaryError, ReconciliationError
+from team_control.errors import (
+    BoundaryError,
+    ReconciliationError,
+    SchemaMigrationRequiredError,
+)
 from team_control.git_context import RepoContext
 from tests.helpers import make_repo, run
 
@@ -61,6 +65,13 @@ EXPECTED_COLUMNS = {
         "blocker_id", "dispatch_id", "reason", "owner", "status",
         "resolution_condition", "created_at", "updated_at",
     ),
+    "project_registry": (
+        "project_id", "display_name", "root_path", "common_dir_path",
+        "status", "created_at", "updated_at", "retired_at",
+    ),
+    "project_registry_events": (
+        "event_id", "project_id", "event_type", "created_at",
+    ),
 }
 
 EXPECTED_PRIMARY_KEYS = {
@@ -75,6 +86,8 @@ EXPECTED_PRIMARY_KEYS = {
     "agents": {"dispatch_id": 1, "agent_id": 2},
     "reviews": {"review_id": 1},
     "blockers": {"blocker_id": 1},
+    "project_registry": {"project_id": 1},
+    "project_registry_events": {"event_id": 1},
 }
 
 EXPECTED_NULLABLE = {
@@ -89,6 +102,8 @@ EXPECTED_NULLABLE = {
     "agents": {"model"},
     "reviews": set(),
     "blockers": {"resolution_condition"},
+    "project_registry": {"retired_at"},
+    "project_registry_events": set(),
 }
 
 
@@ -195,6 +210,7 @@ class StoreTests(unittest.TestCase):
 
                 for table in set(EXPECTED_COLUMNS) - {
                     "tasks", "task_intake_requests", "task_intake_handlings",
+                    "project_registry", "project_registry_events",
                 }:
                     with self.subTest(foreign_key_table=table):
                         foreign_keys = connection.execute(
@@ -218,6 +234,15 @@ class StoreTests(unittest.TestCase):
                     },
                 )
 
+                registry_event_keys = connection.execute(
+                    "PRAGMA foreign_key_list(project_registry_events)"
+                ).fetchall()
+                self.assertEqual(
+                    {(row["table"], row["from"], row["to"])
+                     for row in registry_event_keys},
+                    {("project_registry", "project_id", "project_id")},
+                )
+
                 for table in ("approvals", "operations", "intents", "task_intake_requests"):
                     unique_columns = set()
                     for index in connection.execute(
@@ -229,6 +254,16 @@ class StoreTests(unittest.TestCase):
                             ).fetchall()
                             unique_columns.add(tuple(row["name"] for row in columns))
                     self.assertEqual(unique_columns, {("idempotency_key",)})
+
+    def test_missing_project_registry_table_requires_schema_migration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+            with store.mutation() as connection:
+                connection.execute("DROP TABLE project_registry_events")
+
+            with self.assertRaises(SchemaMigrationRequiredError):
+                store.require_schema_compatible()
 
     def test_initialize_is_idempotent_and_preserves_existing_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
