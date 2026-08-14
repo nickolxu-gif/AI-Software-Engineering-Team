@@ -33,10 +33,9 @@ from .git_context import canonical_under, run_argv
 from .state_machine import next_state
 
 
-# SQLite authorizer action values are stable across supported SQLite releases.
-# Older CPython sqlite3 modules may not export these symbolic constants.
-SQLITE_ATTACH_ACTION = getattr(sqlite3, "SQLITE_ATTACH", 24)
-SQLITE_DETACH_ACTION = getattr(sqlite3, "SQLITE_DETACH", 25)
+def _sqlite_authorizer_action(name, fallback):
+    """Read a stable SQLite authorizer action across CPython sqlite3 versions."""
+    return getattr(sqlite3, name, fallback)
 
 
 SCHEMA = """
@@ -681,7 +680,10 @@ class ControlStore:
 
     @staticmethod
     def _deny_database_attachment(action, argument1, argument2, database, source):
-        if action in (SQLITE_ATTACH_ACTION, SQLITE_DETACH_ACTION):
+        if action in (
+            _sqlite_authorizer_action("SQLITE_ATTACH", 24),
+            _sqlite_authorizer_action("SQLITE_DETACH", 25),
+        ):
             return sqlite3.SQLITE_DENY
         return sqlite3.SQLITE_OK
 

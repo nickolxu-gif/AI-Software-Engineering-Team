@@ -369,21 +369,33 @@ class StoreTests(unittest.TestCase):
             store, _ = self.make_store(Path(tmp))
             store.initialize()
 
-            with store.mutation() as connection:
-                with self.assertRaisesRegex(sqlite3.DatabaseError, "not authorized"):
-                    connection.execute("ATTACH DATABASE ':memory:' AS outside")
-                with self.assertRaisesRegex(sqlite3.DatabaseError, "not authorized"):
-                    connection.execute("DETACH DATABASE main")
-
-            with store.read_connection() as connection:
-                with self.assertRaisesRegex(sqlite3.DatabaseError, "not authorized"):
-                    connection.execute("ATTACH DATABASE ':memory:' AS outside")
-                with self.assertRaisesRegex(sqlite3.DatabaseError, "not authorized"):
-                    connection.execute("DETACH DATABASE main")
+            for connection_context in (store.mutation, store.read_connection):
+                with self.subTest(connection=connection_context.__name__):
+                    with connection_context() as connection:
+                        with self.assertRaisesRegex(sqlite3.DatabaseError, "not authorized"):
+                            connection.execute("ATTACH DATABASE ':memory:' AS outside")
+                        with self.assertRaisesRegex(sqlite3.DatabaseError, "not authorized"):
+                            connection.execute("DETACH DATABASE main")
 
     def test_authorizer_action_codes_have_sqlite_stable_fallbacks(self):
-        self.assertEqual(store_module.SQLITE_ATTACH_ACTION, 24)
-        self.assertEqual(store_module.SQLITE_DETACH_ACTION, 25)
+        symbols = {
+            "SQLITE_ATTACH": sqlite3.SQLITE_ATTACH,
+            "SQLITE_DETACH": sqlite3.SQLITE_DETACH,
+        }
+        try:
+            for symbol in symbols:
+                delattr(store_module.sqlite3, symbol)
+            self.assertEqual(
+                ControlStore._deny_database_attachment(24, None, None, None, None),
+                sqlite3.SQLITE_DENY,
+            )
+            self.assertEqual(
+                ControlStore._deny_database_attachment(25, None, None, None, None),
+                sqlite3.SQLITE_DENY,
+            )
+        finally:
+            for symbol, value in symbols.items():
+                setattr(store_module.sqlite3, symbol, value)
 
     def test_read_connection_is_query_only(self):
         with tempfile.TemporaryDirectory() as tmp:
