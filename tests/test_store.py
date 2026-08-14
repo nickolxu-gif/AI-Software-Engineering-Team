@@ -364,6 +364,21 @@ class StoreTests(unittest.TestCase):
             with self.assertRaises(sqlite3.ProgrammingError):
                 connection.execute("SELECT 1")
 
+    def test_control_store_connections_deny_attach_and_detach(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+
+            with store.mutation() as connection:
+                with self.assertRaisesRegex(sqlite3.DatabaseError, "not authorized"):
+                    connection.execute("ATTACH DATABASE ':memory:' AS outside")
+                with self.assertRaisesRegex(sqlite3.DatabaseError, "not authorized"):
+                    connection.execute("DETACH DATABASE main")
+
+            with store.read_connection() as connection:
+                with self.assertRaisesRegex(sqlite3.DatabaseError, "not authorized"):
+                    connection.execute("ATTACH DATABASE ':memory:' AS outside")
+
     def test_read_connection_is_query_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = make_repo(Path(tmp) / "repo")

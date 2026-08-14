@@ -650,19 +650,18 @@ class ControlStore:
 
     @staticmethod
     def _validate_task_intake_schema_objects(connection):
-        extra_objects = connection.execute(
-            """SELECT type, name FROM sqlite_master
-               WHERE sql IS NOT NULL AND (
-                   (type = 'index'
-                    AND tbl_name IN ('task_intake_requests', 'task_intake_handlings'))
-                   OR (type = 'trigger' AND (
-                       tbl_name IN ('task_intake_requests', 'task_intake_handlings')
-                       OR instr(lower(sql), 'task_intake_requests') > 0
-                       OR instr(lower(sql), 'task_intake_handlings') > 0
-                   ))
-               )"""
+        extra_indexes = connection.execute(
+            """SELECT name FROM sqlite_master
+               WHERE type = 'index' AND sql IS NOT NULL
+                 AND tbl_name IN ('task_intake_requests', 'task_intake_handlings')"""
         ).fetchall()
-        if extra_objects:
+        persistent_triggers = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' AND sql IS NOT NULL"
+        ).fetchall()
+        temporary_triggers = connection.execute(
+            "SELECT name FROM sqlite_temp_master WHERE type = 'trigger'"
+        ).fetchall()
+        if extra_indexes or persistent_triggers or temporary_triggers:
             raise SchemaUnsupportedError(
                 "task intake schema has unsupported objects"
             )
@@ -674,9 +673,22 @@ class ControlStore:
         normalized = re.sub(r"\s+\)", ")", normalized)
         return re.sub(r"\s*,\s*", ",", normalized)
 
-    def _connect(self):
-        connection = sqlite3.connect(str(self.path), timeout=5.0)
+    @staticmethod
+    def _deny_database_attachment(action, argument1, argument2, database, source):
+        if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    @classmethod
+    def _configure_connection(cls, connection):
         connection.row_factory = sqlite3.Row
+        connection.set_authorizer(cls._deny_database_attachment)
+        return connection
+
+    def _connect(self):
+        connection = self._configure_connection(
+            sqlite3.connect(str(self.path), timeout=5.0)
+        )
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
@@ -743,9 +755,10 @@ class ControlStore:
     def read_connection(self):
         self._validate_repo_paths()
         uri = self.path.resolve().as_uri() + "?mode=ro"
-        connection = sqlite3.connect(uri, uri=True, timeout=2.0)
+        connection = self._configure_connection(
+            sqlite3.connect(uri, uri=True, timeout=2.0)
+        )
         try:
-            connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA query_only = ON")
             connection.execute("PRAGMA busy_timeout = 2000")

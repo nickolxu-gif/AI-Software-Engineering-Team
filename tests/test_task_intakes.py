@@ -475,6 +475,25 @@ class TaskIntakeTests(unittest.TestCase):
         with self.assertRaises(SchemaUnsupportedError):
             self.store.initialize()
 
+    def test_current_task_intake_schema_rejects_unrelated_persistent_trigger(self):
+        with self.store.mutation() as connection:
+            connection.execute(
+                "CREATE TRIGGER unrelated_trigger AFTER INSERT ON tasks BEGIN SELECT 1; END"
+            )
+
+        with self.assertRaises(SchemaUnsupportedError):
+            self.store.require_schema_compatible()
+        with self.assertRaises(SchemaUnsupportedError):
+            self.store.initialize()
+
+    def test_schema_preflight_rejects_temporary_trigger_on_active_connection(self):
+        with self.store.mutation() as connection:
+            connection.execute(
+                "CREATE TEMP TRIGGER temporary_trigger AFTER INSERT ON tasks BEGIN SELECT 1; END"
+            )
+            with self.assertRaises(SchemaUnsupportedError):
+                self.store._require_schema_compatible_in_connection(connection)
+
     def test_initialize_rejects_task_intake_migration_residue_without_removing_it(self):
         with self.store.mutation() as connection:
             connection.execute("CREATE TABLE task_intake_requests_migrated (value TEXT)")
