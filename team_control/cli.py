@@ -125,7 +125,7 @@ def build_parser():
     return parser
 
 
-def _help_scope(argv):
+def _argv_command_scope(argv):
     index = 0
     while index < len(argv):
         argument = argv[index]
@@ -135,31 +135,22 @@ def _help_scope(argv):
         if argument.startswith("--repo="):
             index += 1
             continue
-        if argument in COMMANDS:
-            if argument != "projects":
-                return argument, None
-            project_arguments = argv[index + 1:]
-            if project_arguments and project_arguments[0] in PROJECT_COMMANDS:
-                return argument, project_arguments[0]
-            return argument, None
-        index += 1
+        if argument.startswith("-"):
+            return None, None
+        return argument, index
     return None, None
 
 
-def _top_level_command(argv):
-    index = 0
-    while index < len(argv):
-        argument = argv[index]
-        if argument == "--repo":
-            index += 2
-            continue
-        if argument.startswith("--repo="):
-            index += 1
-            continue
-        if not argument.startswith("-"):
-            return argument
-        index += 1
-    return None
+def _help_scope(argv):
+    command, command_index = _argv_command_scope(argv)
+    if command not in COMMANDS:
+        return None, None
+    if command != "projects":
+        return command, None
+    project_arguments = argv[command_index + 1:]
+    if project_arguments and project_arguments[0] in PROJECT_COMMANDS:
+        return command, project_arguments[0]
+    return command, None
 
 
 def help_payload(argv):
@@ -283,9 +274,7 @@ def main(argv=None):
         try:
             args = build_parser().parse_args(arguments)
         except ContractError as error:
-            if _top_level_command(arguments) == "projects":
-                raise ContractError("invalid project command arguments") from error
-            raise
+            raise ContractError("invalid command arguments") from error
         result = execute(args)
         emit(result)
         return 0

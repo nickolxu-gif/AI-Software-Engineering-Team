@@ -333,6 +333,73 @@ class StoreTests(unittest.TestCase):
 
             store.require_schema_compatible()
 
+    def test_init_migrates_the_pre_change_registry_schema_and_allows_reregistration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+            project_id = "123e4567-e89b-12d3-a456-426614174002"
+            event_id = "123e4567-e89b-12d3-a456-426614174003"
+            legacy_schema = """CREATE TABLE project_registry (
+                project_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL UNIQUE,
+                root_path TEXT NOT NULL UNIQUE,
+                common_dir_path TEXT NOT NULL UNIQUE,
+                root_device INTEGER NOT NULL,
+                root_inode INTEGER NOT NULL,
+                root_mode INTEGER NOT NULL,
+                common_dir_device INTEGER NOT NULL,
+                common_dir_inode INTEGER NOT NULL,
+                common_dir_mode INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RETIRED')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                retired_at TEXT
+            )"""
+            with store.mutation() as connection:
+                connection.execute("PRAGMA foreign_keys = OFF")
+                connection.execute("DROP TABLE project_registry_events")
+                connection.execute("DROP TABLE project_registry")
+                connection.execute(legacy_schema)
+                connection.execute(
+                    """CREATE TABLE project_registry_events (
+                        event_id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES project_registry(project_id),
+                        event_type TEXT NOT NULL CHECK (
+                            event_type IN ('PROJECT_REGISTERED', 'PROJECT_RETIRED')
+                        ),
+                        created_at TEXT NOT NULL
+                    )"""
+                )
+                connection.execute(
+                    """INSERT INTO project_registry VALUES (
+                        ?, 'Legacy', '/private/root', '/private/common',
+                        1, 2, 3, 4, 5, 6, 'ACTIVE', '2026-08-14T00:00:00+00:00',
+                        '2026-08-14T00:00:00+00:00', NULL
+                    )""",
+                    (project_id,),
+                )
+                connection.execute(
+                    """INSERT INTO project_registry_events VALUES (
+                        ?, ?, 'PROJECT_REGISTERED', '2026-08-14T00:00:00+00:00'
+                    )""",
+                    (event_id, project_id),
+                )
+
+            with self.assertRaises(SchemaMigrationRequiredError):
+                store.require_schema_compatible()
+            store.initialize()
+            retired = store.retire_project_registry_entry(project_id)
+            replacement = store.create_project_registry_entry(
+                "123e4567-e89b-12d3-a456-426614174004",
+                "Legacy",
+                "/private/root",
+                "/private/common",
+                1, 2, 3, 4, 5, 6,
+            )
+
+            self.assertEqual((retired["status"], replacement["status"]), ("RETIRED", "ACTIVE"))
+            self.assertEqual(len(store.list_project_registry_entries()), 2)
+
     def test_initialize_is_idempotent_and_preserves_existing_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             store, _ = self.make_store(Path(tmp))

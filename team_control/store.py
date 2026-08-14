@@ -58,6 +58,22 @@ PROJECT_REGISTRY_SCHEMA = """CREATE TABLE project_registry (
     updated_at TEXT NOT NULL,
     retired_at TEXT
 )"""
+PROJECT_REGISTRY_LEGACY_SCHEMA = """CREATE TABLE project_registry (
+    project_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL UNIQUE,
+    root_path TEXT NOT NULL UNIQUE,
+    common_dir_path TEXT NOT NULL UNIQUE,
+    root_device INTEGER NOT NULL,
+    root_inode INTEGER NOT NULL,
+    root_mode INTEGER NOT NULL,
+    common_dir_device INTEGER NOT NULL,
+    common_dir_inode INTEGER NOT NULL,
+    common_dir_mode INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RETIRED')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    retired_at TEXT
+)"""
 PROJECT_REGISTRY_INDEXES = {
     "project_registry_active_display_name": (
         "CREATE UNIQUE INDEX project_registry_active_display_name "
@@ -570,6 +586,7 @@ class ControlStore:
                         connection.execute(statement)
                 self._migrate_reviews_schema(connection)
                 self._migrate_task_intake_schema(connection)
+                self._migrate_project_registry_schema(connection)
                 self._validate_task_intake_handling_schema(connection)
                 self._validate_project_registry_schema(connection)
 
@@ -727,6 +744,113 @@ class ControlStore:
                 "task intake handling schema is unsupported"
             )
 
+    def _migrate_project_registry_schema(self, connection):
+        schemas = {
+            row["name"]: row["sql"]
+            for row in connection.execute(
+                """SELECT name, sql FROM sqlite_master
+                   WHERE type = 'table' AND name IN (?, ?)""",
+                ("project_registry", "project_registry_events"),
+            )
+        }
+        if set(schemas) != {"project_registry", "project_registry_events"}:
+            raise ReconciliationError(
+                "project registry schema is missing after initialization"
+            )
+        normalized_registry = self._normalized_schema_sql(
+            schemas["project_registry"]
+        )
+        if normalized_registry == self._normalized_schema_sql(
+            PROJECT_REGISTRY_SCHEMA
+        ):
+            return
+        if (
+            normalized_registry
+            != self._normalized_schema_sql(PROJECT_REGISTRY_LEGACY_SCHEMA)
+            or self._normalized_schema_sql(schemas["project_registry_events"])
+            != self._normalized_schema_sql(PROJECT_REGISTRY_EVENTS_SCHEMA)
+        ):
+            raise SchemaUnsupportedError(
+                "project registry schema is not a supported legacy version"
+            )
+        persistent_triggers = connection.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type = 'trigger'
+                 AND tbl_name IN ('project_registry', 'project_registry_events')"""
+        ).fetchone()
+        if persistent_triggers is not None:
+            raise SchemaUnsupportedError(
+                "project registry schema has unsupported objects"
+            )
+        index_names = {
+            row["name"]
+            for row in connection.execute(
+                """SELECT name FROM sqlite_master
+                   WHERE type = 'index' AND sql IS NOT NULL
+                     AND tbl_name IN ('project_registry', 'project_registry_events')"""
+            )
+        }
+        if index_names != set(PROJECT_REGISTRY_INDEXES):
+            raise SchemaUnsupportedError(
+                "project registry schema has unsupported objects"
+            )
+        entries = connection.execute("SELECT * FROM project_registry").fetchall()
+        events = connection.execute(
+            "SELECT * FROM project_registry_events"
+        ).fetchall()
+        connection.execute(
+            PROJECT_REGISTRY_SCHEMA.replace(
+                "CREATE TABLE project_registry",
+                "CREATE TABLE project_registry_migrated",
+                1,
+            )
+        )
+        connection.execute(
+            PROJECT_REGISTRY_EVENTS_SCHEMA.replace(
+                "CREATE TABLE project_registry_events",
+                "CREATE TABLE project_registry_events_migrated",
+                1,
+            ).replace(
+                "REFERENCES project_registry(project_id)",
+                "REFERENCES project_registry_migrated(project_id)",
+                1,
+            )
+        )
+        if entries:
+            columns = (
+                "project_id", "display_name", "root_path", "common_dir_path",
+                "root_device", "root_inode", "root_mode", "common_dir_device",
+                "common_dir_inode", "common_dir_mode", "status", "created_at",
+                "updated_at", "retired_at",
+            )
+            connection.executemany(
+                "INSERT INTO project_registry_migrated (%s) VALUES (%s)" % (
+                    ", ".join(columns), ", ".join("?" for _ in columns),
+                ),
+                [tuple(row[column] for column in columns) for row in entries],
+            )
+        if events:
+            connection.executemany(
+                """INSERT INTO project_registry_events_migrated (
+                       event_id, project_id, event_type, created_at
+                   ) VALUES (?, ?, ?, ?)""",
+                [
+                    (row["event_id"], row["project_id"], row["event_type"], row["created_at"])
+                    for row in events
+                ],
+            )
+        connection.execute("DROP TABLE project_registry_events")
+        connection.execute("DROP TABLE project_registry")
+        connection.execute(
+            "ALTER TABLE project_registry_migrated RENAME TO project_registry"
+        )
+        connection.execute(
+            "ALTER TABLE project_registry_events_migrated "
+            "RENAME TO project_registry_events"
+        )
+        for statement in PROJECT_REGISTRY_INDEXES.values():
+            connection.execute(statement)
+
     def _validate_project_registry_schema(self, connection):
         expected_schemas = {
             "project_registry": PROJECT_REGISTRY_SCHEMA,
@@ -743,6 +867,29 @@ class ControlStore:
         if set(rows) != set(expected_schemas):
             raise ReconciliationError(
                 "project registry schema is missing after initialization"
+            )
+        if (
+            self._normalized_schema_sql(rows["project_registry"])
+            == self._normalized_schema_sql(PROJECT_REGISTRY_LEGACY_SCHEMA)
+            and self._normalized_schema_sql(rows["project_registry_events"])
+            == self._normalized_schema_sql(PROJECT_REGISTRY_EVENTS_SCHEMA)
+        ):
+            legacy_indexes = connection.execute(
+                """SELECT 1 FROM sqlite_master
+                   WHERE type = 'index' AND sql IS NOT NULL
+                     AND tbl_name IN ('project_registry', 'project_registry_events')"""
+            ).fetchone()
+            legacy_triggers = connection.execute(
+                """SELECT 1 FROM sqlite_master
+                   WHERE type = 'trigger'
+                     AND tbl_name IN ('project_registry', 'project_registry_events')"""
+            ).fetchone()
+            if legacy_indexes is not None or legacy_triggers is not None:
+                raise SchemaUnsupportedError(
+                    "project registry schema has unsupported objects"
+                )
+            raise SchemaMigrationRequiredError(
+                "project registry schema migration is required; run init"
             )
         for table, expected_schema in expected_schemas.items():
             if self._normalized_schema_sql(rows[table]) != self._normalized_schema_sql(
@@ -1290,7 +1437,28 @@ class ControlStore:
             ).fetchone()
         return self._project_registry_entry_from_row(row)
 
-    def list_project_registry_events(self, project_id=None, limit=20, cursor=None):
+    def list_project_registry_events(self, project_id=None):
+        if project_id is not None:
+            self._validate_project_registry_project_id(project_id)
+        query = "SELECT project_id, event_type, created_at FROM project_registry_events"
+        parameters = []
+        if project_id is not None:
+            query += " WHERE project_id = ?"
+            parameters.append(project_id)
+        query += " ORDER BY created_at, event_id"
+        with self.read_connection() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            rows = connection.execute(query, tuple(parameters)).fetchall()
+        return [
+            {
+                "event_type": row["event_type"],
+                "project_id": row["project_id"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def list_project_registry_event_page(self, project_id=None, limit=20, cursor=None):
         if project_id is not None:
             self._validate_project_registry_project_id(project_id)
         self._validate_project_registry_limit(limit)

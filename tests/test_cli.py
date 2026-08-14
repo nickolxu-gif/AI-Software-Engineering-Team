@@ -624,6 +624,27 @@ class CliTests(unittest.TestCase):
             )
             self.assertNotIn(private_argument, result.stderr)
 
+    def test_any_argparse_error_never_echoes_an_absolute_command_or_stray_argument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            central = make_cli_repo(tmp_path / "central")
+            private_command = str(tmp_path / "very-private" / "command")
+            private_stray_argument = str(tmp_path / "very-private" / "stray")
+
+            for arguments, private_value in (
+                ((private_command,), private_command),
+                (("status", "--dispatch-id", "safe", private_stray_argument), private_stray_argument),
+            ):
+                with self.subTest(arguments=arguments):
+                    result = run_cli(central, *arguments, check=False)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+                    self.assertEqual(
+                        assert_single_json_line(self, result, "stderr")["error"]["code"],
+                        "CONTRACT_ERROR",
+                    )
+                    self.assertNotIn(private_value, result.stderr)
+
     def test_projects_help_does_not_treat_an_option_value_as_a_subcommand(self):
         from team_control import cli
 
@@ -634,6 +655,16 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["command"], "projects")
         self.assertNotIn("project_command", payload)
         self.assertEqual(payload["subcommands"], ["register", "retire", "list"])
+
+    def test_help_scope_does_not_treat_an_unknown_option_value_as_a_command(self):
+        from team_control import cli
+
+        payload = cli.help_payload([
+            "--unknown-option", "projects", "--help",
+        ])
+
+        self.assertNotIn("command", payload)
+        self.assertEqual(payload["commands"], list(cli.COMMANDS))
 
     def test_domain_and_argparse_errors_are_machine_readable(self):
         with tempfile.TemporaryDirectory() as tmp:

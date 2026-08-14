@@ -119,7 +119,7 @@ class ProjectRegistryTests(unittest.TestCase):
                 common_dir_metadata.st_mode,
             ),
         )
-        self.assertEqual(events["events"], [{
+        self.assertEqual(events, [{
             "event_type": "PROJECT_REGISTERED",
             "project_id": summary["project_id"],
             "created_at": entry["created_at"],
@@ -149,6 +149,10 @@ class ProjectRegistryTests(unittest.TestCase):
         registered = self.registry.register("  Foo  ", self.target_root)
 
         self.assertEqual(registered["display_name"], "Foo")
+        self.assertEqual(
+            self.store.get_project_registry_entry(registered["project_id"])["display_name"],
+            "Foo",
+        )
         with self.assertRaises(ContractError):
             self.registry.register("Foo", self.make_target("foo-duplicate"))
 
@@ -163,7 +167,7 @@ class ProjectRegistryTests(unittest.TestCase):
         entries = self.store.list_project_registry_entries(status=None)
         self.assertEqual([entry["status"] for entry in entries], ["RETIRED", "ACTIVE"])
         self.assertEqual(
-            len(self.store.list_project_registry_events(first["project_id"])["events"]),
+            len(self.store.list_project_registry_events(first["project_id"])),
             2,
         )
 
@@ -194,8 +198,9 @@ class ProjectRegistryTests(unittest.TestCase):
             )
             self.registry.retire(registered["project_id"])
 
-        first = self.store.list_project_registry_events(limit=20)
-        second = self.store.list_project_registry_events(
+        self.assertEqual(len(self.store.list_project_registry_events()), 22)
+        first = self.store.list_project_registry_event_page(limit=20)
+        second = self.store.list_project_registry_event_page(
             limit=20, cursor=first["next_cursor"]
         )
 
@@ -216,7 +221,7 @@ class ProjectRegistryTests(unittest.TestCase):
         with self.assertRaises(BoundaryError):
             self.registry.register("Link", link)
         self.assertEqual(self.store.list_project_registry_entries(), [])
-        self.assertEqual(self.store.list_project_registry_events()["events"], [])
+        self.assertEqual(self.store.list_project_registry_events(), [])
 
     def test_directory_identity_rejects_replacement_between_lstat_and_resolve(self):
         original_lstat = Path.lstat
@@ -260,7 +265,7 @@ class ProjectRegistryTests(unittest.TestCase):
             registry.register("Replaced", self.target_root)
 
         self.assertEqual(self.store.list_project_registry_entries(), [])
-        self.assertEqual(self.store.list_project_registry_events()["events"], [])
+        self.assertEqual(self.store.list_project_registry_events(), [])
 
     def test_register_rejects_twenty_first_active_project(self):
         for number in range(20):
@@ -269,7 +274,7 @@ class ProjectRegistryTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             self.registry.register("Project 20", self.make_target("target-20"))
         self.assertEqual(len(self.store.list_project_registry_entries("ACTIVE")), 20)
-        self.assertEqual(len(self.store.list_project_registry_events()["events"]), 20)
+        self.assertEqual(len(self.store.list_project_registry_events()), 20)
 
     def test_retirement_is_immutable_and_frees_active_capacity(self):
         registered = [
@@ -291,7 +296,7 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertEqual(len(self.store.list_project_registry_entries("ACTIVE")), 20)
         self.assertEqual(
             [event["event_type"]
-             for event in self.store.list_project_registry_events(retired["project_id"])["events"]],
+             for event in self.store.list_project_registry_events(retired["project_id"])],
             ["PROJECT_REGISTERED", "PROJECT_RETIRED"],
         )
         with self.assertRaises(ContractError):
@@ -304,7 +309,7 @@ class ProjectRegistryTests(unittest.TestCase):
         with self.assertRaises(GitStateError):
             self.registry.register("Invalid", not_a_repository)
         self.assertEqual(self.store.list_project_registry_entries(), [])
-        self.assertEqual(self.store.list_project_registry_events()["events"], [])
+        self.assertEqual(self.store.list_project_registry_events(), [])
 
     def test_audit_insert_failure_rolls_back_the_matching_registry_entry(self):
         project_id = "123e4567-e89b-12d3-a456-426614174000"
@@ -343,7 +348,7 @@ class ProjectRegistryTests(unittest.TestCase):
                 )
 
         self.assertIsNone(self.store.get_project_registry_entry(project_id))
-        self.assertEqual(self.store.list_project_registry_events(project_id)["events"], [])
+        self.assertEqual(self.store.list_project_registry_events(project_id), [])
 
     def test_snapshot_reader_returns_a_safe_healthy_card_without_registry_tables(self):
         self.make_compatible_target_database(self.target_root, "BLOCKED")
