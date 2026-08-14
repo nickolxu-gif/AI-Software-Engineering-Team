@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from .doctor import WorktreeDoctor
-from .errors import BoundaryError, ContractError, TeamControlError
+from .errors import BoundaryError, ContractError, GitStateError, TeamControlError
 from .git_context import RepoContext
 from .intents import IntentService, safe_intent_summary
 from .project_registry import ProjectRegistryService
@@ -17,6 +17,14 @@ COMMANDS = (
     "process-pending-intents", "projects", "start", "status", "transition",
 )
 PROJECT_COMMANDS = ("register", "retire", "list")
+PROJECT_COMMAND_USAGE = {
+    "register": (
+        "team-control --repo PATH projects register "
+        "--display-name NAME --path ABSOLUTE_PATH"
+    ),
+    "retire": "team-control --repo PATH projects retire --project-id UUID",
+    "list": "team-control --repo PATH projects list",
+}
 COMMAND_USAGE = {
     "approvals": "team-control --repo PATH approvals [--dispatch-id ID]",
     "doctor": (
@@ -128,13 +136,18 @@ def _help_scope(argv):
             index += 1
             continue
         if argument in COMMANDS:
-            return argument
+            if argument != "projects":
+                return argument, None
+            for project_argument in argv[index + 1:]:
+                if project_argument in PROJECT_COMMANDS:
+                    return argument, project_argument
+            return argument, None
         index += 1
-    return None
+    return None, None
 
 
 def help_payload(argv):
-    command = _help_scope(argv)
+    command, project_command = _help_scope(argv)
     if command is None:
         return {
             "commands": list(COMMANDS),
@@ -146,11 +159,17 @@ def help_payload(argv):
         "command": command,
         "program": "team-control",
         "status": "help",
-        "usage": COMMAND_USAGE[command],
+        "usage": (
+            PROJECT_COMMAND_USAGE[project_command]
+            if project_command is not None
+            else COMMAND_USAGE[command]
+        ),
     }
+    if project_command is not None:
+        payload["project_command"] = project_command
     if command == "doctor":
         payload["modes"] = ["inspect", "repair"]
-    if command == "projects":
+    if command == "projects" and project_command is None:
         payload["subcommands"] = list(PROJECT_COMMANDS)
     return payload
 
@@ -183,7 +202,12 @@ def execute(args):
     if args.command == "projects":
         registry = ProjectRegistryService(context, store)
         if args.project_command == "register":
-            return registry.register(args.display_name, args.path)
+            try:
+                return registry.register(args.display_name, args.path)
+            except GitStateError as error:
+                raise BoundaryError(
+                    "project repository cannot be inspected"
+                ) from error
         if args.project_command == "retire":
             return registry.retire(args.project_id)
         if args.project_command == "list":

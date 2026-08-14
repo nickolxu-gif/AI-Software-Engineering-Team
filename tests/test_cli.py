@@ -13,6 +13,7 @@ from team_control.git_context import RepoContext
 from team_control.intents import IntentService
 from team_control.service import ControlPlane
 from team_control.store import ControlStore
+from team_control.errors import GitStateError
 from tests.helpers import make_repo, run
 
 
@@ -90,6 +91,18 @@ class CliTests(unittest.TestCase):
         for command, subparser in subparser_action.choices.items():
             with self.subTest(command=command):
                 self.assertFalse(subparser.allow_abbrev)
+        projects = subparser_action.choices["projects"]
+        project_subparser_action = next(
+            action
+            for action in projects._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        self.assertEqual(
+            set(project_subparser_action.choices), {"register", "retire", "list"}
+        )
+        for command, subparser in project_subparser_action.choices.items():
+            with self.subTest(project_command=command):
+                self.assertFalse(subparser.allow_abbrev)
 
     def test_abbreviated_help_is_single_json_error_not_argparse_help(self):
         result = run(
@@ -135,6 +148,24 @@ class CliTests(unittest.TestCase):
                 "team-control --repo PATH projects {register,retire,list}",
             )
 
+            project_help_cases = {
+                "register": (
+                    "team-control --repo PATH projects register "
+                    "--display-name NAME --path ABSOLUTE_PATH"
+                ),
+                "retire": (
+                    "team-control --repo PATH projects retire --project-id UUID"
+                ),
+                "list": "team-control --repo PATH projects list",
+            }
+            for project_command, usage in project_help_cases.items():
+                with self.subTest(entrypoint="module", command=project_command):
+                    result = run_cli(repo, "projects", project_command, "--help")
+                    payload = assert_json_help(self, result, command="projects")
+                    self.assertEqual(payload["project_command"], project_command)
+                    self.assertEqual(payload["usage"], usage)
+                    self.assertNotIn("subcommands", payload)
+
             wrapper_help = run(
                 [str(repo / "scripts" / "team-control"), "--help"],
                 elsewhere,
@@ -146,6 +177,21 @@ class CliTests(unittest.TestCase):
                 elsewhere,
             )
             assert_json_help(self, wrapper_doctor_help, command="doctor")
+
+            for project_command, usage in project_help_cases.items():
+                with self.subTest(entrypoint="wrapper", command=project_command):
+                    result = run(
+                        [
+                            str(repo / "scripts" / "team-control"),
+                            "projects",
+                            project_command,
+                            "--help",
+                        ],
+                        elsewhere,
+                    )
+                    payload = assert_json_help(self, result, command="projects")
+                    self.assertEqual(payload["project_command"], project_command)
+                    self.assertEqual(payload["usage"], usage)
 
             doctor_wrapper_help = run(
                 [str(repo / "scripts" / "worktree-doctor"), "--help"],
@@ -522,6 +568,43 @@ class CliTests(unittest.TestCase):
                 "BOUNDARY_ERROR",
             )
             self.assertNotIn(str(absent_target), invalid_target.stderr)
+
+    def test_projects_register_redacts_target_git_errors_at_cli_boundary(self):
+        from team_control import cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            central = make_cli_repo(tmp_path / "central")
+            run_cli(central, "init")
+            private_target = str(tmp_path / "private" / "target")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with mock.patch.object(
+                cli.ProjectRegistryService,
+                "register",
+                side_effect=GitStateError(
+                    "git target inspection failed: %s" % private_target
+                ),
+            ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = cli.main([
+                    "--repo",
+                    str(central),
+                    "projects",
+                    "register",
+                    "--display-name",
+                    "Private Target",
+                    "--path",
+                    private_target,
+                ])
+
+            self.assertEqual(result, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertTrue(stderr.getvalue().endswith("\n"))
+            self.assertEqual(stderr.getvalue().count("\n"), 1)
+            payload = json.loads(stderr.getvalue())
+            self.assertEqual(payload["error"]["code"], "BOUNDARY_ERROR")
+            self.assertNotIn(private_target, stderr.getvalue())
 
     def test_domain_and_argparse_errors_are_machine_readable(self):
         with tempfile.TemporaryDirectory() as tmp:
