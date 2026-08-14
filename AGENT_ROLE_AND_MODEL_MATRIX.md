@@ -12,10 +12,8 @@
 | Claude Code | Principal Reviewer / Final Independent Quality Gate | 独立审查高风险结果，挑战架构、实现、安全和测试质量 | Acceptance Report | 提出 `ACCEPT / MODIFY / BLOCK`；不替代 Human 战略授权，最终工程决定由 Codex/Nick 基于证据作出 |
 | Mimo | Independent Project Analyst | 完成后的项目盘点、经验提炼、事实与假设分离 | Project Inventory、Lessons、知识候选 | 无直接放行权；不得自动写入最终知识 |
 | DeepSeek | 独立分析或替代 Reviewer | 代码、架构、测试、风险的独立分析；Claude 不可用时提供降级审查 | Review Report、风险清单、验证建议 | 提供意见，不拥有最终验收权 |
-| Qwen 3.8 | 替代 Reviewer / 分析 Agent | 在额度或可用性限制下进行代码、架构和测试复核 | Review Report、差异分析 | 提供意见，不拥有最终验收权 |
-| CodeBuddy Kimi | 补充分析 Agent | 针对复杂需求、文档、代码或边界条件提供第二视角 | Findings、候选方案 | 提供意见，不直接合并或发布 |
-| CodeBuddy K3 | 实验性补充 Agent（默认不路由） | 只有在模型 ID、额度和调用参数可验证，且 Codex 明确派活后，才执行局部低风险任务 | Patch、测试结果、说明 | 不承担默认审阅，不自动替代 Claude；不得自行放行 |
-| CodeBuddy GLM 5.2 | Claude 限额后的应急 Reviewer | 仅在 Claude Code 限额/配额失败且 Human 明确 `yes` 后，提供受控审查、测试设计和风险识别 | Review Report、Test Plan | 提供意见，不继承 Claude 最终验收权，不直接放行高风险任务 |
+| Hermes + Qwen 3.7 Max | 候补 Reviewer / 分析 Agent | 在 Claude 明确限额且 Human 明确批准后，对最小 review packet 进行受控复核 | 结构化 Review Report、差异分析 | 提供意见，不继承 Claude 最终验收权，不直接放行高风险任务 |
+| CodeBuddy | 已封存审核渠道 | 保留历史证据，不再承担审阅或候补任务 | 只读历史记录 | 不路由、不重试、不放行 |
 
 > 模型名称和版本是当前团队设计中的逻辑槽位，不代表模型能力、额度或接口持续可用。实际路由必须以运行时状态和可验证结果为准。
 
@@ -42,13 +40,13 @@
 | 任务类型 | 首选角色/模型 | 独立复核 | L3 或高风险要求 | 备注 |
 |---|---|---|---|---|
 | 需求澄清、任务整理 | Hermes + Codex | Mimo 或其他分析 Agent | Human 确认战略变化 | 产出目标、非目标和验收标准 |
-| 系统架构、技术路线 | Codex | Claude Code；不可用时 DeepSeek/Qwen 3.8 | Human 确认重大取舍 | 必须记录候选方案和依据 |
-| 局部功能实现 | Codex 派给 K3 或其他执行 Agent | DeepSeek/Qwen 3.8 | 按影响范围分级 | 使用独立 Worktree/Branch |
+| 系统架构、技术路线 | Codex | Claude Code；不可用时 DeepSeek 或 Hermes + Qwen 3.7 Max | Human 确认重大取舍 | 必须记录候选方案和依据 |
+| 局部功能实现 | Codex 派给专业执行 Agent | DeepSeek 或 Hermes + Qwen 3.7 Max | 按影响范围分级 | 使用独立 Worktree/Branch |
 | 复杂代码实现 | Codex + 专业执行 Agent | Claude Code 或双 Reviewer | 通过测试和独立验收 | 执行者不能自我放行 |
 | 安全、权限、敏感数据 | Codex 编排 | Claude Code + 必要时 Human | Human 授权 | 默认最小权限和最小上下文 |
-| 测试设计与缺陷分析 | DeepSeek/Qwen 3.8/GLM 5.2 | Claude Code | 高风险需独立证据 | 关注边界、回归和失败路径 |
+| 测试设计与缺陷分析 | DeepSeek/Hermes + Qwen 3.7 Max | Claude Code | 高风险需独立证据 | 关注边界、回归和失败路径 |
 | 文档、规范、知识整理 | Mimo 盘点 | Codex 审阅 | 事实冲突需 Human | 事实、推测和建议分层 |
-| 发布前质量门 | Claude Code | Codex 复核 | Human 按发布风险授权 | Claude 不可用时默认等待；如确认降级，优先 CodeBuddy GLM 5.2，K3 仅实验 |
+| 发布前质量门 | Claude Code | Codex 复核 | Human 按发布风险授权 | Claude 不可用时默认等待；仅在 `hermes-qwen-verify` 安装、预检通过且 Human 明确批准后执行受控候补审阅 |
 | 事后盘点和经验提炼 | Mimo | Codex | 关键规则需 Human | 不把未经验证经验直接升级为规范 |
 
 ## 4. Reviewer 降级决策
@@ -65,11 +63,11 @@ Claude Code 可用？
               等待          降级          升级
                ↓             ↓             ↓
            暂停交付   Human 明确 yes 后    Human 决定
-                       CodeBuddy GLM 5.2
-                       + 增强测试或双审
+                       Hermes + Qwen 3.7 Max
+                       + 增强本地验证
 ```
 
-降级不是静默替换。每次降级必须记录：不可用原因、替代模型、覆盖范围、额外验证、残余风险、是否允许发布。K3 不进入默认降级路径；只有在明确实验派活中使用，并记录实际支持的模型 ID 和调用参数。
+降级不是静默替换。每次降级必须记录：不可用原因、替代模型、覆盖范围、额外验证、残余风险、是否允许发布。CodeBuddy 审核渠道已封存，不进入任何默认或实验审阅路径。
 
 ## 5. 选型规则
 
