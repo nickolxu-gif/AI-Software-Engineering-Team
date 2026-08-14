@@ -138,12 +138,28 @@ def _help_scope(argv):
         if argument in COMMANDS:
             if argument != "projects":
                 return argument, None
-            for project_argument in argv[index + 1:]:
-                if project_argument in PROJECT_COMMANDS:
-                    return argument, project_argument
+            project_arguments = argv[index + 1:]
+            if project_arguments and project_arguments[0] in PROJECT_COMMANDS:
+                return argument, project_arguments[0]
             return argument, None
         index += 1
     return None, None
+
+
+def _top_level_command(argv):
+    index = 0
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "--repo":
+            index += 2
+            continue
+        if argument.startswith("--repo="):
+            index += 1
+            continue
+        if not argument.startswith("-"):
+            return argument
+        index += 1
+    return None
 
 
 def help_payload(argv):
@@ -264,7 +280,12 @@ def main(argv=None):
         if any(argument in ("-h", "--help") for argument in arguments):
             emit(help_payload(arguments))
             return 0
-        args = build_parser().parse_args(arguments)
+        try:
+            args = build_parser().parse_args(arguments)
+        except ContractError as error:
+            if _top_level_command(arguments) == "projects":
+                raise ContractError("invalid project command arguments") from error
+            raise
         result = execute(args)
         emit(result)
         return 0

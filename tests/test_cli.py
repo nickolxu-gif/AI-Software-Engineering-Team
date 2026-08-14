@@ -606,6 +606,35 @@ class CliTests(unittest.TestCase):
             self.assertEqual(payload["error"]["code"], "BOUNDARY_ERROR")
             self.assertNotIn(private_target, stderr.getvalue())
 
+    def test_projects_argparse_errors_never_echo_an_absolute_argument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            central = make_cli_repo(tmp_path / "central")
+            private_argument = str(tmp_path / "very-private" / "target")
+
+            result = run_cli(
+                central, "projects", private_argument, check=False
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(
+                assert_single_json_line(self, result, "stderr")["error"]["code"],
+                "CONTRACT_ERROR",
+            )
+            self.assertNotIn(private_argument, result.stderr)
+
+    def test_projects_help_does_not_treat_an_option_value_as_a_subcommand(self):
+        from team_control import cli
+
+        payload = cli.help_payload([
+            "--repo", "/private/central", "projects", "--path", "list", "--help",
+        ])
+
+        self.assertEqual(payload["command"], "projects")
+        self.assertNotIn("project_command", payload)
+        self.assertEqual(payload["subcommands"], ["register", "retire", "list"])
+
     def test_domain_and_argparse_errors_are_machine_readable(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = make_repo(Path(tmp) / "repo")

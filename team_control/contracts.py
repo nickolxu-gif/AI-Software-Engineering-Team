@@ -33,7 +33,8 @@ TASK_INTAKE_REQUEST_FIELDS = frozenset({
 def validate_project_registry_display_name(value):
     if isinstance(value, bool) or not isinstance(value, str):
         raise ContractError("project display name must be a string")
-    if not value.strip() or len(value) > MAX_PROJECT_REGISTRY_DISPLAY_NAME_LENGTH:
+    value = value.strip()
+    if not value or len(value) > MAX_PROJECT_REGISTRY_DISPLAY_NAME_LENGTH:
         raise ContractError("project display name must contain 1 to 80 visible characters")
     if any(unicodedata.category(character).startswith("C") for character in value):
         raise ContractError("project display name must not contain control characters")

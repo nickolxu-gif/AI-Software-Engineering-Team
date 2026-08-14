@@ -44,9 +44,9 @@ SQLITE_DETACH_ACTION = _sqlite_authorizer_action("SQLITE_DETACH", 25)
 
 PROJECT_REGISTRY_SCHEMA = """CREATE TABLE project_registry (
     project_id TEXT PRIMARY KEY,
-    display_name TEXT NOT NULL UNIQUE,
-    root_path TEXT NOT NULL UNIQUE,
-    common_dir_path TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    root_path TEXT NOT NULL,
+    common_dir_path TEXT NOT NULL,
     root_device INTEGER NOT NULL,
     root_inode INTEGER NOT NULL,
     root_mode INTEGER NOT NULL,
@@ -58,6 +58,30 @@ PROJECT_REGISTRY_SCHEMA = """CREATE TABLE project_registry (
     updated_at TEXT NOT NULL,
     retired_at TEXT
 )"""
+PROJECT_REGISTRY_INDEXES = {
+    "project_registry_active_display_name": (
+        "CREATE UNIQUE INDEX project_registry_active_display_name "
+        "ON project_registry(display_name) WHERE status = 'ACTIVE'"
+    ),
+    "project_registry_active_root_path": (
+        "CREATE UNIQUE INDEX project_registry_active_root_path "
+        "ON project_registry(root_path) WHERE status = 'ACTIVE'"
+    ),
+    "project_registry_active_common_dir_path": (
+        "CREATE UNIQUE INDEX project_registry_active_common_dir_path "
+        "ON project_registry(common_dir_path) WHERE status = 'ACTIVE'"
+    ),
+    "project_registry_active_root_identity": (
+        "CREATE UNIQUE INDEX project_registry_active_root_identity "
+        "ON project_registry(root_device, root_inode, root_mode) "
+        "WHERE status = 'ACTIVE'"
+    ),
+    "project_registry_active_common_dir_identity": (
+        "CREATE UNIQUE INDEX project_registry_active_common_dir_identity "
+        "ON project_registry(common_dir_device, common_dir_inode, common_dir_mode) "
+        "WHERE status = 'ACTIVE'"
+    ),
+}
 PROJECT_REGISTRY_EVENTS_SCHEMA = """CREATE TABLE project_registry_events (
     event_id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES project_registry(project_id),
@@ -198,7 +222,12 @@ CREATE TABLE IF NOT EXISTS blockers (
     "CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1
 ) + ";\n" + PROJECT_REGISTRY_EVENTS_SCHEMA.replace(
     "CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1
-) + ";\n"
+) + ";\n" + "\n".join(
+    "CREATE UNIQUE INDEX IF NOT EXISTS %s%s;" % (
+        name, statement.split(name, 1)[1]
+    )
+    for name, statement in PROJECT_REGISTRY_INDEXES.items()
+) + "\n"
 
 
 class StoreBusyError(TeamControlError):
@@ -726,20 +755,31 @@ class ControlStore:
 
     @staticmethod
     def _validate_project_registry_schema_objects(connection):
-        extra_indexes = connection.execute(
-            """SELECT name FROM sqlite_master
+        indexes = {
+            row["name"]: row["sql"]
+            for row in connection.execute(
+            """SELECT name, sql FROM sqlite_master
                WHERE type = 'index' AND sql IS NOT NULL
                  AND tbl_name IN ('project_registry', 'project_registry_events')"""
-        ).fetchall()
+            )
+        }
         persistent_triggers = connection.execute(
             """SELECT name FROM sqlite_master
                WHERE type = 'trigger'
                  AND tbl_name IN ('project_registry', 'project_registry_events')"""
         ).fetchall()
-        if extra_indexes or persistent_triggers:
+        if set(indexes) != set(PROJECT_REGISTRY_INDEXES) or persistent_triggers:
             raise SchemaUnsupportedError(
                 "project registry schema has unsupported objects"
             )
+        for name, expected in PROJECT_REGISTRY_INDEXES.items():
+            if (
+                ControlStore._normalized_schema_sql(indexes[name])
+                != ControlStore._normalized_schema_sql(expected)
+            ):
+                raise SchemaUnsupportedError(
+                    "project registry schema has unsupported objects"
+                )
 
     @staticmethod
     def _validate_task_intake_schema_objects(connection):
@@ -1146,6 +1186,7 @@ class ControlStore:
         root_device, root_inode, root_mode, common_dir_device,
         common_dir_inode, common_dir_mode,
     ):
+        display_name = validate_project_registry_display_name(display_name)
         self._validate_project_registry_entry_inputs(
             project_id, display_name, root_path, common_dir_path,
             root_device, root_inode, root_mode, common_dir_device,
@@ -1249,20 +1290,43 @@ class ControlStore:
             ).fetchone()
         return self._project_registry_entry_from_row(row)
 
-    def list_project_registry_events(self, project_id=None):
+    def list_project_registry_events(self, project_id=None, limit=20, cursor=None):
         if project_id is not None:
             self._validate_project_registry_project_id(project_id)
-        query = "SELECT project_id, event_type, created_at FROM project_registry_events"
-        parameters = ()
+        self._validate_project_registry_limit(limit)
+        query = (
+            "SELECT event_id, project_id, event_type, created_at "
+            "FROM project_registry_events"
+        )
+        conditions = []
+        parameters = []
         if project_id is not None:
-            query += " WHERE project_id = ?"
-            parameters = (project_id,)
+            conditions.append("project_id = ?")
+            parameters.append(project_id)
+        if cursor is not None:
+            if (
+                type(cursor) is not dict
+                or set(cursor) != {"created_at", "event_id"}
+                or not isinstance(cursor["created_at"], str)
+                or UUID_RE.fullmatch(cursor["event_id"]) is None
+            ):
+                raise ContractError("project registry event cursor is invalid")
+            conditions.append(
+                "(created_at > ? OR (created_at = ? AND event_id > ?))"
+            )
+            parameters.extend((
+                cursor["created_at"], cursor["created_at"], cursor["event_id"],
+            ))
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY created_at, event_id LIMIT ?"
-        parameters += (MAX_PROJECT_REGISTRY_ENTRIES,)
+        parameters.append(limit + 1)
         with self.read_connection() as connection:
             self._require_schema_compatible_in_connection(connection)
-            rows = connection.execute(query, parameters).fetchall()
-        return [
+            rows = connection.execute(query, tuple(parameters)).fetchall()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        events = [
             {
                 "event_type": row["event_type"],
                 "project_id": row["project_id"],
@@ -1270,6 +1334,17 @@ class ControlStore:
             }
             for row in rows
         ]
+        next_cursor = None
+        if has_more:
+            next_cursor = {
+                "created_at": rows[-1]["created_at"],
+                "event_id": rows[-1]["event_id"],
+            }
+        return {
+            "events": events,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+        }
 
     @staticmethod
     def _intent_from_row(row):
