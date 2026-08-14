@@ -378,6 +378,12 @@ class StoreTests(unittest.TestCase):
             with store.read_connection() as connection:
                 with self.assertRaisesRegex(sqlite3.DatabaseError, "not authorized"):
                     connection.execute("ATTACH DATABASE ':memory:' AS outside")
+                with self.assertRaisesRegex(sqlite3.DatabaseError, "not authorized"):
+                    connection.execute("DETACH DATABASE main")
+
+    def test_authorizer_action_codes_have_sqlite_stable_fallbacks(self):
+        self.assertEqual(store_module.SQLITE_ATTACH_ACTION, 24)
+        self.assertEqual(store_module.SQLITE_DETACH_ACTION, 25)
 
     def test_read_connection_is_query_only(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -406,7 +412,7 @@ class StoreTests(unittest.TestCase):
                     2000,
                 )
 
-    def test_read_connection_closes_when_setup_fails(self):
+    def test_read_connection_closes_when_pragma_setup_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             store, _ = self.make_store(Path(tmp))
             store.initialize()
@@ -424,6 +430,39 @@ class StoreTests(unittest.TestCase):
                     sqlite3.OperationalError,
                     "pragma failed",
                 ):
+                    with store.read_connection():
+                        self.fail("setup failure unexpectedly yielded")
+
+            connection.close.assert_called_once_with()
+
+    def test_store_connect_closes_when_authorizer_setup_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            connection = mock.Mock()
+            connection.set_authorizer.side_effect = RuntimeError("authorizer failed")
+
+            with mock.patch.object(
+                store_module.sqlite3,
+                "connect",
+                return_value=connection,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "authorizer failed"):
+                    store._connect()
+
+            connection.close.assert_called_once_with()
+
+    def test_read_connection_closes_when_authorizer_setup_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            connection = mock.Mock()
+            connection.set_authorizer.side_effect = RuntimeError("authorizer failed")
+
+            with mock.patch.object(
+                store_module.sqlite3,
+                "connect",
+                return_value=connection,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "authorizer failed"):
                     with store.read_connection():
                         self.fail("setup failure unexpectedly yielded")
 

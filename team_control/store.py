@@ -33,6 +33,12 @@ from .git_context import canonical_under, run_argv
 from .state_machine import next_state
 
 
+# SQLite authorizer action values are stable across supported SQLite releases.
+# Older CPython sqlite3 modules may not export these symbolic constants.
+SQLITE_ATTACH_ACTION = getattr(sqlite3, "SQLITE_ATTACH", 24)
+SQLITE_DETACH_ACTION = getattr(sqlite3, "SQLITE_DETACH", 25)
+
+
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS tasks (
@@ -675,7 +681,7 @@ class ControlStore:
 
     @staticmethod
     def _deny_database_attachment(action, argument1, argument2, database, source):
-        if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):
+        if action in (SQLITE_ATTACH_ACTION, SQLITE_DETACH_ACTION):
             return sqlite3.SQLITE_DENY
         return sqlite3.SQLITE_OK
 
@@ -686,11 +692,14 @@ class ControlStore:
         return connection
 
     def _connect(self):
-        connection = self._configure_connection(
-            sqlite3.connect(str(self.path), timeout=5.0)
-        )
-        connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        connection = sqlite3.connect(str(self.path), timeout=5.0)
+        try:
+            self._configure_connection(connection)
+            connection.execute("PRAGMA foreign_keys = ON")
+            return connection
+        except BaseException:
+            connection.close()
+            raise
 
     def _acquire_lock(self, lock_file):
         deadline = time.monotonic() + self.lock_timeout
@@ -755,10 +764,9 @@ class ControlStore:
     def read_connection(self):
         self._validate_repo_paths()
         uri = self.path.resolve().as_uri() + "?mode=ro"
-        connection = self._configure_connection(
-            sqlite3.connect(uri, uri=True, timeout=2.0)
-        )
+        connection = sqlite3.connect(uri, uri=True, timeout=2.0)
         try:
+            self._configure_connection(connection)
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA query_only = ON")
             connection.execute("PRAGMA busy_timeout = 2000")
