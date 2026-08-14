@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from collections.abc import Mapping
 from datetime import datetime
 
@@ -37,7 +38,10 @@ def validate_task_intake_text(value, field, maximum, allow_none=False):
         value.encode("utf-8")
     except UnicodeEncodeError as error:
         raise ContractError("%s must be valid UTF-8 text" % field) from error
-    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"}
+        for character in value
+    ):
         raise ContractError("%s must not contain control characters" % field)
     return value
 

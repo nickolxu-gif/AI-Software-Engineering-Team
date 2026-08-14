@@ -83,8 +83,8 @@ class CodexTaskIntakeService:
     def __init__(self, store):
         self.store = store
 
-    def list_pending(self, limit=10):
-        return self.store.list_pending_task_intakes(limit)
+    def list_pending(self, limit=10, offset=0):
+        return self.store.list_pending_task_intakes(limit, offset)
 
     def acknowledge(self, intake_id, dispatch_id, disposition="DISPATCHED"):
         return self.store.acknowledge_task_intake(

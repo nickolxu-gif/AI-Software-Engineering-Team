@@ -201,6 +201,7 @@ TERMINAL_INTENT_STATUSES = INTENT_STATUSES - {"PENDING"}
 INTENT_RESULT_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 MAX_PENDING_INTENT_BATCH = 25
 MAX_TASK_INTAKE_RECORDS = 100
+MAX_TASK_INTAKE_LIST_OFFSET = 10000
 TASK_INTAKE_STATUSES = frozenset(("PENDING", "ACKNOWLEDGED"))
 TASK_INTAKE_LEGACY_SCHEMA = """CREATE TABLE task_intake_requests (
     intake_id TEXT PRIMARY KEY,
@@ -583,6 +584,13 @@ class ControlStore:
         ).fetchone()
         if schema is None:
             raise ReconciliationError("task intake schema is missing after initialization")
+        residue = connection.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'task_intake_requests_migrated'"""
+        ).fetchone()
+        if residue is not None:
+            raise ReconciliationError("task intake migration residue is present")
+        self._validate_task_intake_schema_objects(connection)
         normalized = self._normalized_schema_sql(schema["sql"])
         if normalized == self._normalized_schema_sql(TASK_INTAKE_CURRENT_SCHEMA):
             return
@@ -590,26 +598,11 @@ class ControlStore:
             raise SchemaUnsupportedError(
                 "task intake schema is not a supported legacy version"
             )
-        extra_objects = connection.execute(
-            """SELECT type, name FROM sqlite_master
-               WHERE tbl_name = 'task_intake_requests'
-                 AND type IN ('index', 'trigger') AND sql IS NOT NULL"""
-        ).fetchall()
-        if extra_objects:
-            raise SchemaUnsupportedError(
-                "task intake legacy schema has unsupported objects"
-            )
         rows = connection.execute(
             "SELECT * FROM task_intake_requests"
         ).fetchall()
         if any(row["status"] != "PENDING" for row in rows):
             raise ReconciliationError("legacy task intake status is unsupported")
-        residue = connection.execute(
-            """SELECT 1 FROM sqlite_master
-               WHERE type = 'table' AND name = 'task_intake_requests_migrated'"""
-        ).fetchone()
-        if residue is not None:
-            raise ReconciliationError("task intake migration residue is present")
         connection.execute(
             """CREATE TABLE task_intake_requests_migrated (
                    intake_id TEXT PRIMARY KEY,
@@ -653,6 +646,18 @@ class ControlStore:
         ):
             raise SchemaUnsupportedError(
                 "task intake handling schema is unsupported"
+            )
+
+    @staticmethod
+    def _validate_task_intake_schema_objects(connection):
+        extra_objects = connection.execute(
+            """SELECT type, name FROM sqlite_master
+               WHERE tbl_name IN ('task_intake_requests', 'task_intake_handlings')
+                 AND type IN ('index', 'trigger') AND sql IS NOT NULL"""
+        ).fetchall()
+        if extra_objects:
+            raise SchemaUnsupportedError(
+                "task intake schema has unsupported objects"
             )
 
     @staticmethod
@@ -810,6 +815,7 @@ class ControlStore:
             self._normalized_schema_sql(TASK_INTAKE_HANDLING_SCHEMA)
         ):
             raise SchemaUnsupportedError("task intake handling schema is unsupported")
+        self._validate_task_intake_schema_objects(connection)
 
     def create_task(self, record):
         validate_record("task", record)
@@ -1300,15 +1306,21 @@ class ControlStore:
             ).fetchone()
             return self._task_intake_from_row(row)
 
-    def list_pending_task_intakes(self, limit):
+    @staticmethod
+    def _validate_task_intake_pagination(limit, offset, label):
         if type(limit) is not int or not 1 <= limit <= MAX_PENDING_INTENT_BATCH:
-            raise ContractError("pending task intake limit must be an integer from 1 to 25")
+            raise ContractError("%s limit must be an integer from 1 to 25" % label)
+        if type(offset) is not int or not 0 <= offset <= MAX_TASK_INTAKE_LIST_OFFSET:
+            raise ContractError("%s offset must be an integer from 0 to 10000" % label)
+
+    def list_pending_task_intakes(self, limit, offset=0):
+        self._validate_task_intake_pagination(limit, offset, "pending task intake")
         with self.read_connection() as connection:
             self._require_schema_compatible_in_connection(connection)
             rows = connection.execute(
                 """SELECT * FROM task_intake_requests WHERE status = 'PENDING'
-                   ORDER BY created_at, intake_id LIMIT ?""",
-                (limit,),
+                   ORDER BY created_at, intake_id LIMIT ? OFFSET ?""",
+                (limit, offset),
             ).fetchall()
         return [self._task_intake_from_row(row) for row in rows]
 
@@ -1322,15 +1334,14 @@ class ControlStore:
             ).fetchone()
         return self._task_intake_from_row(row)
 
-    def list_task_intakes(self, limit):
-        if type(limit) is not int or not 1 <= limit <= MAX_PENDING_INTENT_BATCH:
-            raise ContractError("task intake limit must be an integer from 1 to 25")
+    def list_task_intakes(self, limit, offset=0):
+        self._validate_task_intake_pagination(limit, offset, "task intake")
         with self.read_connection() as connection:
             self._require_schema_compatible_in_connection(connection)
             rows = connection.execute(
                 """SELECT * FROM task_intake_requests
-                   ORDER BY created_at, intake_id LIMIT ?""",
-                (limit,),
+                   ORDER BY created_at, intake_id LIMIT ? OFFSET ?""",
+                (limit, offset),
             ).fetchall()
         return [self._task_intake_from_row(row) for row in rows]
 

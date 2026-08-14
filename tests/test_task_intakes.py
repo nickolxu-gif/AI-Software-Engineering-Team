@@ -4,6 +4,7 @@ from pathlib import Path
 
 from team_control.errors import (
     ContractError,
+    ReconciliationError,
     SchemaMigrationRequiredError,
     SchemaUnsupportedError,
 )
@@ -101,8 +102,8 @@ class TaskIntakeTests(unittest.TestCase):
         })
         self.assertEqual(accepted["status"], "PENDING")
         self.assertEqual(
-            len(self.store.list_pending_task_intakes(limit=MAX_PENDING_INTENT_BATCH)),
-            MAX_PENDING_INTENT_BATCH,
+            self._intake_status_counts(),
+            {"ACKNOWLEDGED": 1, "PENDING": MAX_TASK_INTAKE_RECORDS},
         )
 
     def test_submit_returns_only_browser_safe_summary(self):
@@ -122,6 +123,37 @@ class TaskIntakeTests(unittest.TestCase):
                 "unsafe\nintake", self.request["objective"], self.request["context"],
                 "0" * 64, self.request["idempotency_key"],
             )
+
+    def test_submit_rejects_unicode_control_and_format_characters(self):
+        for index, unsafe_title in enumerate(("unsafe\u0085intake", "unsafe\u202eintake")):
+            with self.subTest(unsafe_title=unsafe_title):
+                with self.assertRaises(ContractError):
+                    self.service.submit({
+                        **self.request,
+                        "title": unsafe_title,
+                        "idempotency_key": "123e4567-e89b-12d3-a456-%012d" % index,
+                    })
+
+    def test_task_intake_readers_support_bounded_pagination(self):
+        intakes = []
+        for index in range(MAX_PENDING_INTENT_BATCH + 1):
+            intakes.append(self.service.submit({
+                **self.request,
+                "idempotency_key": "123e4567-e89b-12d3-a456-%012d" % index,
+            }))
+
+        self.assertEqual(
+            [item["intake_id"] for item in self.store.list_pending_task_intakes(
+                limit=1, offset=MAX_PENDING_INTENT_BATCH,
+            )],
+            [intakes[-1]["intake_id"]],
+        )
+        self.assertEqual(
+            [item["intake_id"] for item in self.store.list_task_intakes(
+                limit=1, offset=MAX_PENDING_INTENT_BATCH,
+            )],
+            [intakes[-1]["intake_id"]],
+        )
 
     def test_codex_can_read_one_or_a_bounded_pending_list(self):
         intake = self.service.submit(self.request)
@@ -377,6 +409,56 @@ class TaskIntakeTests(unittest.TestCase):
             )
         with self.assertRaises(SchemaUnsupportedError):
             self.store.initialize()
+
+    def test_current_task_intake_schema_rejects_extra_index(self):
+        with self.store.mutation() as connection:
+            connection.execute(
+                "CREATE INDEX task_intake_title_index ON task_intake_requests(title)"
+            )
+
+        with self.assertRaises(SchemaUnsupportedError):
+            self.store.require_schema_compatible()
+        with self.assertRaises(SchemaUnsupportedError):
+            self.store.initialize()
+
+    def test_current_task_intake_schema_rejects_extra_trigger(self):
+        with self.store.mutation() as connection:
+            connection.execute(
+                """CREATE TRIGGER task_intake_result_rewrite
+                   AFTER INSERT ON task_intake_requests
+                   BEGIN
+                       UPDATE task_intake_requests
+                       SET result_code = 'REWRITTEN'
+                       WHERE intake_id = NEW.intake_id;
+                   END"""
+            )
+
+        with self.assertRaises(SchemaUnsupportedError):
+            self.store.require_schema_compatible()
+        with self.assertRaises(SchemaUnsupportedError):
+            self.store.initialize()
+
+    def test_initialize_rejects_task_intake_migration_residue_without_removing_it(self):
+        with self.store.mutation() as connection:
+            connection.execute("CREATE TABLE task_intake_requests_migrated (value TEXT)")
+
+        with self.assertRaises(ReconciliationError):
+            self.store.initialize()
+        with self.store.read_connection() as connection:
+            self.assertIsNotNone(connection.execute(
+                """SELECT 1 FROM sqlite_master
+                   WHERE type = 'table' AND name = 'task_intake_requests_migrated'"""
+            ).fetchone())
+
+    def _intake_status_counts(self):
+        with self.store.read_connection() as connection:
+            return {
+                row["status"]: row["count"]
+                for row in connection.execute(
+                    """SELECT status, COUNT(*) AS count
+                       FROM task_intake_requests GROUP BY status"""
+                )
+            }
 
     def _create_formal_task(self, dispatch_id="20260813-009"):
         self.store.create_task({

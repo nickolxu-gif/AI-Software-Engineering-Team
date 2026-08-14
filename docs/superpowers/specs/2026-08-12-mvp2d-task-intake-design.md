@@ -26,7 +26,7 @@ Codex 在下一次普通自然语言请求中读取待处理需求，补齐七�
 
 ## 数据与兼容性
 
-`task_intake_requests` 与独立 `task_intake_handlings` 是已知 schema 表。初始化只迁移与已发布旧定义完全匹配的仅 `PENDING` 表：整个 DDL 重建运行在 `BEGIN IMMEDIATE` 事务中，保留所有行；未知列、索引、触发器或不匹配定义一律 `SCHEMA_UNSUPPORTED` 且回滚，不做猜测性重建。两个表的完整 DDL（包括 handling 的唯一绑定与 disposition CHECK）是读、写、确认和 Dashboard 共用的 preflight 契约。缺少该表应使用已有 `SCHEMA_MIGRATION_REQUIRED` fail-closed 路径，普通可写 Codex 请求再显式 `init`。不得直接编辑 SQLite。
+`task_intake_requests` 与独立 `task_intake_handlings` 是已知 schema 表。初始化只迁移与已发布旧定义完全匹配的仅 `PENDING` 表：整个 DDL 重建运行在 `BEGIN IMMEDIATE` 事务中，保留所有行；未知列、显式索引、触发器或不匹配定义一律 `SCHEMA_UNSUPPORTED` 且回滚，不做猜测性重建。若出现迁移临时表残留，系统保持 `BLOCKED`，不得自动删除或猜测恢复；应从已知备份/受控重建路径处置。两个表的完整 DDL（包括 handling 的唯一绑定与 disposition CHECK）以及无额外 schema 对象，是读、写、确认和 Dashboard 共用的 preflight 契约。缺少该表应使用已有 `SCHEMA_MIGRATION_REQUIRED` fail-closed 路径，普通可写 Codex 请求再显式 `init`。不得直接编辑 SQLite。
 
 ## 验收
 
