@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from team_control.errors import BoundaryError, ContractError, GitStateError
 from team_control.git_context import RepoContext
@@ -115,6 +116,37 @@ class ProjectRegistryTests(unittest.TestCase):
             self.registry.register("Invalid", not_a_repository)
         self.assertEqual(self.store.list_project_registry_entries(), [])
         self.assertEqual(self.store.list_project_registry_events(), [])
+
+    def test_audit_insert_failure_rolls_back_the_matching_registry_entry(self):
+        project_id = "123e4567-e89b-12d3-a456-426614174000"
+        target_context = RepoContext.discover(self.target_root)
+        original_preflight = self.store._require_schema_compatible_in_connection
+
+        def install_failing_audit_trigger(connection):
+            original_preflight(connection)
+            connection.execute(
+                """CREATE TEMP TRIGGER fail_project_registry_audit
+                   BEFORE INSERT ON project_registry_events
+                   BEGIN
+                       SELECT RAISE(ABORT, 'forced project registry audit failure');
+                   END"""
+            )
+
+        with mock.patch.object(
+            self.store,
+            "_require_schema_compatible_in_connection",
+            side_effect=install_failing_audit_trigger,
+        ):
+            with self.assertRaises(ContractError):
+                self.store.create_project_registry_entry(
+                    project_id,
+                    "Forced failure",
+                    str(target_context.root),
+                    str(target_context.common_dir),
+                )
+
+        self.assertIsNone(self.store.get_project_registry_entry(project_id))
+        self.assertEqual(self.store.list_project_registry_events(project_id), [])
 
 
 if __name__ == "__main__":
