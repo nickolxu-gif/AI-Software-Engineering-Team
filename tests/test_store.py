@@ -378,24 +378,21 @@ class StoreTests(unittest.TestCase):
                             connection.execute("DETACH DATABASE main")
 
     def test_authorizer_action_codes_have_sqlite_stable_fallbacks(self):
-        symbols = {
-            "SQLITE_ATTACH": sqlite3.SQLITE_ATTACH,
-            "SQLITE_DETACH": sqlite3.SQLITE_DETACH,
-        }
-        try:
-            for symbol in symbols:
-                delattr(store_module.sqlite3, symbol)
-            self.assertEqual(
-                ControlStore._deny_database_attachment(24, None, None, None, None),
-                sqlite3.SQLITE_DENY,
-            )
-            self.assertEqual(
-                ControlStore._deny_database_attachment(25, None, None, None, None),
-                sqlite3.SQLITE_DENY,
-            )
-        finally:
-            for symbol, value in symbols.items():
-                setattr(store_module.sqlite3, symbol, value)
+        missing_sqlite_module = object()
+        self.assertEqual(
+            store_module._sqlite_authorizer_action(
+                "SQLITE_ATTACH", 24, missing_sqlite_module
+            ),
+            24,
+        )
+        self.assertEqual(
+            store_module._sqlite_authorizer_action(
+                "SQLITE_DETACH", 25, missing_sqlite_module
+            ),
+            25,
+        )
+        self.assertEqual(store_module.SQLITE_ATTACH_ACTION, 24)
+        self.assertEqual(store_module.SQLITE_DETACH_ACTION, 25)
 
     def test_read_connection_is_query_only(self):
         with tempfile.TemporaryDirectory() as tmp:
