@@ -75,6 +75,9 @@ class DashboardReadModelTests(unittest.TestCase):
             healthy_context = RepoContext.discover(healthy)
             healthy_store = ControlStore.for_repo(healthy_context)
             healthy_store.initialize()
+            (RepoContext.discover(unavailable).common_dir / "team" / "runtime").mkdir(
+                parents=True
+            )
             registry.register("Unavailable", unavailable)
             registry.register("Healthy", healthy)
             before = hashlib.sha256(store.path.read_bytes()).hexdigest()

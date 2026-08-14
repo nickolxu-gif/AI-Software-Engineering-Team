@@ -1,5 +1,6 @@
 import hashlib
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ from team_control.git_context import RepoContext
 from team_control.project_registry import (
     ProjectRegistryService,
     ProjectSnapshotReader,
+    READONLY_GIT_PREFIX,
     TARGET_CONTROL_REQUIRED_SCHEMA,
 )
 from team_control.store import ControlStore
@@ -302,11 +304,32 @@ class ProjectRegistryTests(unittest.TestCase):
     def test_snapshot_reader_marks_a_missing_target_database_uninitialized_without_creating_it(self):
         entry = self.registered_entry()
         database = RepoContext.discover(self.target_root).common_dir / "team" / "runtime" / "team.db"
+        database.parent.mkdir(parents=True)
 
         card = ProjectSnapshotReader(entry).snapshot()
 
         self.assertEqual(card["control_status"], "UNINITIALIZED")
         self.assertFalse(database.exists())
+
+    def test_snapshot_reader_marks_a_missing_runtime_parent_unavailable(self):
+        entry = self.registered_entry()
+
+        card = ProjectSnapshotReader(entry).snapshot()
+
+        self.assertEqual(card["control_status"], "UNAVAILABLE")
+
+    def test_snapshot_reader_marks_a_broken_runtime_parent_link_unavailable(self):
+        entry = self.registered_entry()
+        common_dir = RepoContext.discover(self.target_root).common_dir
+        broken_team = common_dir / "team"
+        try:
+            broken_team.symlink_to(self.root / "missing-runtime", target_is_directory=True)
+        except (NotImplementedError, OSError) as error:
+            self.skipTest("platform cannot create a symbolic-link fixture: %s" % error)
+
+        card = ProjectSnapshotReader(entry).snapshot()
+
+        self.assertEqual(card["control_status"], "UNAVAILABLE")
 
     def test_snapshot_reader_marks_malformed_target_database_unsupported(self):
         entry = self.registered_entry()
@@ -340,6 +363,81 @@ class ProjectRegistryTests(unittest.TestCase):
 
         self.assertEqual(card["control_status"], "IDENTITY_MISMATCH")
         self.assertNotIn(str(self.target_root), repr(card))
+
+    def test_snapshot_reader_detects_common_directory_replacement_without_rebinding(self):
+        self.make_compatible_target_database(self.target_root)
+        entry = self.registered_entry()
+        common_dir = RepoContext.discover(self.target_root).common_dir
+        common_dir.rename(self.root / "original-common-dir")
+        common_dir.mkdir()
+
+        card = ProjectSnapshotReader(entry).snapshot()
+
+        self.assertEqual(card["control_status"], "IDENTITY_MISMATCH")
+
+    def test_snapshot_reader_runtime_git_uses_only_the_head_allowlist(self):
+        self.make_compatible_target_database(self.target_root)
+        entry = self.registered_entry()
+        real_run = subprocess.run
+        with mock.patch(
+            "team_control.project_registry.subprocess.run", wraps=real_run
+        ) as observed:
+            card = ProjectSnapshotReader(entry).snapshot()
+
+        self.assertEqual(card["control_status"], "HEALTHY")
+        self.assertEqual(
+            [call.args[0] for call in observed.call_args_list],
+            [[*READONLY_GIT_PREFIX, "rev-parse", "HEAD"]],
+        )
+        self.assertEqual(observed.call_args.kwargs["timeout"], 2.0)
+        self.assertEqual(observed.call_args.kwargs["env"]["GIT_OPTIONAL_LOCKS"], "0")
+        self.assertEqual(observed.call_args.kwargs["env"]["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(observed.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+
+    def test_snapshot_reader_uses_sqlite_readonly_mode_and_denies_write_actions(self):
+        self.make_compatible_target_database(self.target_root)
+        entry = self.registered_entry()
+        real_connect = sqlite3.connect
+        calls = []
+
+        class RecordingConnection:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def execute(self, statement, *parameters):
+                calls.append(("execute", statement))
+                return self.connection.execute(statement, *parameters)
+
+            def set_authorizer(self, authorizer):
+                calls.append(("authorizer", authorizer))
+                return self.connection.set_authorizer(authorizer)
+
+            def close(self):
+                return self.connection.close()
+
+        def record_connect(*args, **kwargs):
+            calls.append(("connect", args, kwargs))
+            return RecordingConnection(real_connect(*args, **kwargs))
+
+        with mock.patch(
+            "team_control.project_registry.sqlite3.connect", side_effect=record_connect
+        ):
+            card = ProjectSnapshotReader(entry).snapshot()
+
+        self.assertEqual(card["control_status"], "HEALTHY")
+        connect = next(call for call in calls if call[0] == "connect")
+        self.assertIn("?mode=ro", connect[1][0])
+        self.assertTrue(connect[2]["uri"])
+        self.assertIn(("execute", "PRAGMA query_only = ON"), calls)
+        authorizer = next(call[1] for call in calls if call[0] == "authorizer")
+        self.assertEqual(
+            authorizer(getattr(sqlite3, "SQLITE_ATTACH", 24), None, None, None, None),
+            sqlite3.SQLITE_DENY,
+        )
+        self.assertEqual(
+            authorizer(getattr(sqlite3, "SQLITE_INSERT", 18), None, None, None, None),
+            sqlite3.SQLITE_DENY,
+        )
 
     def test_snapshot_reader_does_not_modify_target_database_or_wal_sidecars(self):
         database = self.make_compatible_target_database(self.target_root)

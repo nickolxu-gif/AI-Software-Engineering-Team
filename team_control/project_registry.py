@@ -124,24 +124,13 @@ class ProjectSnapshotReader:
             common_dir, common_dir_identity = self._identity(
                 self.entry["common_dir_path"]
             )
-            context = RepoContext.discover(root)
-            discovered_root, discovered_root_identity = self._identity(context.root)
-            discovered_common, discovered_common_identity = self._identity(
-                context.common_dir
-            )
-        except (BoundaryError, GitStateError, OSError, TypeError, ValueError):
+        except (OSError, TypeError, ValueError):
             return False
         return (
             str(root) == self.entry["root_path"]
             and str(common_dir) == self.entry["common_dir_path"]
-            and context.root == root
-            and context.common_dir == common_dir
-            and discovered_root == root
-            and discovered_common == common_dir
             and root_identity == self._stored_identity(self.entry, "root")
             and common_dir_identity == self._stored_identity(self.entry, "common_dir")
-            and discovered_root_identity == root_identity
-            and discovered_common_identity == common_dir_identity
         )
 
     @staticmethod
@@ -204,18 +193,23 @@ class ProjectSnapshotReader:
         team_dir = common_dir / "team"
         runtime_dir = team_dir / "runtime"
         database = runtime_dir / "team.db"
-        team_metadata = team_dir.lstat()
-        runtime_metadata = runtime_dir.lstat()
+        try:
+            for directory in (common_dir, team_dir, runtime_dir):
+                metadata = directory.lstat()
+                if (
+                    stat.S_ISLNK(metadata.st_mode)
+                    or not stat.S_ISDIR(metadata.st_mode)
+                ):
+                    raise OSError("target database path is unavailable")
+        except FileNotFoundError as error:
+            raise OSError("target database parent is unavailable") from error
         metadata_before = database.lstat()
         resolved = database.resolve(strict=True)
         metadata_after = database.lstat()
         resolved_metadata = resolved.lstat()
-        directory_metadata = (team_metadata, runtime_metadata)
         file_metadata = (metadata_before, metadata_after, resolved_metadata)
         if (
-            any(stat.S_ISLNK(metadata.st_mode) for metadata in directory_metadata)
-            or not all(stat.S_ISDIR(metadata.st_mode) for metadata in directory_metadata)
-            or any(stat.S_ISLNK(metadata.st_mode) for metadata in file_metadata)
+            any(stat.S_ISLNK(metadata.st_mode) for metadata in file_metadata)
             or not all(stat.S_ISREG(metadata.st_mode) for metadata in file_metadata)
             or resolved != database
             or len({
