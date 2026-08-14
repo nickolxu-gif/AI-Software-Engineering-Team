@@ -1,3 +1,5 @@
+import hashlib
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -5,7 +7,11 @@ from unittest import mock
 
 from team_control.errors import BoundaryError, ContractError, GitStateError
 from team_control.git_context import RepoContext
-from team_control.project_registry import ProjectRegistryService
+from team_control.project_registry import (
+    ProjectRegistryService,
+    ProjectSnapshotReader,
+    TARGET_CONTROL_REQUIRED_SCHEMA,
+)
 from team_control.store import ControlStore
 from tests.helpers import make_repo
 
@@ -26,6 +32,64 @@ class ProjectRegistryTests(unittest.TestCase):
 
     def make_target(self, name):
         return make_repo(self.root / name)
+
+    def make_compatible_target_database(self, target, state="IN_PROGRESS"):
+        """Create the historical core schema without central registry tables."""
+        context = RepoContext.discover(target)
+        database = context.common_dir / "team" / "runtime" / "team.db"
+        database.parent.mkdir(parents=True)
+        connection = sqlite3.connect(str(database))
+        try:
+            for table, columns in TARGET_CONTROL_REQUIRED_SCHEMA.items():
+                definitions = ", ".join(
+                    "%s TEXT" % column for column in sorted(columns)
+                )
+                connection.execute("CREATE TABLE %s (%s)" % (table, definitions))
+            connection.execute(
+                """INSERT INTO tasks (
+                       dispatch_id, title, objective, risk_level, state, owner,
+                       agent, slug, branch, worktree_path, task_base_sha,
+                       current_head_sha, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "20260814-101", "Safe title", "Safe objective", "L2", state,
+                    "Codex", None, None, None, None, "a" * 40, "a" * 40,
+                    "2026-08-14T00:00:00+00:00",
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        verification_connection = sqlite3.connect(str(database))
+        try:
+            tables = {
+                row[0]
+                for row in verification_connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+        finally:
+            verification_connection.close()
+        self.assertFalse({"project_registry", "project_registry_events"} & tables)
+        return database
+
+    @staticmethod
+    def file_fingerprint(path):
+        candidate = Path(path)
+        if not candidate.exists() and not candidate.is_symlink():
+            return None
+        metadata = candidate.lstat()
+        return (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_size,
+            hashlib.sha256(candidate.read_bytes()).hexdigest(),
+        )
+
+    def registered_entry(self, name="Target"):
+        summary = self.registry.register(name, self.target_root)
+        return self.store.get_project_registry_entry(summary["project_id"])
 
     def test_register_writes_private_identity_and_audit_event_atomically(self):
         summary = self.registry.register("LifeLogger", self.target_root)
@@ -216,6 +280,78 @@ class ProjectRegistryTests(unittest.TestCase):
 
         self.assertIsNone(self.store.get_project_registry_entry(project_id))
         self.assertEqual(self.store.list_project_registry_events(project_id), [])
+
+    def test_snapshot_reader_returns_a_safe_healthy_card_without_registry_tables(self):
+        self.make_compatible_target_database(self.target_root, "BLOCKED")
+        card = ProjectSnapshotReader(self.registered_entry()).snapshot()
+
+        self.assertEqual(card["control_status"], "HEALTHY")
+        self.assertEqual(len(card["head_sha"]), 40)
+        self.assertTrue(all(character in "0123456789abcdef" for character in card["head_sha"]))
+        self.assertEqual(card["task_counts"]["BLOCKED"], 1)
+        self.assertEqual(card["latest_task_updated_at"], "2026-08-14T00:00:00+00:00")
+        self.assertEqual(set(card), {
+            "project_id", "display_name", "registry_status", "sampled_at",
+            "head_sha", "control_status", "task_counts",
+            "latest_task_updated_at",
+        })
+        self.assertNotIn(str(self.target_root), repr(card))
+        self.assertNotIn("root_path", card)
+        self.assertNotIn("common_dir_path", card)
+
+    def test_snapshot_reader_marks_a_missing_target_database_uninitialized_without_creating_it(self):
+        entry = self.registered_entry()
+        database = RepoContext.discover(self.target_root).common_dir / "team" / "runtime" / "team.db"
+
+        card = ProjectSnapshotReader(entry).snapshot()
+
+        self.assertEqual(card["control_status"], "UNINITIALIZED")
+        self.assertFalse(database.exists())
+
+    def test_snapshot_reader_marks_malformed_target_database_unsupported(self):
+        entry = self.registered_entry()
+        database = RepoContext.discover(self.target_root).common_dir / "team" / "runtime" / "team.db"
+        database.parent.mkdir(parents=True)
+        database.write_bytes(b"not sqlite")
+
+        card = ProjectSnapshotReader(entry).snapshot()
+
+        self.assertEqual(card["control_status"], "UNSUPPORTED")
+
+    def test_snapshot_reader_marks_a_database_read_error_unavailable(self):
+        self.make_compatible_target_database(self.target_root)
+        entry = self.registered_entry()
+        with mock.patch(
+            "team_control.project_registry.sqlite3.connect",
+            side_effect=sqlite3.OperationalError("database is locked"),
+        ):
+            card = ProjectSnapshotReader(entry).snapshot()
+
+        self.assertEqual(card["control_status"], "UNAVAILABLE")
+
+    def test_snapshot_reader_detects_target_replacement_without_rebinding(self):
+        self.make_compatible_target_database(self.target_root)
+        entry = self.registered_entry()
+        self.target_root.rename(self.root / "original-target")
+        replacement = self.make_target("replacement-target")
+        replacement.rename(self.target_root)
+
+        card = ProjectSnapshotReader(entry).snapshot()
+
+        self.assertEqual(card["control_status"], "IDENTITY_MISMATCH")
+        self.assertNotIn(str(self.target_root), repr(card))
+
+    def test_snapshot_reader_does_not_modify_target_database_or_wal_sidecars(self):
+        database = self.make_compatible_target_database(self.target_root)
+        entry = self.registered_entry()
+        tracked = [database, Path(str(database) + "-wal"), Path(str(database) + "-shm")]
+        before = {str(path): self.file_fingerprint(path) for path in tracked}
+
+        card = ProjectSnapshotReader(entry).snapshot()
+
+        after = {str(path): self.file_fingerprint(path) for path in tracked}
+        self.assertEqual(card["control_status"], "HEALTHY")
+        self.assertEqual(after, before)
 
 
 if __name__ == "__main__":

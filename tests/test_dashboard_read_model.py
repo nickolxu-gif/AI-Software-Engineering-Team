@@ -20,6 +20,7 @@ from team_control.dashboard_read_model import (
 from team_control.errors import GitStateError
 from team_control.git_context import RepoContext
 from team_control.intents import IntentService
+from team_control.project_registry import ProjectRegistryService
 from team_control.service import ControlPlane
 from team_control.store import ControlStore
 from tests.helpers import make_repo, run
@@ -63,6 +64,38 @@ class DashboardReadModelTests(unittest.TestCase):
                 with self.assertRaises(DashboardInputError) as caught:
                     parse_pagination(query, 50, 100)
                 self.assertEqual(caught.exception.code, "INVALID_PAGINATION")
+
+    def test_projects_returns_safe_cards_and_isolates_a_bad_registered_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo, store, model = self.make_model(root)
+            registry = ProjectRegistryService(RepoContext.discover(repo), store)
+            unavailable = make_repo(root / "unavailable")
+            healthy = make_repo(root / "healthy")
+            healthy_context = RepoContext.discover(healthy)
+            healthy_store = ControlStore.for_repo(healthy_context)
+            healthy_store.initialize()
+            registry.register("Unavailable", unavailable)
+            registry.register("Healthy", healthy)
+            before = hashlib.sha256(store.path.read_bytes()).hexdigest()
+
+            result = model.projects()
+
+            self.assertEqual(set(result), {"items", "count"})
+            self.assertEqual(result["count"], 2)
+            self.assertEqual(
+                [item["control_status"] for item in result["items"]],
+                ["UNINITIALIZED", "HEALTHY"],
+            )
+            for item in result["items"]:
+                self.assertEqual(set(item), {
+                    "project_id", "display_name", "registry_status", "sampled_at",
+                    "head_sha", "control_status", "task_counts",
+                    "latest_task_updated_at",
+                })
+                self.assertNotIn(str(unavailable), repr(item))
+                self.assertNotIn(str(healthy), repr(item))
+            self.assertEqual(hashlib.sha256(store.path.read_bytes()).hexdigest(), before)
 
     def test_non_empty_wal_requires_readable_regular_sidecars(self):
         with tempfile.TemporaryDirectory() as tmp:

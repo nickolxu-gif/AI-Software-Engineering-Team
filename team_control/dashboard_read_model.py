@@ -19,6 +19,7 @@ from .errors import (
     TeamControlError,
 )
 from .git_context import canonical_under, run_argv, validate_component
+from .project_registry import ProjectSnapshotReader
 from .store import TASK_INTAKE_REQUIRED_SCHEMA_COLUMNS
 
 
@@ -475,6 +476,17 @@ class DashboardReadModel:
             "git": "AVAILABLE",
             "warnings": [],
         }
+
+    def projects(self):
+        entries = self.store.list_project_registry_entries("ACTIVE", limit=20)
+        items = []
+        for entry in entries:
+            try:
+                item = ProjectSnapshotReader(entry).snapshot()
+            except Exception:
+                item = ProjectSnapshotReader._public_card(entry)
+            items.append(item)
+        return {"items": items, "count": len(items)}
 
     def project(self):
         head = self.source_head_sha()
