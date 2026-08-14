@@ -32,9 +32,26 @@ class ProjectRegistryTests(unittest.TestCase):
 
         entry = self.store.get_project_registry_entry(summary["project_id"])
         events = self.store.list_project_registry_events(summary["project_id"])
+        target_context = RepoContext.discover(self.target_root)
+        root_metadata = target_context.root.lstat()
+        common_dir_metadata = target_context.common_dir.lstat()
 
         self.assertEqual(entry["display_name"], "LifeLogger")
         self.assertEqual(entry["root_path"], str(self.target_root.resolve()))
+        self.assertEqual(
+            (entry["root_device"], entry["root_inode"], entry["root_mode"]),
+            (root_metadata.st_dev, root_metadata.st_ino, root_metadata.st_mode),
+        )
+        self.assertEqual(
+            (
+                entry["common_dir_device"], entry["common_dir_inode"],
+                entry["common_dir_mode"],
+            ),
+            (
+                common_dir_metadata.st_dev, common_dir_metadata.st_ino,
+                common_dir_metadata.st_mode,
+            ),
+        )
         self.assertEqual(events, [{
             "event_type": "PROJECT_REGISTERED",
             "project_id": summary["project_id"],
@@ -70,6 +87,30 @@ class ProjectRegistryTests(unittest.TestCase):
 
         with self.assertRaises(BoundaryError):
             self.registry.register("Link", link)
+        self.assertEqual(self.store.list_project_registry_entries(), [])
+        self.assertEqual(self.store.list_project_registry_events(), [])
+
+    def test_register_rejects_a_repository_replaced_at_the_same_path(self):
+        outer = self
+
+        class ReplacingRegistry(ProjectRegistryService):
+            def __init__(inner, *args):
+                super().__init__(*args)
+                inner.capture_count = 0
+
+            def _capture_target(inner, raw_root):
+                captured = super()._capture_target(raw_root)
+                if inner.capture_count == 0:
+                    outer.target_root.rename(outer.root / "original-target")
+                    replacement = outer.make_target("replacement-target")
+                    replacement.rename(outer.target_root)
+                inner.capture_count += 1
+                return captured
+
+        registry = ReplacingRegistry(self.context, self.store)
+        with self.assertRaises(BoundaryError):
+            registry.register("Replaced", self.target_root)
+
         self.assertEqual(self.store.list_project_registry_entries(), [])
         self.assertEqual(self.store.list_project_registry_events(), [])
 
@@ -120,6 +161,8 @@ class ProjectRegistryTests(unittest.TestCase):
     def test_audit_insert_failure_rolls_back_the_matching_registry_entry(self):
         project_id = "123e4567-e89b-12d3-a456-426614174000"
         target_context = RepoContext.discover(self.target_root)
+        root_metadata = target_context.root.lstat()
+        common_dir_metadata = target_context.common_dir.lstat()
         original_preflight = self.store._require_schema_compatible_in_connection
 
         def install_failing_audit_trigger(connection):
@@ -143,6 +186,12 @@ class ProjectRegistryTests(unittest.TestCase):
                     "Forced failure",
                     str(target_context.root),
                     str(target_context.common_dir),
+                    root_metadata.st_dev,
+                    root_metadata.st_ino,
+                    root_metadata.st_mode,
+                    common_dir_metadata.st_dev,
+                    common_dir_metadata.st_ino,
+                    common_dir_metadata.st_mode,
                 )
 
         self.assertIsNone(self.store.get_project_registry_entry(project_id))

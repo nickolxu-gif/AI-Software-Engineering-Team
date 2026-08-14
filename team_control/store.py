@@ -42,6 +42,30 @@ def _sqlite_authorizer_action(name, fallback, sqlite_module=sqlite3):
 SQLITE_ATTACH_ACTION = _sqlite_authorizer_action("SQLITE_ATTACH", 24)
 SQLITE_DETACH_ACTION = _sqlite_authorizer_action("SQLITE_DETACH", 25)
 
+PROJECT_REGISTRY_SCHEMA = """CREATE TABLE project_registry (
+    project_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL UNIQUE,
+    root_path TEXT NOT NULL UNIQUE,
+    common_dir_path TEXT NOT NULL UNIQUE,
+    root_device INTEGER NOT NULL,
+    root_inode INTEGER NOT NULL,
+    root_mode INTEGER NOT NULL,
+    common_dir_device INTEGER NOT NULL,
+    common_dir_inode INTEGER NOT NULL,
+    common_dir_mode INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RETIRED')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    retired_at TEXT
+)"""
+PROJECT_REGISTRY_EVENTS_SCHEMA = """CREATE TABLE project_registry_events (
+    event_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES project_registry(project_id),
+    event_type TEXT NOT NULL CHECK (
+        event_type IN ('PROJECT_REGISTERED', 'PROJECT_RETIRED')
+    ),
+    created_at TEXT NOT NULL
+)"""
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -170,25 +194,11 @@ CREATE TABLE IF NOT EXISTS blockers (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS project_registry (
-    project_id TEXT PRIMARY KEY,
-    display_name TEXT NOT NULL UNIQUE,
-    root_path TEXT NOT NULL UNIQUE,
-    common_dir_path TEXT NOT NULL UNIQUE,
-    status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RETIRED')),
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    retired_at TEXT
-);
-CREATE TABLE IF NOT EXISTS project_registry_events (
-    event_id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES project_registry(project_id),
-    event_type TEXT NOT NULL CHECK (
-        event_type IN ('PROJECT_REGISTERED', 'PROJECT_RETIRED')
-    ),
-    created_at TEXT NOT NULL
-);
-"""
+""" + PROJECT_REGISTRY_SCHEMA.replace(
+    "CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1
+) + ";\n" + PROJECT_REGISTRY_EVENTS_SCHEMA.replace(
+    "CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1
+) + ";\n"
 
 
 class StoreBusyError(TeamControlError):
@@ -304,6 +314,8 @@ REQUIRED_SCHEMA_COLUMNS = {
     )),
     "project_registry": frozenset((
         "project_id", "display_name", "root_path", "common_dir_path",
+        "root_device", "root_inode", "root_mode", "common_dir_device",
+        "common_dir_inode", "common_dir_mode",
         "status", "created_at", "updated_at", "retired_at",
     )),
     "project_registry_events": frozenset((
@@ -530,6 +542,7 @@ class ControlStore:
                 self._migrate_reviews_schema(connection)
                 self._migrate_task_intake_schema(connection)
                 self._validate_task_intake_handling_schema(connection)
+                self._validate_project_registry_schema(connection)
 
     def _migrate_reviews_schema(self, connection):
         columns = {
@@ -683,6 +696,49 @@ class ControlStore:
         ):
             raise SchemaUnsupportedError(
                 "task intake handling schema is unsupported"
+            )
+
+    def _validate_project_registry_schema(self, connection):
+        expected_schemas = {
+            "project_registry": PROJECT_REGISTRY_SCHEMA,
+            "project_registry_events": PROJECT_REGISTRY_EVENTS_SCHEMA,
+        }
+        rows = {
+            row["name"]: row["sql"]
+            for row in connection.execute(
+                """SELECT name, sql FROM sqlite_master
+                   WHERE type = 'table' AND name IN (?, ?)""",
+                tuple(expected_schemas),
+            )
+        }
+        if set(rows) != set(expected_schemas):
+            raise ReconciliationError(
+                "project registry schema is missing after initialization"
+            )
+        for table, expected_schema in expected_schemas.items():
+            if self._normalized_schema_sql(rows[table]) != self._normalized_schema_sql(
+                expected_schema
+            ):
+                raise SchemaUnsupportedError(
+                    "project registry schema is unsupported"
+                )
+        self._validate_project_registry_schema_objects(connection)
+
+    @staticmethod
+    def _validate_project_registry_schema_objects(connection):
+        extra_indexes = connection.execute(
+            """SELECT name FROM sqlite_master
+               WHERE type = 'index' AND sql IS NOT NULL
+                 AND tbl_name IN ('project_registry', 'project_registry_events')"""
+        ).fetchall()
+        persistent_triggers = connection.execute(
+            """SELECT name FROM sqlite_master
+               WHERE type = 'trigger'
+                 AND tbl_name IN ('project_registry', 'project_registry_events')"""
+        ).fetchall()
+        if extra_indexes or persistent_triggers:
+            raise SchemaUnsupportedError(
+                "project registry schema has unsupported objects"
             )
 
     @staticmethod
@@ -875,6 +931,7 @@ class ControlStore:
         ):
             raise SchemaUnsupportedError("task intake handling schema is unsupported")
         self._validate_task_intake_schema_objects(connection)
+        self._validate_project_registry_schema(connection)
 
     def create_task(self, record):
         validate_record("task", record)
@@ -1025,6 +1082,12 @@ class ControlStore:
             "display_name": row["display_name"],
             "root_path": row["root_path"],
             "common_dir_path": row["common_dir_path"],
+            "root_device": row["root_device"],
+            "root_inode": row["root_inode"],
+            "root_mode": row["root_mode"],
+            "common_dir_device": row["common_dir_device"],
+            "common_dir_inode": row["common_dir_inode"],
+            "common_dir_mode": row["common_dir_mode"],
             "status": row["status"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -1039,7 +1102,9 @@ class ControlStore:
 
     @classmethod
     def _validate_project_registry_entry_inputs(
-        cls, project_id, display_name, root_path, common_dir_path
+        cls, project_id, display_name, root_path, common_dir_path,
+        root_device, root_inode, root_mode, common_dir_device,
+        common_dir_inode, common_dir_mode,
     ):
         cls._validate_project_registry_project_id(project_id)
         validate_project_registry_display_name(display_name)
@@ -1051,6 +1116,16 @@ class ControlStore:
                 or "\0" in value
                 or not Path(value).is_absolute()
             ):
+                raise ContractError("project registry %s is invalid" % label)
+        for value, label in (
+            (root_device, "root_device"),
+            (root_inode, "root_inode"),
+            (root_mode, "root_mode"),
+            (common_dir_device, "common_dir_device"),
+            (common_dir_inode, "common_dir_inode"),
+            (common_dir_mode, "common_dir_mode"),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ContractError("project registry %s is invalid" % label)
 
     @staticmethod
@@ -1067,10 +1142,14 @@ class ControlStore:
         return limit
 
     def create_project_registry_entry(
-        self, project_id, display_name, root_path, common_dir_path
+        self, project_id, display_name, root_path, common_dir_path,
+        root_device, root_inode, root_mode, common_dir_device,
+        common_dir_inode, common_dir_mode,
     ):
         self._validate_project_registry_entry_inputs(
-            project_id, display_name, root_path, common_dir_path
+            project_id, display_name, root_path, common_dir_path,
+            root_device, root_inode, root_mode, common_dir_device,
+            common_dir_inode, common_dir_mode,
         )
         created_at = utc_now()
         try:
@@ -1086,10 +1165,14 @@ class ControlStore:
                 connection.execute(
                     """INSERT INTO project_registry (
                            project_id, display_name, root_path, common_dir_path,
+                           root_device, root_inode, root_mode,
+                           common_dir_device, common_dir_inode, common_dir_mode,
                            status, created_at, updated_at, retired_at
-                       ) VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?, NULL)""",
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, NULL)""",
                     (
                         project_id, display_name, root_path, common_dir_path,
+                        root_device, root_inode, root_mode,
+                        common_dir_device, common_dir_inode, common_dir_mode,
                         created_at, created_at,
                     ),
                 )

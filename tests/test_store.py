@@ -12,6 +12,7 @@ from team_control.errors import (
     BoundaryError,
     ReconciliationError,
     SchemaMigrationRequiredError,
+    SchemaUnsupportedError,
 )
 from team_control.git_context import RepoContext
 from tests.helpers import make_repo, run
@@ -67,6 +68,8 @@ EXPECTED_COLUMNS = {
     ),
     "project_registry": (
         "project_id", "display_name", "root_path", "common_dir_path",
+        "root_device", "root_inode", "root_mode", "common_dir_device",
+        "common_dir_inode", "common_dir_mode",
         "status", "created_at", "updated_at", "retired_at",
     ),
     "project_registry_events": (
@@ -264,6 +267,71 @@ class StoreTests(unittest.TestCase):
 
             with self.assertRaises(SchemaMigrationRequiredError):
                 store.require_schema_compatible()
+
+    def test_project_registry_schema_requires_its_unique_check_and_foreign_key_contracts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+            connection = sqlite3.connect(str(store.path))
+            try:
+                connection.execute("PRAGMA foreign_keys = OFF")
+                connection.execute("DROP TABLE project_registry_events")
+                connection.execute("DROP TABLE project_registry")
+                connection.execute(
+                    """CREATE TABLE project_registry (
+                           project_id TEXT PRIMARY KEY,
+                           display_name TEXT NOT NULL,
+                           root_path TEXT NOT NULL,
+                           common_dir_path TEXT NOT NULL,
+                           root_device INTEGER NOT NULL,
+                           root_inode INTEGER NOT NULL,
+                           root_mode INTEGER NOT NULL,
+                           common_dir_device INTEGER NOT NULL,
+                           common_dir_inode INTEGER NOT NULL,
+                           common_dir_mode INTEGER NOT NULL,
+                           status TEXT NOT NULL,
+                           created_at TEXT NOT NULL,
+                           updated_at TEXT NOT NULL,
+                           retired_at TEXT
+                       )"""
+                )
+                connection.execute(
+                    """CREATE TABLE project_registry_events (
+                           event_id TEXT PRIMARY KEY,
+                           project_id TEXT NOT NULL,
+                           event_type TEXT NOT NULL,
+                           created_at TEXT NOT NULL
+                       )"""
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with self.assertRaises(SchemaUnsupportedError):
+                store.require_schema_compatible()
+
+    def test_project_registry_schema_rejects_a_persistent_trigger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+            with store.mutation() as connection:
+                connection.execute(
+                    """CREATE TRIGGER project_registry_persistent_trigger
+                       AFTER INSERT ON project_registry
+                       BEGIN
+                           SELECT 1;
+                       END"""
+                )
+
+            with self.assertRaises(SchemaUnsupportedError):
+                store.require_schema_compatible()
+
+    def test_normal_project_registry_schema_is_compatible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+
+            store.require_schema_compatible()
 
     def test_initialize_is_idempotent_and_preserves_existing_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
