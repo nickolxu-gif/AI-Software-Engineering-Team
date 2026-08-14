@@ -135,25 +135,45 @@ class TaskIntakeTests(unittest.TestCase):
                     })
 
     def test_task_intake_readers_support_bounded_pagination(self):
-        intakes = []
         for index in range(MAX_PENDING_INTENT_BATCH + 1):
-            intakes.append(self.service.submit({
+            self.service.submit({
                 **self.request,
                 "idempotency_key": "123e4567-e89b-12d3-a456-%012d" % index,
-            }))
+            })
+
+        with self.store.read_connection() as connection:
+            expected_pending = [row["intake_id"] for row in connection.execute(
+                """SELECT intake_id FROM task_intake_requests
+                   WHERE status = 'PENDING'
+                   ORDER BY created_at, intake_id LIMIT 1 OFFSET ?""",
+                (MAX_PENDING_INTENT_BATCH,),
+            )]
+            expected_all = [row["intake_id"] for row in connection.execute(
+                """SELECT intake_id FROM task_intake_requests
+                   ORDER BY created_at, intake_id LIMIT 1 OFFSET ?""",
+                (MAX_PENDING_INTENT_BATCH,),
+            )]
 
         self.assertEqual(
             [item["intake_id"] for item in self.store.list_pending_task_intakes(
                 limit=1, offset=MAX_PENDING_INTENT_BATCH,
             )],
-            [intakes[-1]["intake_id"]],
+            expected_pending,
         )
         self.assertEqual(
             [item["intake_id"] for item in self.store.list_task_intakes(
                 limit=1, offset=MAX_PENDING_INTENT_BATCH,
             )],
-            [intakes[-1]["intake_id"]],
+            expected_all,
         )
+
+    def test_task_intake_readers_reject_invalid_pagination_offsets(self):
+        for offset in (-1, 10001, True):
+            with self.subTest(offset=offset):
+                with self.assertRaises(ContractError):
+                    self.store.list_pending_task_intakes(limit=1, offset=offset)
+                with self.assertRaises(ContractError):
+                    self.store.list_task_intakes(limit=1, offset=offset)
 
     def test_codex_can_read_one_or_a_bounded_pending_list(self):
         intake = self.service.submit(self.request)
@@ -430,6 +450,23 @@ class TaskIntakeTests(unittest.TestCase):
                        UPDATE task_intake_requests
                        SET result_code = 'REWRITTEN'
                        WHERE intake_id = NEW.intake_id;
+                   END"""
+            )
+
+        with self.assertRaises(SchemaUnsupportedError):
+            self.store.require_schema_compatible()
+        with self.assertRaises(SchemaUnsupportedError):
+            self.store.initialize()
+
+    def test_current_task_intake_schema_rejects_cross_table_trigger(self):
+        with self.store.mutation() as connection:
+            connection.execute(
+                """CREATE TRIGGER task_intake_cross_table_rewrite
+                   AFTER INSERT ON tasks
+                   BEGIN
+                       UPDATE task_intake_requests
+                       SET result_code = 'REWRITTEN'
+                       WHERE status = 'PENDING';
                    END"""
             )
 

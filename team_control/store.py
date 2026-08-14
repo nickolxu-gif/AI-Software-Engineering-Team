@@ -652,8 +652,15 @@ class ControlStore:
     def _validate_task_intake_schema_objects(connection):
         extra_objects = connection.execute(
             """SELECT type, name FROM sqlite_master
-               WHERE tbl_name IN ('task_intake_requests', 'task_intake_handlings')
-                 AND type IN ('index', 'trigger') AND sql IS NOT NULL"""
+               WHERE sql IS NOT NULL AND (
+                   (type = 'index'
+                    AND tbl_name IN ('task_intake_requests', 'task_intake_handlings'))
+                   OR (type = 'trigger' AND (
+                       tbl_name IN ('task_intake_requests', 'task_intake_handlings')
+                       OR instr(lower(sql), 'task_intake_requests') > 0
+                       OR instr(lower(sql), 'task_intake_handlings') > 0
+                   ))
+               )"""
         ).fetchall()
         if extra_objects:
             raise SchemaUnsupportedError(
