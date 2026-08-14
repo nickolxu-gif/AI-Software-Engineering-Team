@@ -2,7 +2,8 @@
 
 候选实现 HEAD：`c4ba02cde6347911855a97c3d7f3144a4273bc66`
 主线基线：`6858bb715b4b8bb738a3d4e62fc2542ea616169c`
-状态：`ACCEPTED — pending local main integration`
+本地 `main` 整合 SHA：`6abf6fd281879f466dda9fbe74f5fd210097bbcb`
+状态：`ACCEPTED and integrated`
 
 ## 确定性验证
 
@@ -21,6 +22,6 @@ Claude Code / Opus 使用 V4、无工具、无 session persistence 的不可变�
 
 Claude 记录的低风险建议不改变严格 `PASS`：可后续改善 trigger 诊断文案、SQLite 返回码兼容防御、trigger 恢复说明和 mutation `foreign_keys` 显式回归断言。它们不是本任务的整合阻断项。
 
-## 整合前结论
+## 整合结论
 
-实现范围、自动化验证、独立 Claude 验收均已满足。仍需在本地 `main` 执行 no-ff 整合、整合后全量验证、健康检查和 handoff 更新，才可关闭任务。
+实现范围、自动化验证、独立 Claude 验收、本地 no-ff 整合、整合后双解释器全量测试、健康检查与 handoff 更新均已完成。GitHub remote、push 和发布仍不在范围。

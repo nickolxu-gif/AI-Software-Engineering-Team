@@ -1,12 +1,12 @@
 # 项目交接状态
 
-> 日期：2026-08-09
+> 日期：2026-08-14
 > 维护者：仅 Codex 主控。其他 Agent 和 Reviewer 只读，可提交修改建议。
 > 生效条件：本文件随本次主线 handoff 提交生效。
 
 ## 当前状态
 
-**Git 治理、MVP 0 控制平面、MVP 1 本地工作台、MVP 2A 受控意图入口、MVP 2B Codex 意图队列与 MVP 2C 前台主动循环均已整合到 `main`。**
+**Git 治理、MVP 0 控制平面、MVP 1 本地工作台、MVP 2A/2B/2C 控制循环，以及 MVP 2D 受控任务需求入口均已整合到 `main`。**
 
 - `main` 是唯一稳定主线；Git bootstrap 历史基线 SHA 为 `cd459565b8bb24156f92e400a11769d254eccda9`。
 - MVP 0 任务分支已 fast-forward 整合到 `main`；MVP 0 集成 SHA 为 `f4b60ab4a4f3112912641fd8b56667b27d6fb819`。
@@ -102,6 +102,19 @@
 - 工作台 `intents` 表缺失时 `/api/health` 返回 503 + `SCHEMA_MIGRATION_REQUIRED`；view 或字段不兼容返回 `SCHEMA_UNSUPPORTED`。
 - 恢复仍必须由 Codex 显式调用已有幂等 `scripts/team-control init`；严格只读请求不能恢复，且不得直接编辑 SQLite。`SCHEMA_UNSUPPORTED` 保持 `BLOCKED`，不假设 init 能无损修复。
 - Claude Code / Sonnet 独立验收为 `PASS`，安全记录：`artifacts/dispatches/20260812-007/verification.md`。未使用 fallback Reviewer。
+
+### MVP 2D 受控任务需求入口
+
+**状态：ACCEPTED and integrated**
+
+- 任务：`20260812-008`；本地 `main` no-ff 整合 SHA：`6abf6fd281879f466dda9fbe74f5fd210097bbcb`；基线：`6858bb715b4b8bb738a3d4e62fc2542ea616169c`。
+- 工作台新增本地需求收件箱：浏览器只能提交标题、目标和可选背景，并读取安全摘要；不会创建正式任务、Worktree、分支、Git 提交、合并、push、发布或后台工作。
+- 需求确认由 Codex 在后续自然语言工程会话中完成七问、风险与隔离决策；收件箱确认必须原子绑定已有 dispatch，保留不可变 handling 证据，并对 schema 漂移、未知对象、容量和冲突 fail closed。
+- SQLite 边界：所有 ControlStore 读写连接拒绝 `ATTACH`/`DETACH`；连接 setup 异常会关闭连接；持久或当前连接的临时 trigger 一律 `SCHEMA_UNSUPPORTED`，不得直接编辑 SQLite 或自动修复。
+- 独立验收：Claude Code / Opus V4 对完整 SQLite hardening 包严格 `PASS`；安全证据和验收记录位于 `artifacts/dispatches/20260812-008/verification.md`。未使用 CodeBuddy 或其他 fallback。
+- 整合后默认 Python 与 Python 3.14 全量测试各 370 项均通过；`git diff --check` 与 `./scripts/repo-health.sh` 均通过。
+- MiMo 当前没有可调用的独立入口，已如实记录 `NOT_RUN_EXTERNAL_CAPABILITY_UNAVAILABLE`，未伪造盘点结论；Codex 门禁审阅为 `ACCEPT_FOR_INTEGRATION`。
+- GitHub remote、push、发布与 MVP 3 仍需 Human 明确新派活；不得因本次整合自动进入。
 
 可使用以下命令复核最终 Worktree 和分支状态：
 
