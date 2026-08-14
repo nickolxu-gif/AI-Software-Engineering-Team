@@ -12,10 +12,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .contracts import (
+    DISPATCH_RE,
     HASH_RE,
     INTENT_ACTIONS,
     SHA_RE,
     UUID_RE,
+    validate_task_intake_text,
     validate_record,
 )
 from .errors import (
@@ -29,6 +31,15 @@ from .errors import (
 )
 from .git_context import canonical_under, run_argv
 from .state_machine import next_state
+
+
+def _sqlite_authorizer_action(name, fallback, sqlite_module=sqlite3):
+    """Read a stable SQLite authorizer action across CPython sqlite3 versions."""
+    return getattr(sqlite_module, name, fallback)
+
+
+SQLITE_ATTACH_ACTION = _sqlite_authorizer_action("SQLITE_ATTACH", 24)
+SQLITE_DETACH_ACTION = _sqlite_authorizer_action("SQLITE_DETACH", 25)
 
 
 SCHEMA = """
@@ -99,6 +110,24 @@ CREATE TABLE IF NOT EXISTS intents (
     idempotency_key TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_intake_requests (
+    intake_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    context TEXT,
+    request_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('PENDING', 'ACKNOWLEDGED')),
+    result_code TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_intake_handlings (
+    intake_id TEXT PRIMARY KEY REFERENCES task_intake_requests(intake_id),
+    dispatch_id TEXT NOT NULL UNIQUE REFERENCES tasks(dispatch_id),
+    disposition TEXT NOT NULL CHECK (disposition IN ('DISPATCHED', 'BLOCKED')),
+    handled_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS evidence (
     evidence_id TEXT PRIMARY KEY,
@@ -180,6 +209,39 @@ INTENT_STATUSES = frozenset(("PENDING", "APPLIED", "REJECTED", "BLOCKED"))
 TERMINAL_INTENT_STATUSES = INTENT_STATUSES - {"PENDING"}
 INTENT_RESULT_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 MAX_PENDING_INTENT_BATCH = 25
+MAX_TASK_INTAKE_RECORDS = 100
+MAX_TASK_INTAKE_LIST_OFFSET = 10000
+TASK_INTAKE_STATUSES = frozenset(("PENDING", "ACKNOWLEDGED"))
+TASK_INTAKE_LEGACY_SCHEMA = """CREATE TABLE task_intake_requests (
+    intake_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    context TEXT,
+    request_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('PENDING')),
+    result_code TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)"""
+TASK_INTAKE_CURRENT_SCHEMA = TASK_INTAKE_LEGACY_SCHEMA.replace(
+    "status IN ('PENDING')", "status IN ('PENDING', 'ACKNOWLEDGED')"
+)
+TASK_INTAKE_HANDLING_SCHEMA = """CREATE TABLE task_intake_handlings (
+    intake_id TEXT PRIMARY KEY REFERENCES task_intake_requests(intake_id),
+    dispatch_id TEXT NOT NULL UNIQUE REFERENCES tasks(dispatch_id),
+    disposition TEXT NOT NULL CHECK (disposition IN ('DISPATCHED', 'BLOCKED')),
+    handled_at TEXT NOT NULL
+)"""
+TASK_INTAKE_REQUIRED_SCHEMA_COLUMNS = {
+    "task_intake_requests": frozenset((
+        "intake_id", "title", "objective", "context", "request_hash",
+        "status", "result_code", "idempotency_key", "created_at", "updated_at",
+    )),
+    "task_intake_handlings": frozenset((
+        "intake_id", "dispatch_id", "disposition", "handled_at",
+    )),
+}
 REQUIRED_SCHEMA_COLUMNS = {
     "tasks": frozenset((
         "dispatch_id", "schema_version", "title", "objective", "risk_level",
@@ -202,6 +264,7 @@ REQUIRED_SCHEMA_COLUMNS = {
         "confirmation_hash", "status", "result_code", "idempotency_key",
         "created_at", "updated_at",
     )),
+    **TASK_INTAKE_REQUIRED_SCHEMA_COLUMNS,
     "evidence": frozenset((
         "evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha",
         "created_at",
@@ -437,6 +500,8 @@ class ControlStore:
                     if statement:
                         connection.execute(statement)
                 self._migrate_reviews_schema(connection)
+                self._migrate_task_intake_schema(connection)
+                self._validate_task_intake_handling_schema(connection)
 
     def _migrate_reviews_schema(self, connection):
         columns = {
@@ -521,11 +586,123 @@ class ControlStore:
         connection.execute("DROP TABLE reviews")
         connection.execute("ALTER TABLE reviews_migrated RENAME TO reviews")
 
+    def _migrate_task_intake_schema(self, connection):
+        schema = connection.execute(
+            """SELECT sql FROM sqlite_master
+               WHERE type = 'table' AND name = 'task_intake_requests'"""
+        ).fetchone()
+        if schema is None:
+            raise ReconciliationError("task intake schema is missing after initialization")
+        residue = connection.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'task_intake_requests_migrated'"""
+        ).fetchone()
+        if residue is not None:
+            raise ReconciliationError("task intake migration residue is present")
+        self._validate_task_intake_schema_objects(connection)
+        normalized = self._normalized_schema_sql(schema["sql"])
+        if normalized == self._normalized_schema_sql(TASK_INTAKE_CURRENT_SCHEMA):
+            return
+        if normalized != self._normalized_schema_sql(TASK_INTAKE_LEGACY_SCHEMA):
+            raise SchemaUnsupportedError(
+                "task intake schema is not a supported legacy version"
+            )
+        rows = connection.execute(
+            "SELECT * FROM task_intake_requests"
+        ).fetchall()
+        if any(row["status"] != "PENDING" for row in rows):
+            raise ReconciliationError("legacy task intake status is unsupported")
+        connection.execute(
+            """CREATE TABLE task_intake_requests_migrated (
+                   intake_id TEXT PRIMARY KEY,
+                   title TEXT NOT NULL,
+                   objective TEXT NOT NULL,
+                   context TEXT,
+                   request_hash TEXT NOT NULL,
+                   status TEXT NOT NULL CHECK (
+                       status IN ('PENDING', 'ACKNOWLEDGED')
+                   ),
+                   result_code TEXT NOT NULL,
+                   idempotency_key TEXT NOT NULL UNIQUE,
+                   created_at TEXT NOT NULL,
+                   updated_at TEXT NOT NULL
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO task_intake_requests_migrated (
+                   intake_id, title, objective, context, request_hash, status,
+                   result_code, idempotency_key, created_at, updated_at
+               ) SELECT intake_id, title, objective, context, request_hash, status,
+                        result_code, idempotency_key, created_at, updated_at
+                 FROM task_intake_requests"""
+        )
+        connection.execute("DROP TABLE task_intake_requests")
+        connection.execute(
+            "ALTER TABLE task_intake_requests_migrated RENAME TO task_intake_requests"
+        )
+
+    def _validate_task_intake_handling_schema(self, connection):
+        schema = connection.execute(
+            """SELECT sql FROM sqlite_master
+               WHERE type = 'table' AND name = 'task_intake_handlings'"""
+        ).fetchone()
+        if schema is None:
+            raise ReconciliationError(
+                "task intake handling schema is missing after initialization"
+            )
+        if self._normalized_schema_sql(schema["sql"]) != self._normalized_schema_sql(
+            TASK_INTAKE_HANDLING_SCHEMA
+        ):
+            raise SchemaUnsupportedError(
+                "task intake handling schema is unsupported"
+            )
+
+    @staticmethod
+    def _validate_task_intake_schema_objects(connection):
+        extra_indexes = connection.execute(
+            """SELECT name FROM sqlite_master
+               WHERE type = 'index' AND sql IS NOT NULL
+                 AND tbl_name IN ('task_intake_requests', 'task_intake_handlings')"""
+        ).fetchall()
+        persistent_triggers = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' AND sql IS NOT NULL"
+        ).fetchall()
+        temporary_triggers = connection.execute(
+            "SELECT name FROM sqlite_temp_master WHERE type = 'trigger'"
+        ).fetchall()
+        if extra_indexes or persistent_triggers or temporary_triggers:
+            raise SchemaUnsupportedError(
+                "task intake schema has unsupported objects"
+            )
+
+    @staticmethod
+    def _normalized_schema_sql(value):
+        normalized = re.sub(r"\s+", " ", value).replace('"', "").strip()
+        normalized = re.sub(r"\(\s+", "(", normalized)
+        normalized = re.sub(r"\s+\)", ")", normalized)
+        return re.sub(r"\s*,\s*", ",", normalized)
+
+    @staticmethod
+    def _deny_database_attachment(action, argument1, argument2, database, source):
+        if action in (SQLITE_ATTACH_ACTION, SQLITE_DETACH_ACTION):
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    @classmethod
+    def _configure_connection(cls, connection):
+        connection.row_factory = sqlite3.Row
+        connection.set_authorizer(cls._deny_database_attachment)
+        return connection
+
     def _connect(self):
         connection = sqlite3.connect(str(self.path), timeout=5.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        try:
+            self._configure_connection(connection)
+            connection.execute("PRAGMA foreign_keys = ON")
+            return connection
+        except BaseException:
+            connection.close()
+            raise
 
     def _acquire_lock(self, lock_file):
         deadline = time.monotonic() + self.lock_timeout
@@ -592,7 +769,7 @@ class ControlStore:
         uri = self.path.resolve().as_uri() + "?mode=ro"
         connection = sqlite3.connect(uri, uri=True, timeout=2.0)
         try:
-            connection.row_factory = sqlite3.Row
+            self._configure_connection(connection)
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA query_only = ON")
             connection.execute("PRAGMA busy_timeout = 2000")
@@ -602,23 +779,26 @@ class ControlStore:
 
     def require_schema_compatible(self):
         with self.read_connection() as connection:
-            objects = {
-                row["name"]: row["type"]
-                for row in connection.execute(
-                    "SELECT name, type FROM sqlite_master "
-                    "WHERE name IN (%s)"
-                    % ", ".join("?" for _ in REQUIRED_SCHEMA_COLUMNS),
-                    tuple(REQUIRED_SCHEMA_COLUMNS),
-                )
+            self._require_schema_compatible_in_connection(connection)
+
+    def _require_schema_compatible_in_connection(self, connection):
+        objects = {
+            row["name"]: row["type"]
+            for row in connection.execute(
+                "SELECT name, type FROM sqlite_master "
+                "WHERE name IN (%s)"
+                % ", ".join("?" for _ in REQUIRED_SCHEMA_COLUMNS),
+                tuple(REQUIRED_SCHEMA_COLUMNS),
+            )
+        }
+        columns = {
+            table: {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(%s)" % table)
             }
-            columns = {
-                table: {
-                    row["name"]
-                    for row in connection.execute("PRAGMA table_info(%s)" % table)
-                }
-                for table, object_type in objects.items()
-                if object_type == "table"
-            }
+            for table, object_type in objects.items()
+            if object_type == "table"
+        }
         missing = sorted(set(REQUIRED_SCHEMA_COLUMNS) - set(objects))
         if missing:
             raise SchemaMigrationRequiredError(
@@ -646,6 +826,27 @@ class ControlStore:
             raise SchemaUnsupportedError(
                 "control database is missing required columns: %s" % details
             )
+        schemas = {
+            row["name"]: row["sql"]
+            for row in connection.execute(
+                "SELECT name, sql FROM sqlite_master WHERE name IN (?, ?)",
+                ("task_intake_requests", "task_intake_handlings"),
+            )
+        }
+        request_schema = self._normalized_schema_sql(
+            schemas["task_intake_requests"]
+        )
+        if request_schema == self._normalized_schema_sql(TASK_INTAKE_LEGACY_SCHEMA):
+            raise SchemaMigrationRequiredError(
+                "task intake schema requires initialization"
+            )
+        if request_schema != self._normalized_schema_sql(TASK_INTAKE_CURRENT_SCHEMA):
+            raise SchemaUnsupportedError("task intake schema is unsupported")
+        if self._normalized_schema_sql(schemas["task_intake_handlings"]) != (
+            self._normalized_schema_sql(TASK_INTAKE_HANDLING_SCHEMA)
+        ):
+            raise SchemaUnsupportedError("task intake handling schema is unsupported")
+        self._validate_task_intake_schema_objects(connection)
 
     def create_task(self, record):
         validate_record("task", record)
@@ -1040,6 +1241,224 @@ class ControlStore:
                 (limit,),
             ).fetchall()
         return [self._intent_from_row(row) for row in rows]
+
+    @staticmethod
+    def _task_intake_from_row(row):
+        if row is None:
+            return None
+        if row["status"] not in TASK_INTAKE_STATUSES:
+            raise ReconciliationError("stored task intake status is invalid")
+        return {
+            "intake_id": row["intake_id"],
+            "title": row["title"],
+            "objective": row["objective"],
+            "context": row["context"],
+            "request_hash": row["request_hash"],
+            "status": row["status"],
+            "result_code": row["result_code"],
+            "idempotency_key": row["idempotency_key"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _validate_task_intake_fields(
+        title, objective, context, request_hash, idempotency_key,
+    ):
+        for value, label, maximum in (
+            (title, "task intake title", 120),
+            (objective, "task intake objective", 2000),
+        ):
+            validate_task_intake_text(value, label, maximum)
+        validate_task_intake_text(
+            context, "task intake context", 2000, allow_none=True,
+        )
+        if not isinstance(request_hash, str) or HASH_RE.fullmatch(request_hash) is None:
+            raise ContractError("task intake request hash is invalid")
+        if not isinstance(idempotency_key, str) or UUID_RE.fullmatch(idempotency_key) is None:
+            raise ContractError("task intake idempotency key is invalid")
+
+    def create_task_intake(
+        self, title, objective, context, request_hash, idempotency_key,
+    ):
+        self._validate_task_intake_fields(
+            title, objective, context, request_hash, idempotency_key,
+        )
+        with self.mutation() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            existing = connection.execute(
+                "SELECT * FROM task_intake_requests WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            identity = {
+                "title": title,
+                "objective": objective,
+                "context": context,
+                "request_hash": request_hash,
+            }
+            if existing is not None:
+                if all(existing[field] == value for field, value in identity.items()):
+                    return self._task_intake_from_row(existing)
+                raise ReconciliationError(
+                    "task intake idempotency key was used for another request"
+                )
+            intake_count = connection.execute(
+                "SELECT COUNT(*) FROM task_intake_requests WHERE status = 'PENDING'"
+            ).fetchone()[0]
+            if intake_count >= MAX_TASK_INTAKE_RECORDS:
+                raise ContractError("task intake inbox capacity is reached")
+            now = utc_now()
+            intake_id = str(uuid.uuid4())
+            try:
+                connection.execute(
+                    """INSERT INTO task_intake_requests (
+                           intake_id, title, objective, context, request_hash,
+                           status, result_code, idempotency_key, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, 'PENDING', 'PENDING', ?, ?, ?)""",
+                    (
+                        intake_id, title, objective, context, request_hash,
+                        idempotency_key, now, now,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                existing = connection.execute(
+                    "SELECT * FROM task_intake_requests WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+                if existing is not None and all(
+                    existing[field] == value for field, value in identity.items()
+                ):
+                    return self._task_intake_from_row(existing)
+                raise ReconciliationError(
+                    "task intake idempotency key was used for another request"
+                ) from error
+            row = connection.execute(
+                "SELECT * FROM task_intake_requests WHERE intake_id = ?", (intake_id,)
+            ).fetchone()
+            return self._task_intake_from_row(row)
+
+    @staticmethod
+    def _validate_task_intake_pagination(limit, offset, label):
+        if type(limit) is not int or not 1 <= limit <= MAX_PENDING_INTENT_BATCH:
+            raise ContractError("%s limit must be an integer from 1 to 25" % label)
+        if type(offset) is not int or not 0 <= offset <= MAX_TASK_INTAKE_LIST_OFFSET:
+            raise ContractError("%s offset must be an integer from 0 to 10000" % label)
+
+    def list_pending_task_intakes(self, limit, offset=0):
+        self._validate_task_intake_pagination(limit, offset, "pending task intake")
+        with self.read_connection() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            rows = connection.execute(
+                """SELECT * FROM task_intake_requests WHERE status = 'PENDING'
+                   ORDER BY created_at, intake_id LIMIT ? OFFSET ?""",
+                (limit, offset),
+            ).fetchall()
+        return [self._task_intake_from_row(row) for row in rows]
+
+    def get_task_intake(self, intake_id):
+        if not isinstance(intake_id, str) or UUID_RE.fullmatch(intake_id) is None:
+            raise ContractError("task intake ID is invalid")
+        with self.read_connection() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            row = connection.execute(
+                "SELECT * FROM task_intake_requests WHERE intake_id = ?", (intake_id,)
+            ).fetchone()
+        return self._task_intake_from_row(row)
+
+    def list_task_intakes(self, limit, offset=0):
+        self._validate_task_intake_pagination(limit, offset, "task intake")
+        with self.read_connection() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            rows = connection.execute(
+                """SELECT * FROM task_intake_requests
+                   ORDER BY created_at, intake_id LIMIT ? OFFSET ?""",
+                (limit, offset),
+            ).fetchall()
+        return [self._task_intake_from_row(row) for row in rows]
+
+    def get_task_intake_handling(self, intake_id):
+        if not isinstance(intake_id, str) or UUID_RE.fullmatch(intake_id) is None:
+            raise ContractError("task intake ID is invalid")
+        with self.read_connection() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            row = connection.execute(
+                "SELECT * FROM task_intake_handlings WHERE intake_id = ?", (intake_id,)
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def acknowledge_task_intake(self, intake_id, dispatch_id, disposition="DISPATCHED"):
+        if not isinstance(intake_id, str) or UUID_RE.fullmatch(intake_id) is None:
+            raise ContractError("task intake ID is invalid")
+        if not isinstance(dispatch_id, str) or DISPATCH_RE.fullmatch(dispatch_id) is None:
+            raise ContractError("task intake handling dispatch ID is invalid")
+        if disposition not in ("DISPATCHED", "BLOCKED"):
+            raise ContractError("task intake handling disposition is invalid")
+        with self._control_lock():
+            with self._transaction() as connection:
+                self._require_schema_compatible_in_connection(connection)
+                row = connection.execute(
+                    "SELECT * FROM task_intake_requests WHERE intake_id = ?",
+                    (intake_id,),
+                ).fetchone()
+                current = self._task_intake_from_row(row)
+                if current is None:
+                    raise KeyError(intake_id)
+                if current["status"] == "ACKNOWLEDGED":
+                    handling = connection.execute(
+                        "SELECT * FROM task_intake_handlings WHERE intake_id = ?", (intake_id,)
+                    ).fetchone()
+                    if (
+                        handling is None
+                        or handling["dispatch_id"] != dispatch_id
+                        or handling["disposition"] != disposition
+                    ):
+                        raise ContractError("task intake is already handled by another record")
+                    return current
+                task = connection.execute(
+                    "SELECT dispatch_id FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
+                ).fetchone()
+                if task is None:
+                    raise ContractError("task intake handling requires an existing dispatch")
+                if disposition == "BLOCKED":
+                    blocker = connection.execute(
+                        """SELECT 1 FROM blockers
+                           WHERE dispatch_id = ? AND status = 'OPEN' LIMIT 1""",
+                        (dispatch_id,),
+                    ).fetchone()
+                    if blocker is None:
+                        raise ContractError("blocked task intake requires an open blocker")
+                now = utc_now()
+                existing_dispatch = connection.execute(
+                    "SELECT intake_id FROM task_intake_handlings WHERE dispatch_id = ?",
+                    (dispatch_id,),
+                ).fetchone()
+                if existing_dispatch is not None:
+                    raise ContractError("task intake dispatch is already bound")
+                try:
+                    connection.execute(
+                        """INSERT INTO task_intake_handlings (
+                               intake_id, dispatch_id, disposition, handled_at
+                           ) VALUES (?, ?, ?, ?)""",
+                        (intake_id, dispatch_id, disposition, now),
+                    )
+                except sqlite3.IntegrityError as error:
+                    raise ContractError(
+                        "task intake dispatch is already bound"
+                    ) from error
+                cursor = connection.execute(
+                    """UPDATE task_intake_requests
+                       SET status = 'ACKNOWLEDGED', result_code = ?,
+                           updated_at = ?
+                       WHERE intake_id = ? AND status = 'PENDING'""",
+                    (disposition, now, intake_id),
+                )
+                if cursor.rowcount != 1:
+                    raise ReconciliationError("task intake acknowledgement lost its guard")
+                updated = connection.execute(
+                    "SELECT * FROM task_intake_requests WHERE intake_id = ?",
+                    (intake_id,),
+                ).fetchone()
+                return self._task_intake_from_row(updated)
 
     @staticmethod
     def _operation_from_row(row):

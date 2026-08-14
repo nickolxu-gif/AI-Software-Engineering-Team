@@ -10,16 +10,17 @@ JS = ROOT / "apps" / "dashboard" / "app.js"
 
 
 class DashboardUiContractTests(unittest.TestCase):
-    def test_five_views_and_readonly_status_exist(self):
+    def test_five_views_and_controlled_request_status_exist(self):
         html = HTML.read_text(encoding="utf-8")
-        for label in ("总览", "任务", "Agents", "审批", "证据", "只读"):
+        for label in ("总览", "任务", "Agents", "审批", "证据", "受控意图"):
             self.assertIn(label, html)
         for landmark in ("<nav", "<main", "aria-live", "aria-current"):
             self.assertIn(landmark, html)
 
-    def test_javascript_uses_get_only(self):
+    def test_javascript_only_uses_bounded_post_routes(self):
         javascript = JS.read_text(encoding="utf-8")
-        self.assertNotRegex(javascript, r"\b(POST|PUT|PATCH|DELETE)\b")
+        self.assertIn("method: 'POST'", javascript)
+        self.assertNotRegex(javascript, r"\b(PUT|PATCH|DELETE)\b")
         self.assertNotIn("localStorage", javascript)
         self.assertNotIn("sessionStorage", javascript)
         self.assertIn("fetch(url, { method: 'GET'", javascript)
@@ -34,13 +35,23 @@ class DashboardUiContractTests(unittest.TestCase):
         self.assertIn(":focus-visible", css)
         self.assertRegex(css, r"@media\s*\(max-width:\s*1024px\)")
 
-    def test_ui_has_no_action_forms_or_inline_handlers(self):
+    def test_ui_has_no_static_action_forms_or_inline_handlers(self):
         html = HTML.read_text(encoding="utf-8")
         javascript = JS.read_text(encoding="utf-8")
         self.assertNotIn("<form", html.lower())
         self.assertNotRegex(html, r"\son[a-z]+=")
         self.assertIn("请回到 Codex 处理", javascript)
         self.assertIn("escapeHtml", javascript)
+
+    def test_ui_exposes_task_intake_without_execution_controls(self):
+        javascript = JS.read_text(encoding="utf-8")
+        self.assertIn("/api/task-intakes", javascript)
+        self.assertIn("提交新工程需求", javascript)
+        self.assertIn("等待下一次工程会话处理", javascript)
+        for forbidden in (
+            "process-pending-intents", "process-intent", "git merge", "git push", "nonce",
+        ):
+            self.assertNotIn(forbidden, javascript)
 
     def test_task_detail_uses_events_and_rebinds_fresh_snapshot(self):
         javascript = JS.read_text(encoding="utf-8")

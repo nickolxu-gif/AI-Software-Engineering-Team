@@ -50,6 +50,12 @@ h2 { margin: 0 0 14px; font-size: 17px; }
 .intent-controls { display: flex; flex-wrap: wrap; gap: 8px; }
 .intent-controls button { padding: 8px 12px; border: 1px solid #43856f; border-radius: 7px; color: white; background: #27725c; cursor: pointer; }
 .intent-controls button:disabled { border-color: var(--border); color: #848a87; background: #e5e8e6; cursor: not-allowed; }
+.task-intake { margin-top: 16px; }
+.task-intake label { display: block; margin: 10px 0; color: var(--muted); font-size: 13px; }
+.task-intake input, .task-intake textarea { display: block; width: 100%; margin-top: 4px; padding: 8px 9px; border: 1px solid var(--border); border-radius: 7px; color: var(--ink); background: var(--panel); font: inherit; }
+.task-intake textarea { min-height: 82px; resize: vertical; }
+.task-intake button { padding: 8px 12px; border: 1px solid #43856f; border-radius: 7px; color: white; background: #27725c; cursor: pointer; }
+.task-intake button:disabled { border-color: var(--border); color: #848a87; background: #e5e8e6; cursor: not-allowed; }
 .timeline { margin: 0; padding-left: 24px; }
 .timeline li { padding: 7px 4px; }
 #status-region { position: fixed; right: 18px; bottom: 16px; max-width: 420px; padding: 9px 13px; color: white; background: #26332f; border-radius: 8px; font-size: 12px; }

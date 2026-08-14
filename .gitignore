@@ -42,3 +42,6 @@ venv/
 .env
 .env.*
 !.env.example
+
+# Local immutable V4 review packets and sanitized receipts
+/.review-evidence/

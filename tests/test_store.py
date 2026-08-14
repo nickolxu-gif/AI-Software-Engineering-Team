@@ -38,6 +38,13 @@ EXPECTED_COLUMNS = {
         "confirmation_hash", "status", "result_code", "idempotency_key",
         "created_at", "updated_at",
     ),
+    "task_intake_requests": (
+        "intake_id", "title", "objective", "context", "request_hash",
+        "status", "result_code", "idempotency_key", "created_at", "updated_at",
+    ),
+    "task_intake_handlings": (
+        "intake_id", "dispatch_id", "disposition", "handled_at",
+    ),
     "evidence": (
         "evidence_id", "dispatch_id", "kind", "path", "sha256", "source_sha",
         "created_at",
@@ -62,6 +69,8 @@ EXPECTED_PRIMARY_KEYS = {
     "approvals": {"approval_id": 1},
     "operations": {"operation_id": 1},
     "intents": {"intent_id": 1},
+    "task_intake_requests": {"intake_id": 1},
+    "task_intake_handlings": {"intake_id": 1},
     "evidence": {"evidence_id": 1},
     "agents": {"dispatch_id": 1, "agent_id": 2},
     "reviews": {"review_id": 1},
@@ -74,6 +83,8 @@ EXPECTED_NULLABLE = {
     "approvals": {"consumed_at"},
     "operations": {"result_json"},
     "intents": {"confirmation_hash"},
+    "task_intake_requests": {"context"},
+    "task_intake_handlings": set(),
     "evidence": {"source_sha"},
     "agents": {"model"},
     "reviews": set(),
@@ -182,7 +193,9 @@ class StoreTests(unittest.TestCase):
                         }
                         self.assertEqual(nullable, EXPECTED_NULLABLE[table])
 
-                for table in set(EXPECTED_COLUMNS) - {"tasks"}:
+                for table in set(EXPECTED_COLUMNS) - {
+                    "tasks", "task_intake_requests", "task_intake_handlings",
+                }:
                     with self.subTest(foreign_key_table=table):
                         foreign_keys = connection.execute(
                             "PRAGMA foreign_key_list(%s)" % table
@@ -194,7 +207,18 @@ class StoreTests(unittest.TestCase):
                             ("tasks", "dispatch_id", "dispatch_id"),
                         )
 
-                for table in ("approvals", "operations", "intents"):
+                handling_keys = connection.execute(
+                    "PRAGMA foreign_key_list(task_intake_handlings)"
+                ).fetchall()
+                self.assertEqual(
+                    {(row["table"], row["from"], row["to"]) for row in handling_keys},
+                    {
+                        ("task_intake_requests", "intake_id", "intake_id"),
+                        ("tasks", "dispatch_id", "dispatch_id"),
+                    },
+                )
+
+                for table in ("approvals", "operations", "intents", "task_intake_requests"):
                     unique_columns = set()
                     for index in connection.execute(
                         "PRAGMA index_list(%s)" % table
@@ -340,6 +364,36 @@ class StoreTests(unittest.TestCase):
             with self.assertRaises(sqlite3.ProgrammingError):
                 connection.execute("SELECT 1")
 
+    def test_control_store_connections_deny_attach_and_detach(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+
+            for connection_context in (store.mutation, store.read_connection):
+                with self.subTest(connection=connection_context.__name__):
+                    with connection_context() as connection:
+                        with self.assertRaisesRegex(sqlite3.DatabaseError, "not authorized"):
+                            connection.execute("ATTACH DATABASE ':memory:' AS outside")
+                        with self.assertRaisesRegex(sqlite3.DatabaseError, "not authorized"):
+                            connection.execute("DETACH DATABASE main")
+
+    def test_authorizer_action_codes_have_sqlite_stable_fallbacks(self):
+        missing_sqlite_module = object()
+        self.assertEqual(
+            store_module._sqlite_authorizer_action(
+                "SQLITE_ATTACH", 24, missing_sqlite_module
+            ),
+            24,
+        )
+        self.assertEqual(
+            store_module._sqlite_authorizer_action(
+                "SQLITE_DETACH", 25, missing_sqlite_module
+            ),
+            25,
+        )
+        self.assertEqual(store_module.SQLITE_ATTACH_ACTION, 24)
+        self.assertEqual(store_module.SQLITE_DETACH_ACTION, 25)
+
     def test_read_connection_is_query_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = make_repo(Path(tmp) / "repo")
@@ -367,7 +421,7 @@ class StoreTests(unittest.TestCase):
                     2000,
                 )
 
-    def test_read_connection_closes_when_setup_fails(self):
+    def test_read_connection_closes_when_pragma_setup_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             store, _ = self.make_store(Path(tmp))
             store.initialize()
@@ -385,6 +439,39 @@ class StoreTests(unittest.TestCase):
                     sqlite3.OperationalError,
                     "pragma failed",
                 ):
+                    with store.read_connection():
+                        self.fail("setup failure unexpectedly yielded")
+
+            connection.close.assert_called_once_with()
+
+    def test_store_connect_closes_when_authorizer_setup_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            connection = mock.Mock()
+            connection.set_authorizer.side_effect = RuntimeError("authorizer failed")
+
+            with mock.patch.object(
+                store_module.sqlite3,
+                "connect",
+                return_value=connection,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "authorizer failed"):
+                    store._connect()
+
+            connection.close.assert_called_once_with()
+
+    def test_read_connection_closes_when_authorizer_setup_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            connection = mock.Mock()
+            connection.set_authorizer.side_effect = RuntimeError("authorizer failed")
+
+            with mock.patch.object(
+                store_module.sqlite3,
+                "connect",
+                return_value=connection,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "authorizer failed"):
                     with store.read_connection():
                         self.fail("setup failure unexpectedly yielded")
 

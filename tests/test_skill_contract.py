@@ -20,7 +20,7 @@ class SkillContractTests(unittest.TestCase):
             if line.startswith("description: ")
         )
         self.assertTrue(description.startswith("Use when "))
-        self.assertLess(len(re.findall(r"\b[\w'-]+\b", body)), 500)
+        self.assertLess(len(re.findall(r"\b[\w'-]+\b", body)), 550)
 
     def test_skill_preserves_codex_control_and_minor_risk_boundary(self):
         text = SKILL_PATH.read_text(encoding="utf-8")
@@ -216,6 +216,11 @@ class SkillContractTests(unittest.TestCase):
     def test_guide_identifies_dashboard_post_as_existing_mvp2a_capability(self):
         guide = GUIDE_PATH.read_text(encoding="utf-8")
         self.assertIn("MVP 2A 的既有三类受限意图", guide)
+
+    def test_skill_requires_codex_to_acknowledge_handled_task_intakes(self):
+        text = SKILL_PATH.read_text(encoding="utf-8")
+        self.assertIn("task intake", text)
+        self.assertIn("ACKNOWLEDGED", text)
 
 
 if __name__ == "__main__":

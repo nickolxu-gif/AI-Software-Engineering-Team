@@ -94,6 +94,23 @@ class DashboardServerTests(unittest.TestCase):
                 digest.update(candidate.read_bytes())
         return digest.hexdigest()
 
+    def session_token(self):
+        origin = "http://127.0.0.1:%d" % self.port
+        response, payload, body = self.request(
+            "GET", "/api/session", headers={"Origin": origin}
+        )
+        self.assertEqual(response.status, 200)
+        return payload["data"]["intent_token"]
+
+    @staticmethod
+    def task_intake_request():
+        return {
+            "title": "Create a task request",
+            "objective": "Let Codex prepare a seven-question dispatch",
+            "context": "No browser Git execution",
+            "idempotency_key": "123e4567-e89b-12d3-a456-426614174999",
+        }
+
     def raw_request(self, request):
         connection = socket.create_connection(("127.0.0.1", self.port), timeout=5)
         try:
@@ -132,6 +149,30 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(response.status, 503)
         self.assertEqual(payload["error"]["code"], "SCHEMA_MIGRATION_REQUIRED")
 
+    def test_health_reports_schema_migration_required_for_missing_task_intake_table(self):
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_requests")
+        response, payload, body = self.request("GET", "/api/health")
+        self.assertEqual(response.status, 503)
+        self.assertEqual(payload["error"]["code"], "SCHEMA_MIGRATION_REQUIRED")
+
+    def test_health_reports_schema_migration_required_for_missing_task_intake_handling_table(self):
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_handlings")
+        response, payload, body = self.request("GET", "/api/health")
+        self.assertEqual(response.status, 503)
+        self.assertEqual(payload["error"]["code"], "SCHEMA_MIGRATION_REQUIRED")
+
+    def test_health_reports_schema_unsupported_for_incompatible_task_intake_handling_table(self):
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_handlings")
+            connection.execute(
+                "CREATE TABLE task_intake_handlings (intake_id TEXT PRIMARY KEY)"
+            )
+        response, payload, body = self.request("GET", "/api/health")
+        self.assertEqual(response.status, 503)
+        self.assertEqual(payload["error"]["code"], "SCHEMA_UNSUPPORTED")
+
     def test_business_write_methods_are_rejected_without_side_effects(self):
         before = self.database_digest()
         for method in ("POST", "PUT", "PATCH", "DELETE"):
@@ -151,8 +192,10 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("受控意图", page)
         self.assertIn("/api/session", app)
         self.assertIn("/api/intents", app)
+        self.assertIn("/api/task-intakes", app)
         self.assertIn("method: 'POST'", app)
         self.assertIn("待处理意图", app)
+        self.assertIn("提交新工程需求", app)
         for action in ("PAUSE_REQUEST", "RESUME_REQUEST", "APPROVAL_REQUEST"):
             self.assertIn(action, app)
         for forbidden in (
@@ -195,6 +238,125 @@ class DashboardServerTests(unittest.TestCase):
             "result_code", "created_at", "updated_at",
         })
         self.assertNotIn("confirmation", body.decode("utf-8"))
+
+    def test_task_intake_requires_token_and_returns_safe_summary(self):
+        request = self.task_intake_request()
+        before = self.database_digest()
+        response, payload, body = self.request_json(
+            "POST", "/api/task-intakes", request
+        )
+        self.assertEqual(response.status, 403)
+        self.assertEqual(payload["error"]["code"], "TOKEN_REJECTED")
+        self.assertEqual(self.database_digest(), before)
+
+        response, payload, body = self.request_json(
+            "POST", "/api/task-intakes", request,
+            headers={"X-Team-Intent-Token": self.session_token()},
+        )
+        self.assertEqual(response.status, 202)
+        self.assertEqual(set(payload["data"]), {
+            "intake_id", "title", "objective", "status", "result_code",
+            "created_at", "updated_at",
+        })
+        self.assertEqual(payload["data"]["status"], "PENDING")
+        self.assertNotIn("context", body.decode("utf-8"))
+        self.assertNotIn("request_hash", body.decode("utf-8"))
+        response, project, body = self.request("GET", "/api/project")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(project["data"]["counts"]["pending_task_intakes"], 1)
+
+    def test_task_intake_wrong_origin_has_no_side_effect(self):
+        before = self.database_digest()
+        response, payload, body = self.request_json(
+            "POST", "/api/task-intakes", self.task_intake_request(),
+            headers={"Origin": "https://example.invalid"},
+        )
+        self.assertEqual(response.status, 403)
+        self.assertEqual(payload["error"]["code"], "ORIGIN_REJECTED")
+        self.assertEqual(self.database_digest(), before)
+
+    def test_dashboard_has_no_task_intake_acknowledgement_route(self):
+        request = self.task_intake_request()
+        response, payload, body = self.request_json(
+            "POST", "/api/task-intakes", request,
+            headers={"X-Team-Intent-Token": self.session_token()},
+        )
+        self.assertEqual(response.status, 202)
+        before = self.database_digest()
+        response, payload, body = self.request_json(
+            "POST", "/api/task-intakes/%s/acknowledge" % payload["data"]["intake_id"],
+            request, headers={"X-Team-Intent-Token": self.session_token()},
+        )
+        self.assertEqual(response.status, 405)
+        self.assertEqual(payload["error"]["code"], "READ_ONLY")
+        self.assertEqual(self.database_digest(), before)
+
+    def test_task_intake_rejects_wrong_content_type_and_oversized_body(self):
+        origin = "http://127.0.0.1:%d" % self.port
+        token = self.session_token()
+        before = self.database_digest()
+        response, payload, body = self.request(
+            "POST", "/api/task-intakes",
+            headers={"Origin": origin, "X-Team-Intent-Token": token},
+        )
+        self.assertEqual(response.status, 415)
+        self.assertEqual(payload["error"]["code"], "CONTENT_TYPE_REJECTED")
+        self.assertEqual(self.database_digest(), before)
+
+        oversized_length = 8193
+        status, headers, body = self.raw_request(
+            (
+                "POST /api/task-intakes HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n"
+                "Origin: %s\r\nContent-Type: application/json\r\n"
+                "X-Team-Intent-Token: %s\r\nContent-Length: %d\r\n\r\n"
+                % (self.port, origin, token, oversized_length)
+            ).encode("ascii")
+        )
+        self.assertEqual(status, 413)
+        self.assertIn(b"BODY_TOO_LARGE", body)
+        self.assertEqual(self.database_digest(), before)
+
+    def test_task_intake_reports_schema_migration_required_without_side_effect(self):
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_handlings")
+        before = self.database_digest()
+        response, payload, body = self.request_json(
+            "POST", "/api/task-intakes", self.task_intake_request(),
+            headers={"X-Team-Intent-Token": self.session_token()},
+        )
+        self.assertEqual(response.status, 503)
+        self.assertEqual(payload["error"]["code"], "SCHEMA_MIGRATION_REQUIRED")
+        self.assertEqual(self.database_digest(), before)
+
+    def test_task_intake_reports_schema_unsupported_without_side_effect(self):
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_handlings")
+            connection.execute(
+                "CREATE TABLE task_intake_handlings (intake_id TEXT PRIMARY KEY)"
+            )
+        before = self.database_digest()
+        response, payload, body = self.request_json(
+            "POST", "/api/task-intakes", self.task_intake_request(),
+            headers={"X-Team-Intent-Token": self.session_token()},
+        )
+        self.assertEqual(response.status, 503)
+        self.assertEqual(payload["error"]["code"], "SCHEMA_UNSUPPORTED")
+        self.assertEqual(self.database_digest(), before)
+
+    def test_health_rejects_task_intake_request_schema_missing_private_columns(self):
+        with self.store.mutation() as connection:
+            connection.execute("DROP TABLE task_intake_requests")
+            connection.execute(
+                """CREATE TABLE task_intake_requests (
+                       intake_id TEXT PRIMARY KEY, title TEXT NOT NULL,
+                       objective TEXT NOT NULL, status TEXT NOT NULL,
+                       result_code TEXT NOT NULL, created_at TEXT NOT NULL,
+                       updated_at TEXT NOT NULL
+                   )"""
+            )
+        response, payload, body = self.request("GET", "/api/health")
+        self.assertEqual(response.status, 503)
+        self.assertEqual(payload["error"]["code"], "SCHEMA_UNSUPPORTED")
 
     def test_intent_submission_rejects_oversized_or_malformed_requests(self):
         origin = "http://127.0.0.1:%d" % self.port
