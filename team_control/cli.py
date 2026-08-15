@@ -274,6 +274,11 @@ def main(argv=None):
         try:
             args = build_parser().parse_args(arguments)
         except ContractError as error:
+            command, _ = _argv_command_scope(arguments)
+            if command in COMMANDS:
+                raise ContractError(
+                    "invalid %s command arguments" % command
+                ) from error
             raise ContractError("invalid command arguments") from error
         result = execute(args)
         emit(result)

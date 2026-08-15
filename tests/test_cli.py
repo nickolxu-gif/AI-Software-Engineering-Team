@@ -643,6 +643,14 @@ class CliTests(unittest.TestCase):
                         assert_single_json_line(self, result, "stderr")["error"]["code"],
                         "CONTRACT_ERROR",
                     )
+                    self.assertEqual(
+                        assert_single_json_line(self, result, "stderr")["error"]["message"],
+                        (
+                            "invalid status command arguments"
+                            if arguments[0] == "status"
+                            else "invalid command arguments"
+                        ),
+                    )
                     self.assertNotIn(private_value, result.stderr)
 
     def test_projects_help_does_not_treat_an_option_value_as_a_subcommand(self):

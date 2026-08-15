@@ -74,6 +74,22 @@ PROJECT_REGISTRY_LEGACY_SCHEMA = """CREATE TABLE project_registry (
     updated_at TEXT NOT NULL,
     retired_at TEXT
 )"""
+PROJECT_REGISTRY_MIGRATED_SCHEMA = """CREATE TABLE project_registry_migrated (
+    project_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    root_path TEXT NOT NULL,
+    common_dir_path TEXT NOT NULL,
+    root_device INTEGER NOT NULL,
+    root_inode INTEGER NOT NULL,
+    root_mode INTEGER NOT NULL,
+    common_dir_device INTEGER NOT NULL,
+    common_dir_inode INTEGER NOT NULL,
+    common_dir_mode INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RETIRED')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    retired_at TEXT
+)"""
 PROJECT_REGISTRY_INDEXES = {
     "project_registry_active_display_name": (
         "CREATE UNIQUE INDEX project_registry_active_display_name "
@@ -101,6 +117,14 @@ PROJECT_REGISTRY_INDEXES = {
 PROJECT_REGISTRY_EVENTS_SCHEMA = """CREATE TABLE project_registry_events (
     event_id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES project_registry(project_id),
+    event_type TEXT NOT NULL CHECK (
+        event_type IN ('PROJECT_REGISTERED', 'PROJECT_RETIRED')
+    ),
+    created_at TEXT NOT NULL
+)"""
+PROJECT_REGISTRY_EVENTS_MIGRATED_SCHEMA = """CREATE TABLE project_registry_events_migrated (
+    event_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES project_registry_migrated(project_id),
     event_type TEXT NOT NULL CHECK (
         event_type IN ('PROJECT_REGISTERED', 'PROJECT_RETIRED')
     ),
@@ -782,15 +806,19 @@ class ControlStore:
             raise SchemaUnsupportedError(
                 "project registry schema has unsupported objects"
             )
-        index_names = {
-            row["name"]
+        indexes = {
+            row["name"]: row["sql"]
             for row in connection.execute(
-                """SELECT name FROM sqlite_master
+                """SELECT name, sql FROM sqlite_master
                    WHERE type = 'index' AND sql IS NOT NULL
                      AND tbl_name IN ('project_registry', 'project_registry_events')"""
             )
         }
-        if index_names != set(PROJECT_REGISTRY_INDEXES):
+        if set(indexes) != set(PROJECT_REGISTRY_INDEXES) or any(
+            self._normalized_schema_sql(indexes[name])
+            != self._normalized_schema_sql(expected)
+            for name, expected in PROJECT_REGISTRY_INDEXES.items()
+        ):
             raise SchemaUnsupportedError(
                 "project registry schema has unsupported objects"
             )
@@ -798,24 +826,18 @@ class ControlStore:
         events = connection.execute(
             "SELECT * FROM project_registry_events"
         ).fetchall()
-        connection.execute(
-            PROJECT_REGISTRY_SCHEMA.replace(
-                "CREATE TABLE project_registry",
-                "CREATE TABLE project_registry_migrated",
-                1,
+        connection.execute(PROJECT_REGISTRY_MIGRATED_SCHEMA)
+        connection.execute(PROJECT_REGISTRY_EVENTS_MIGRATED_SCHEMA)
+        migrated_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(project_registry_events_migrated)"
+        ).fetchall()
+        if {
+            (row["table"], row["from"], row["to"])
+            for row in migrated_foreign_keys
+        } != {("project_registry_migrated", "project_id", "project_id")}:
+            raise ReconciliationError(
+                "project registry event migration foreign key is invalid"
             )
-        )
-        connection.execute(
-            PROJECT_REGISTRY_EVENTS_SCHEMA.replace(
-                "CREATE TABLE project_registry_events",
-                "CREATE TABLE project_registry_events_migrated",
-                1,
-            ).replace(
-                "REFERENCES project_registry(project_id)",
-                "REFERENCES project_registry_migrated(project_id)",
-                1,
-            )
-        )
         if entries:
             columns = (
                 "project_id", "display_name", "root_path", "common_dir_path",
@@ -874,20 +896,35 @@ class ControlStore:
             and self._normalized_schema_sql(rows["project_registry_events"])
             == self._normalized_schema_sql(PROJECT_REGISTRY_EVENTS_SCHEMA)
         ):
-            legacy_indexes = connection.execute(
-                """SELECT 1 FROM sqlite_master
+            legacy_indexes = {
+                row["name"]: row["sql"]
+                for row in connection.execute(
+                """SELECT name, sql FROM sqlite_master
                    WHERE type = 'index' AND sql IS NOT NULL
                      AND tbl_name IN ('project_registry', 'project_registry_events')"""
-            ).fetchone()
+                )
+            }
             legacy_triggers = connection.execute(
                 """SELECT 1 FROM sqlite_master
                    WHERE type = 'trigger'
                      AND tbl_name IN ('project_registry', 'project_registry_events')"""
             ).fetchone()
-            if legacy_indexes is not None or legacy_triggers is not None:
+            if legacy_triggers is not None:
                 raise SchemaUnsupportedError(
                     "project registry schema has unsupported objects"
                 )
+            if legacy_indexes:
+                if (
+                    set(legacy_indexes) != set(PROJECT_REGISTRY_INDEXES)
+                    or any(
+                        self._normalized_schema_sql(legacy_indexes[name])
+                        != self._normalized_schema_sql(expected)
+                        for name, expected in PROJECT_REGISTRY_INDEXES.items()
+                    )
+                ):
+                    raise SchemaUnsupportedError(
+                        "project registry schema has unsupported objects"
+                    )
             raise SchemaMigrationRequiredError(
                 "project registry schema migration is required; run init"
             )
@@ -1437,28 +1474,7 @@ class ControlStore:
             ).fetchone()
         return self._project_registry_entry_from_row(row)
 
-    def list_project_registry_events(self, project_id=None):
-        if project_id is not None:
-            self._validate_project_registry_project_id(project_id)
-        query = "SELECT project_id, event_type, created_at FROM project_registry_events"
-        parameters = []
-        if project_id is not None:
-            query += " WHERE project_id = ?"
-            parameters.append(project_id)
-        query += " ORDER BY created_at, event_id"
-        with self.read_connection() as connection:
-            self._require_schema_compatible_in_connection(connection)
-            rows = connection.execute(query, tuple(parameters)).fetchall()
-        return [
-            {
-                "event_type": row["event_type"],
-                "project_id": row["project_id"],
-                "created_at": row["created_at"],
-            }
-            for row in rows
-        ]
-
-    def list_project_registry_event_page(self, project_id=None, limit=20, cursor=None):
+    def list_project_registry_events(self, project_id=None, limit=20, cursor=None):
         if project_id is not None:
             self._validate_project_registry_project_id(project_id)
         self._validate_project_registry_limit(limit)
