@@ -1376,14 +1376,15 @@ class ControlStore:
             or not isinstance(cursor["created_at"], str)
             or len(cursor["created_at"]) > 64
             or RFC3339_RE.fullmatch(cursor["created_at"]) is None
+            or not isinstance(cursor[identifier_key], str)
             or UUID_RE.fullmatch(cursor[identifier_key]) is None
         ):
             raise ContractError("project registry cursor is invalid")
         try:
-            created_at = normalize_timestamp(cursor["created_at"])
+            normalize_timestamp(cursor["created_at"])
         except (IndexError, ValueError):
             raise ContractError("project registry cursor is invalid")
-        return created_at, str(uuid.UUID(cursor[identifier_key]))
+        return cursor["created_at"], str(uuid.UUID(cursor[identifier_key]))
 
     def create_project_registry_entry(
         self, project_id, display_name, root_path, common_dir_path,
@@ -1453,7 +1454,9 @@ class ControlStore:
             "entries"
         ]
 
-    def list_project_registry_entries_page(self, status=None, limit=20, cursor=None):
+    def list_project_registry_entries_page(
+        self, status=None, limit=MAX_PROJECT_REGISTRY_ENTRIES, cursor=None
+    ):
         if status is not None and status not in PROJECT_REGISTRY_STATUSES:
             raise ContractError("project registry status is invalid")
         self._validate_project_registry_limit(limit)

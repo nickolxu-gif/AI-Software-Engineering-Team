@@ -220,6 +220,15 @@ class ProjectRegistryTests(unittest.TestCase):
                 }
             )
 
+    def test_project_registry_cursor_rejects_non_string_identifier(self):
+        with self.assertRaises(ContractError):
+            self.store.list_project_registry_events(
+                cursor={
+                    "created_at": "2026-08-14T00:00:00+00:00",
+                    "event_id": 123,
+                }
+            )
+
     def test_project_registry_entry_listing_is_explicitly_paginated(self):
         for number in range(21):
             registered = self.registry.register(
@@ -238,6 +247,14 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertEqual(len(second["entries"]), 1)
         self.assertFalse(second["has_more"])
         self.assertIsNone(second["next_cursor"])
+
+        with self.assertRaises(ContractError):
+            self.store.list_project_registry_entries_page(
+                cursor={
+                    "created_at": "not-a-timestamp",
+                    "project_id": "123e4567-e89b-12d3-a456-426614174000",
+                }
+            )
 
     def test_register_rejects_a_supplied_symbolic_link_without_audit_event(self):
         link = self.root / "target-link"

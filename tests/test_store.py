@@ -461,6 +461,19 @@ class StoreTests(unittest.TestCase):
 
             with self.assertRaises(SchemaUnsupportedError):
                 store.initialize()
+            connection = sqlite3.connect(str(store.path))
+            try:
+                names = {
+                    row[0]
+                    for row in connection.execute(
+                        """SELECT name FROM sqlite_master
+                           WHERE type = 'table'
+                             AND name LIKE 'project_registry%'"""
+                    )
+                }
+            finally:
+                connection.close()
+            self.assertEqual(names, {"project_registry", "project_registry_events"})
 
     def test_initialize_is_idempotent_and_preserves_existing_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
