@@ -1094,7 +1094,6 @@ class ControlStore:
         """Provide one SQLite read-only snapshot and always release it by rollback."""
         with self.read_connection() as connection:
             connection.execute("BEGIN")
-            connection.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
             try:
                 yield connection
             except BaseException:
