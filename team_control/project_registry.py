@@ -140,9 +140,6 @@ class ProjectSnapshotReader:
             return False
         return str(root), root_identity, str(common_dir), common_dir_identity
 
-    def _identity_is_current(self):
-        return self._registered_identity_snapshot() is not False
-
     @staticmethod
     def _git_environment():
         return {
@@ -157,10 +154,17 @@ class ProjectSnapshotReader:
 
     def _head_sha(self):
         completed = subprocess.run(
-            [*READONLY_GIT_PREFIX, "rev-parse", "HEAD"],
+            [
+                *READONLY_GIT_PREFIX,
+                "--git-dir", self.entry["common_dir_path"],
+                "--work-tree", self.entry["root_path"],
+                "rev-parse", "HEAD",
+            ],
             cwd=self.entry["root_path"],
             check=False,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=GIT_TIMEOUT_SECONDS,
@@ -190,12 +194,21 @@ class ProjectSnapshotReader:
             getattr(sqlite3, "SQLITE_DROP_TABLE", 11),
             getattr(sqlite3, "SQLITE_DROP_TRIGGER", 16),
             getattr(sqlite3, "SQLITE_DROP_VIEW", 17),
+            getattr(sqlite3, "SQLITE_PRAGMA", 19),
+            getattr(sqlite3, "SQLITE_REINDEX", 27),
+            getattr(sqlite3, "SQLITE_ANALYZE", 28),
+            getattr(sqlite3, "SQLITE_CREATE_VTABLE", 29),
+            getattr(sqlite3, "SQLITE_DROP_VTABLE", 30),
+            getattr(sqlite3, "SQLITE_CREATE_TEMP_INDEX", 3),
+            getattr(sqlite3, "SQLITE_CREATE_TEMP_TABLE", 4),
+            getattr(sqlite3, "SQLITE_CREATE_TEMP_TRIGGER", 5),
+            getattr(sqlite3, "SQLITE_CREATE_TEMP_VIEW", 6),
+            getattr(sqlite3, "SQLITE_DROP_TEMP_INDEX", 12),
+            getattr(sqlite3, "SQLITE_DROP_TEMP_TABLE", 13),
+            getattr(sqlite3, "SQLITE_DROP_TEMP_TRIGGER", 14),
+            getattr(sqlite3, "SQLITE_DROP_TEMP_VIEW", 15),
         }
         return sqlite3.SQLITE_DENY if action in denied_actions else sqlite3.SQLITE_OK
-
-    @staticmethod
-    def _database_path(common_dir):
-        return Path(common_dir) / "team" / "runtime" / "team.db"
 
     @staticmethod
     def _regular_database(common_dir):
@@ -266,7 +279,19 @@ class ProjectSnapshotReader:
                 raise _UnsupportedTargetSchema()
 
     @staticmethod
-    def _task_summary(connection):
+    def _safe_timestamp(value):
+        if not isinstance(value, str) or not 20 <= len(value) <= 64:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return None
+        return parsed.isoformat()
+
+    @classmethod
+    def _task_summary(cls, connection):
         counts = {state: 0 for state in sorted(TASK_STATES)}
         placeholders = ", ".join("?" for _ in counts)
         rows = connection.execute(
@@ -276,14 +301,17 @@ class ProjectSnapshotReader:
         ).fetchall()
         for state, count in rows:
             counts[state] = count
-        latest = connection.execute("SELECT MAX(updated_at) FROM tasks").fetchone()[0]
-        return counts, latest
+        latest = connection.execute(
+            "SELECT MAX(updated_at) FROM tasks WHERE state IN (%s)" % placeholders,
+            tuple(counts),
+        ).fetchone()[0]
+        return counts, cls._safe_timestamp(latest)
 
     def _read_control_summary(self, database):
         connection = None
         try:
             connection = sqlite3.connect(
-                database.as_uri() + "?mode=ro",
+                database.as_uri() + "?mode=ro&immutable=1",
                 uri=True,
                 timeout=SQLITE_TIMEOUT_SECONDS,
             )
@@ -291,8 +319,8 @@ class ProjectSnapshotReader:
             connection.execute(
                 "PRAGMA busy_timeout = %d" % int(SQLITE_TIMEOUT_SECONDS * 1000)
             )
-            connection.set_authorizer(self._readonly_authorizer)
             self._validate_target_schema(connection)
+            connection.set_authorizer(self._readonly_authorizer)
             counts, latest = self._task_summary(connection)
             return "HEALTHY", counts, latest
         except _UnsupportedTargetSchema:
@@ -345,8 +373,7 @@ class ProjectSnapshotReader:
 class ProjectRegistryService:
     """Manage the central allowlist without mutating registered repositories."""
 
-    def __init__(self, context, store):
-        self.context = context
+    def __init__(self, _context, store):
         self.store = store
 
     @staticmethod

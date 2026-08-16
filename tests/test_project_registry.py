@@ -267,6 +267,13 @@ class ProjectRegistryTests(unittest.TestCase):
                 }
             )
 
+        for invalid_limit in (False, 0, -1, "20", 21):
+            with self.subTest(invalid_limit=invalid_limit):
+                with self.assertRaises(ContractError):
+                    self.store.list_project_registry_entries_page(
+                        limit=invalid_limit
+                    )
+
     def test_project_registry_event_cursor_rejects_unknown_valid_timestamp(self):
         with self.assertRaises(CursorStaleError) as error:
             self.store.list_project_registry_events(
@@ -276,6 +283,29 @@ class ProjectRegistryTests(unittest.TestCase):
                 }
             )
         self.assertEqual(error.exception.code, "CURSOR_STALE")
+
+    def test_project_registry_cursor_cannot_cross_entry_and_event_endpoints(self):
+        self.registry.register("Target", self.target_root)
+        entry = self.store.list_project_registry_entries_page(limit=1)["entries"][0]
+        event = self.store.list_project_registry_events(limit=1)["events"][0]
+        with self.store.read_connection() as connection:
+            event_id = connection.execute(
+                "SELECT event_id FROM project_registry_events LIMIT 1"
+            ).fetchone()[0]
+        with self.assertRaises(CursorStaleError):
+            self.store.list_project_registry_entries_page(
+                cursor={
+                    "created_at": event["created_at"],
+                    "project_id": event_id,
+                }
+            )
+        with self.assertRaises(CursorStaleError):
+            self.store.list_project_registry_events(
+                cursor={
+                    "created_at": entry["created_at"],
+                    "event_id": entry["project_id"],
+                }
+            )
 
     def test_register_rejects_a_supplied_symbolic_link_without_audit_event(self):
         link = self.root / "target-link"
@@ -533,9 +563,16 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertEqual(card["control_status"], "HEALTHY")
         self.assertEqual(
             [call.args[0] for call in observed.call_args_list],
-            [[*READONLY_GIT_PREFIX, "rev-parse", "HEAD"]],
+            [[
+                *READONLY_GIT_PREFIX,
+                "--git-dir", entry["common_dir_path"],
+                "--work-tree", entry["root_path"],
+                "rev-parse", "HEAD",
+            ]],
         )
         self.assertEqual(observed.call_args.kwargs["timeout"], 2.0)
+        self.assertEqual(observed.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(observed.call_args.kwargs["errors"], "replace")
         self.assertEqual(observed.call_args.kwargs["env"]["GIT_OPTIONAL_LOCKS"], "0")
         self.assertEqual(observed.call_args.kwargs["env"]["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(observed.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
@@ -584,6 +621,53 @@ class ProjectRegistryTests(unittest.TestCase):
             authorizer(getattr(sqlite3, "SQLITE_INSERT", 18), None, None, None, None),
             sqlite3.SQLITE_DENY,
         )
+        self.assertEqual(
+            authorizer(getattr(sqlite3, "SQLITE_PRAGMA", 19), None, None, None, None),
+            sqlite3.SQLITE_DENY,
+        )
+
+    def test_snapshot_reader_drops_an_untrusted_latest_task_timestamp(self):
+        database = self.make_compatible_target_database(self.target_root)
+        connection = sqlite3.connect(str(database))
+        try:
+            connection.execute(
+                "UPDATE tasks SET updated_at = ?", ("9999-12-31T99:99:99+00:00\\x01",)
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        card = ProjectSnapshotReader(self.registered_entry()).snapshot()
+
+        self.assertEqual(card["control_status"], "HEALTHY")
+        self.assertIsNone(card["latest_task_updated_at"])
+
+    def test_snapshot_reader_does_not_touch_wal_sidecars(self):
+        database = self.make_compatible_target_database(self.target_root)
+        writer = sqlite3.connect(str(database))
+        try:
+            journal_mode = writer.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+            if journal_mode.lower() != "wal":
+                self.skipTest("SQLite build does not support WAL fixtures")
+            writer.execute(
+                "UPDATE tasks SET updated_at = ?", ("2026-08-14T00:00:01+00:00",)
+            )
+            writer.commit()
+            entry = self.registered_entry()
+            tracked = [
+                database,
+                Path(str(database) + "-wal"),
+                Path(str(database) + "-shm"),
+            ]
+            before = {str(path): self.file_fingerprint(path) for path in tracked}
+
+            card = ProjectSnapshotReader(entry).snapshot()
+
+            after = {str(path): self.file_fingerprint(path) for path in tracked}
+            self.assertEqual(card["control_status"], "HEALTHY")
+            self.assertEqual(after, before)
+        finally:
+            writer.close()
 
     def test_snapshot_reader_does_not_modify_target_database_or_wal_sidecars(self):
         database = self.make_compatible_target_database(self.target_root)
