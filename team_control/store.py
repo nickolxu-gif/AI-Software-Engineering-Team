@@ -1474,7 +1474,29 @@ class ControlStore:
             ).fetchone()
         return self._project_registry_entry_from_row(row)
 
-    def list_project_registry_events(self, project_id=None, limit=20, cursor=None):
+    def list_project_registry_events(self, project_id=None):
+        """Return the complete event history for compatibility with the original API."""
+        if project_id is not None:
+            self._validate_project_registry_project_id(project_id)
+        query = "SELECT project_id, event_type, created_at FROM project_registry_events"
+        parameters = []
+        if project_id is not None:
+            query += " WHERE project_id = ?"
+            parameters.append(project_id)
+        query += " ORDER BY created_at, event_id"
+        with self.read_connection() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            rows = connection.execute(query, tuple(parameters)).fetchall()
+        return [
+            {
+                "event_type": row["event_type"],
+                "project_id": row["project_id"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def list_project_registry_event_page(self, project_id=None, limit=20, cursor=None):
         if project_id is not None:
             self._validate_project_registry_project_id(project_id)
         self._validate_project_registry_limit(limit)
