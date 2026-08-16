@@ -459,21 +459,27 @@ class StoreTests(unittest.TestCase):
             finally:
                 connection.close()
 
+            connection = sqlite3.connect(str(store.path))
+            try:
+                before = connection.execute(
+                    """SELECT type, name, tbl_name, sql FROM sqlite_master
+                       WHERE name NOT LIKE 'sqlite_%'
+                       ORDER BY type, name"""
+                ).fetchall()
+            finally:
+                connection.close()
             with self.assertRaises(SchemaUnsupportedError):
                 store.initialize()
             connection = sqlite3.connect(str(store.path))
             try:
-                names = {
-                    row[0]
-                    for row in connection.execute(
-                        """SELECT name FROM sqlite_master
-                           WHERE type = 'table'
-                             AND name LIKE 'project_registry%'"""
-                    )
-                }
+                after = connection.execute(
+                    """SELECT type, name, tbl_name, sql FROM sqlite_master
+                       WHERE name NOT LIKE 'sqlite_%'
+                       ORDER BY type, name"""
+                ).fetchall()
             finally:
                 connection.close()
-            self.assertEqual(names, {"project_registry", "project_registry_events"})
+            self.assertEqual(after, before)
 
     def test_initialize_is_idempotent_and_preserves_existing_rows(self):
         with tempfile.TemporaryDirectory() as tmp:

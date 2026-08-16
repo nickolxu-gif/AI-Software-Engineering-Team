@@ -1463,6 +1463,7 @@ class ControlStore:
         query = "SELECT * FROM project_registry"
         parameters = []
         conditions = []
+        cursor_values = None
         if status is not None:
             conditions.append("status = ?")
             parameters.append(status)
@@ -1470,6 +1471,7 @@ class ControlStore:
             created_at, project_id = self._validate_project_registry_cursor(
                 cursor, "project_id"
             )
+            cursor_values = (created_at, project_id)
             conditions.append(
                 "(created_at > ? OR (created_at = ? AND project_id > ?))"
             )
@@ -1480,6 +1482,17 @@ class ControlStore:
         parameters.append(limit + 1)
         with self.read_connection() as connection:
             self._require_schema_compatible_in_connection(connection)
+            if cursor_values is not None:
+                cursor_query = (
+                    "SELECT 1 FROM project_registry "
+                    "WHERE created_at = ? AND project_id = ?"
+                )
+                cursor_parameters = list(cursor_values)
+                if status is not None:
+                    cursor_query += " AND status = ?"
+                    cursor_parameters.append(status)
+                if connection.execute(cursor_query, tuple(cursor_parameters)).fetchone() is None:
+                    raise ContractError("project registry cursor is invalid")
             rows = connection.execute(query, tuple(parameters)).fetchall()
         has_more = len(rows) > limit
         rows = rows[:limit]
@@ -1535,6 +1548,7 @@ class ControlStore:
         )
         conditions = []
         parameters = []
+        cursor_values = None
         if project_id is not None:
             conditions.append("project_id = ?")
             parameters.append(project_id)
@@ -1542,6 +1556,7 @@ class ControlStore:
             created_at, event_id = self._validate_project_registry_cursor(
                 cursor, "event_id"
             )
+            cursor_values = (created_at, event_id)
             conditions.append(
                 "(created_at > ? OR (created_at = ? AND event_id > ?))"
             )
@@ -1552,6 +1567,17 @@ class ControlStore:
         parameters.append(limit + 1)
         with self.read_connection() as connection:
             self._require_schema_compatible_in_connection(connection)
+            if cursor_values is not None:
+                cursor_query = (
+                    "SELECT 1 FROM project_registry_events "
+                    "WHERE created_at = ? AND event_id = ?"
+                )
+                cursor_parameters = list(cursor_values)
+                if project_id is not None:
+                    cursor_query += " AND project_id = ?"
+                    cursor_parameters.append(project_id)
+                if connection.execute(cursor_query, tuple(cursor_parameters)).fetchone() is None:
+                    raise ContractError("project registry cursor is invalid")
             rows = connection.execute(query, tuple(parameters)).fetchall()
         has_more = len(rows) > limit
         rows = rows[:limit]

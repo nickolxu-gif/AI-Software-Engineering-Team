@@ -247,12 +247,32 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertEqual(len(second["entries"]), 1)
         self.assertFalse(second["has_more"])
         self.assertIsNone(second["next_cursor"])
+        self.assertEqual(
+            len(self.store.list_project_registry_entries_page()["entries"]), 20
+        )
 
         with self.assertRaises(ContractError):
             self.store.list_project_registry_entries_page(
                 cursor={
                     "created_at": "not-a-timestamp",
                     "project_id": "123e4567-e89b-12d3-a456-426614174000",
+                }
+            )
+
+        with self.assertRaises(ContractError):
+            self.store.list_project_registry_entries_page(
+                cursor={
+                    "created_at": "2026-08-14T00:00:00+00:00",
+                    "project_id": 123,
+                }
+            )
+
+    def test_project_registry_event_cursor_rejects_unknown_valid_timestamp(self):
+        with self.assertRaises(ContractError):
+            self.store.list_project_registry_events(
+                cursor={
+                    "created_at": "2026-08-14T00:00:00Z",
+                    "event_id": "123e4567-e89b-12d3-a456-426614174000",
                 }
             )
 
