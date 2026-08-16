@@ -1094,6 +1094,7 @@ class ControlStore:
         """Provide one SQLite read-only snapshot and always release it by rollback."""
         with self.read_connection() as connection:
             connection.execute("BEGIN")
+            connection.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
             try:
                 yield connection
             except BaseException:
@@ -1102,10 +1103,7 @@ class ControlStore:
                 except sqlite3.Error:
                     pass
                 raise
-            try:
-                connection.rollback()
-            except sqlite3.Error:
-                raise
+            connection.rollback()
 
     def require_schema_compatible(self):
         with self.read_connection() as connection:
