@@ -17,6 +17,7 @@ from .contracts import (
     INTENT_ACTIONS,
     SHA_RE,
     UUID_RE,
+    RFC3339_RE,
     validate_project_registry_display_name,
     validate_task_intake_text,
     validate_record,
@@ -822,10 +823,18 @@ class ControlStore:
             raise SchemaUnsupportedError(
                 "project registry schema has unsupported objects"
             )
-        entries = connection.execute("SELECT * FROM project_registry").fetchall()
-        events = connection.execute(
-            "SELECT * FROM project_registry_events"
-        ).fetchall()
+        orphan_event = connection.execute(
+            """SELECT 1
+               FROM project_registry_events AS event
+               LEFT JOIN project_registry AS project
+                 ON project.project_id = event.project_id
+               WHERE project.project_id IS NULL
+               LIMIT 1"""
+        ).fetchone()
+        if orphan_event is not None:
+            raise SchemaUnsupportedError(
+                "project registry legacy events contain an orphan project"
+            )
         connection.execute(PROJECT_REGISTRY_MIGRATED_SCHEMA)
         connection.execute(PROJECT_REGISTRY_EVENTS_MIGRATED_SCHEMA)
         migrated_foreign_keys = connection.execute(
@@ -838,29 +847,23 @@ class ControlStore:
             raise ReconciliationError(
                 "project registry event migration foreign key is invalid"
             )
-        if entries:
-            columns = (
-                "project_id", "display_name", "root_path", "common_dir_path",
-                "root_device", "root_inode", "root_mode", "common_dir_device",
-                "common_dir_inode", "common_dir_mode", "status", "created_at",
-                "updated_at", "retired_at",
-            )
-            connection.executemany(
-                "INSERT INTO project_registry_migrated (%s) VALUES (%s)" % (
-                    ", ".join(columns), ", ".join("?" for _ in columns),
-                ),
-                [tuple(row[column] for column in columns) for row in entries],
-            )
-        if events:
-            connection.executemany(
-                """INSERT INTO project_registry_events_migrated (
-                       event_id, project_id, event_type, created_at
-                   ) VALUES (?, ?, ?, ?)""",
-                [
-                    (row["event_id"], row["project_id"], row["event_type"], row["created_at"])
-                    for row in events
-                ],
-            )
+        columns = (
+            "project_id", "display_name", "root_path", "common_dir_path",
+            "root_device", "root_inode", "root_mode", "common_dir_device",
+            "common_dir_inode", "common_dir_mode", "status", "created_at",
+            "updated_at", "retired_at",
+        )
+        column_list = ", ".join(columns)
+        connection.execute(
+            "INSERT INTO project_registry_migrated (%s) "
+            "SELECT %s FROM project_registry" % (column_list, column_list)
+        )
+        connection.execute(
+            """INSERT INTO project_registry_events_migrated (
+                   event_id, project_id, event_type, created_at
+               ) SELECT event_id, project_id, event_type, created_at
+               FROM project_registry_events"""
+        )
         connection.execute("DROP TABLE project_registry_events")
         connection.execute("DROP TABLE project_registry")
         connection.execute(
@@ -1365,6 +1368,23 @@ class ControlStore:
             )
         return limit
 
+    @staticmethod
+    def _validate_project_registry_cursor(cursor, identifier_key):
+        if (
+            type(cursor) is not dict
+            or set(cursor) != {"created_at", identifier_key}
+            or not isinstance(cursor["created_at"], str)
+            or len(cursor["created_at"]) > 64
+            or RFC3339_RE.fullmatch(cursor["created_at"]) is None
+            or UUID_RE.fullmatch(cursor[identifier_key]) is None
+        ):
+            raise ContractError("project registry cursor is invalid")
+        try:
+            created_at = normalize_timestamp(cursor["created_at"])
+        except (IndexError, ValueError):
+            raise ContractError("project registry cursor is invalid")
+        return created_at, str(uuid.UUID(cursor[identifier_key]))
+
     def create_project_registry_entry(
         self, project_id, display_name, root_path, common_dir_path,
         root_device, root_inode, root_mode, common_dir_device,
@@ -1429,20 +1449,48 @@ class ControlStore:
     def list_project_registry_entries(
         self, status=None, limit=MAX_PROJECT_REGISTRY_ENTRIES
     ):
+        return self.list_project_registry_entries_page(status=status, limit=limit)[
+            "entries"
+        ]
+
+    def list_project_registry_entries_page(self, status=None, limit=20, cursor=None):
         if status is not None and status not in PROJECT_REGISTRY_STATUSES:
             raise ContractError("project registry status is invalid")
         self._validate_project_registry_limit(limit)
         query = "SELECT * FROM project_registry"
         parameters = []
+        conditions = []
         if status is not None:
-            query += " WHERE status = ?"
+            conditions.append("status = ?")
             parameters.append(status)
+        if cursor is not None:
+            created_at, project_id = self._validate_project_registry_cursor(
+                cursor, "project_id"
+            )
+            conditions.append(
+                "(created_at > ? OR (created_at = ? AND project_id > ?))"
+            )
+            parameters.extend((created_at, created_at, project_id))
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY created_at, project_id LIMIT ?"
-        parameters.append(limit)
+        parameters.append(limit + 1)
         with self.read_connection() as connection:
             self._require_schema_compatible_in_connection(connection)
             rows = connection.execute(query, tuple(parameters)).fetchall()
-        return [self._project_registry_entry_from_row(row) for row in rows]
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        next_cursor = None
+        if has_more:
+            next_cursor = {
+                "created_at": rows[-1]["created_at"],
+                "project_id": rows[-1]["project_id"],
+            }
+        return {
+            "entries": [self._project_registry_entry_from_row(row) for row in rows],
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+        }
 
     def retire_project_registry_entry(self, project_id):
         self._validate_project_registry_project_id(project_id)
@@ -1488,19 +1536,13 @@ class ControlStore:
             conditions.append("project_id = ?")
             parameters.append(project_id)
         if cursor is not None:
-            if (
-                type(cursor) is not dict
-                or set(cursor) != {"created_at", "event_id"}
-                or not isinstance(cursor["created_at"], str)
-                or UUID_RE.fullmatch(cursor["event_id"]) is None
-            ):
-                raise ContractError("project registry event cursor is invalid")
+            created_at, event_id = self._validate_project_registry_cursor(
+                cursor, "event_id"
+            )
             conditions.append(
                 "(created_at > ? OR (created_at = ? AND event_id > ?))"
             )
-            parameters.extend((
-                cursor["created_at"], cursor["created_at"], cursor["event_id"],
-            ))
+            parameters.extend((created_at, created_at, event_id))
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY created_at, event_id LIMIT ?"

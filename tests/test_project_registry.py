@@ -211,6 +211,34 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertFalse(second["has_more"])
         self.assertIsNone(second["next_cursor"])
 
+    def test_project_registry_event_cursor_rejects_malformed_timestamp(self):
+        with self.assertRaises(ContractError):
+            self.store.list_project_registry_events(
+                cursor={
+                    "created_at": "not-a-timestamp",
+                    "event_id": "123e4567-e89b-12d3-a456-426614174000",
+                }
+            )
+
+    def test_project_registry_entry_listing_is_explicitly_paginated(self):
+        for number in range(21):
+            registered = self.registry.register(
+                "Retired %02d" % number, self.make_target("retired-%02d" % number)
+            )
+            self.registry.retire(registered["project_id"])
+
+        first = self.store.list_project_registry_entries_page(limit=20)
+        second = self.store.list_project_registry_entries_page(
+            limit=20, cursor=first["next_cursor"]
+        )
+
+        self.assertEqual(len(first["entries"]), 20)
+        self.assertTrue(first["has_more"])
+        self.assertIsNotNone(first["next_cursor"])
+        self.assertEqual(len(second["entries"]), 1)
+        self.assertFalse(second["has_more"])
+        self.assertIsNone(second["next_cursor"])
+
     def test_register_rejects_a_supplied_symbolic_link_without_audit_event(self):
         link = self.root / "target-link"
         try:
