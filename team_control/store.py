@@ -25,6 +25,7 @@ from .contracts import (
 from .errors import (
     ApprovalError,
     BoundaryError,
+    CursorStaleError,
     ContractError,
     ReconciliationError,
     SchemaMigrationRequiredError,
@@ -1386,6 +1387,21 @@ class ControlStore:
             raise ContractError("project registry cursor is invalid")
         return cursor["created_at"], str(uuid.UUID(cursor[identifier_key]))
 
+    @staticmethod
+    def _require_project_registry_cursor_anchor(
+        connection, table, identifier_column, cursor_values, filter_column=None,
+        filter_value=None,
+    ):
+        query = "SELECT 1 FROM %s WHERE created_at = ? AND %s = ?" % (
+            table, identifier_column,
+        )
+        parameters = list(cursor_values)
+        if filter_column is not None:
+            query += " AND %s = ?" % filter_column
+            parameters.append(filter_value)
+        if connection.execute(query, tuple(parameters)).fetchone() is None:
+            raise CursorStaleError("project registry cursor is stale; restart paging")
+
     def create_project_registry_entry(
         self, project_id, display_name, root_path, common_dir_path,
         root_device, root_inode, root_mode, common_dir_device,
@@ -1481,18 +1497,13 @@ class ControlStore:
         query += " ORDER BY created_at, project_id LIMIT ?"
         parameters.append(limit + 1)
         with self.read_connection() as connection:
+            connection.execute("BEGIN")
             self._require_schema_compatible_in_connection(connection)
             if cursor_values is not None:
-                cursor_query = (
-                    "SELECT 1 FROM project_registry "
-                    "WHERE created_at = ? AND project_id = ?"
+                self._require_project_registry_cursor_anchor(
+                    connection, "project_registry", "project_id", cursor_values,
+                    "status" if status is not None else None, status,
                 )
-                cursor_parameters = list(cursor_values)
-                if status is not None:
-                    cursor_query += " AND status = ?"
-                    cursor_parameters.append(status)
-                if connection.execute(cursor_query, tuple(cursor_parameters)).fetchone() is None:
-                    raise ContractError("project registry cursor is invalid")
             rows = connection.execute(query, tuple(parameters)).fetchall()
         has_more = len(rows) > limit
         rows = rows[:limit]
@@ -1566,18 +1577,13 @@ class ControlStore:
         query += " ORDER BY created_at, event_id LIMIT ?"
         parameters.append(limit + 1)
         with self.read_connection() as connection:
+            connection.execute("BEGIN")
             self._require_schema_compatible_in_connection(connection)
             if cursor_values is not None:
-                cursor_query = (
-                    "SELECT 1 FROM project_registry_events "
-                    "WHERE created_at = ? AND event_id = ?"
+                self._require_project_registry_cursor_anchor(
+                    connection, "project_registry_events", "event_id", cursor_values,
+                    "project_id" if project_id is not None else None, project_id,
                 )
-                cursor_parameters = list(cursor_values)
-                if project_id is not None:
-                    cursor_query += " AND project_id = ?"
-                    cursor_parameters.append(project_id)
-                if connection.execute(cursor_query, tuple(cursor_parameters)).fetchone() is None:
-                    raise ContractError("project registry cursor is invalid")
             rows = connection.execute(query, tuple(parameters)).fetchall()
         has_more = len(rows) > limit
         rows = rows[:limit]

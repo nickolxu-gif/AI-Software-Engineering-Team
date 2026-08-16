@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from team_control.errors import BoundaryError, ContractError, GitStateError
+from team_control.errors import BoundaryError, ContractError, CursorStaleError, GitStateError
 from team_control.git_context import RepoContext
 from team_control.project_registry import (
     ProjectRegistryService,
@@ -268,13 +268,14 @@ class ProjectRegistryTests(unittest.TestCase):
             )
 
     def test_project_registry_event_cursor_rejects_unknown_valid_timestamp(self):
-        with self.assertRaises(ContractError):
+        with self.assertRaises(CursorStaleError) as error:
             self.store.list_project_registry_events(
                 cursor={
                     "created_at": "2026-08-14T00:00:00Z",
                     "event_id": "123e4567-e89b-12d3-a456-426614174000",
                 }
             )
+        self.assertEqual(error.exception.code, "CURSOR_STALE")
 
     def test_register_rejects_a_supplied_symbolic_link_without_audit_event(self):
         link = self.root / "target-link"

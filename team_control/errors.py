@@ -14,6 +14,10 @@ class ContractError(TeamControlError):
     code = "CONTRACT_ERROR"
 
 
+class CursorStaleError(ContractError):
+    code = "CURSOR_STALE"
+
+
 class SchemaMigrationRequiredError(TeamControlError):
     code = "SCHEMA_MIGRATION_REQUIRED"
 
