@@ -1091,14 +1091,21 @@ class ControlStore:
 
     @contextmanager
     def read_snapshot(self):
+        """Provide one SQLite read-only snapshot and always release it by rollback."""
         with self.read_connection() as connection:
             connection.execute("BEGIN")
             try:
                 yield connection
-                connection.commit()
             except BaseException:
-                connection.rollback()
+                try:
+                    connection.rollback()
+                except sqlite3.Error:
+                    pass
                 raise
+            try:
+                connection.rollback()
+            except sqlite3.Error:
+                pass
 
     def require_schema_compatible(self):
         with self.read_connection() as connection:
