@@ -1105,7 +1105,7 @@ class ControlStore:
             try:
                 connection.rollback()
             except sqlite3.Error:
-                pass
+                raise
 
     def require_schema_compatible(self):
         with self.read_connection() as connection:
