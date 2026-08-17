@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -159,7 +160,7 @@ class ProjectSnapshotReader:
     @staticmethod
     def _git_environment():
         return {
-            "PATH": "/usr/bin:/bin",
+            "PATH": "",
             "LC_ALL": "C",
             "LANG": "C",
             "GIT_OPTIONAL_LOCKS": "0",
@@ -340,7 +341,8 @@ class ProjectSnapshotReader:
         return (
             object_type == "table"
             and isinstance(definition, str)
-            and not definition.lstrip().upper().startswith("CREATE VIRTUAL TABLE")
+            and re.match(r"^CREATE\s+TABLE(?:\s|\()", definition.lstrip(), re.IGNORECASE)
+            is not None
         )
 
     @classmethod

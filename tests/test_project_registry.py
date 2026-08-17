@@ -639,7 +639,7 @@ class ProjectRegistryTests(unittest.TestCase):
             self.assertEqual(call.kwargs["errors"], "replace")
             self.assertIs(call.kwargs["stdin"], subprocess.DEVNULL)
             self.assertEqual(call.kwargs["env"]["GIT_OPTIONAL_LOCKS"], "0")
-            self.assertEqual(call.kwargs["env"]["PATH"], "/usr/bin:/bin")
+            self.assertEqual(call.kwargs["env"]["PATH"], "")
             self.assertEqual(call.kwargs["env"]["GIT_CONFIG_NOSYSTEM"], "1")
             self.assertEqual(call.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
 
@@ -668,9 +668,33 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertEqual(card["control_status"], "UNAVAILABLE")
         self.assertEqual(card["head_sha"], "HEAD_UNAVAILABLE")
 
-    def test_snapshot_reader_rejects_virtual_table_schema_records(self):
+    def test_snapshot_reader_rejects_virtual_table_schema_end_to_end(self):
+        database = self.make_compatible_target_database(self.target_root)
+        connection = sqlite3.connect(str(database))
+        try:
+            connection.execute("DROP TABLE tasks")
+            columns = ", ".join(sorted(TARGET_CONTROL_REQUIRED_SCHEMA["tasks"]))
+            connection.execute(
+                "CREATE  VIRTUAL TABLE tasks USING fts5(%s)" % columns
+            )
+            connection.commit()
+        except sqlite3.OperationalError as error:
+            self.skipTest("SQLite FTS5 virtual-table fixture is unavailable: %s" % error)
+        finally:
+            connection.close()
+
+        card = ProjectSnapshotReader(self.registered_entry()).snapshot()
+
+        self.assertEqual(card["control_status"], "UNSUPPORTED")
+        self.assertTrue(all(count == 0 for count in card["task_counts"].values()))
+        self.assertIsNone(card["latest_task_updated_at"])
+
+    def test_snapshot_reader_accepts_only_plain_create_table_sql(self):
         self.assertFalse(ProjectSnapshotReader._is_plain_table(
             "table", "CREATE VIRTUAL TABLE tasks USING fts5(state)"
+        ))
+        self.assertFalse(ProjectSnapshotReader._is_plain_table(
+            "table", "CREATE  VIRTUAL TABLE tasks USING fts5(state)"
         ))
         self.assertTrue(ProjectSnapshotReader._is_plain_table(
             "table", "CREATE TABLE tasks (state TEXT)"
