@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +26,7 @@ READONLY_GIT_PREFIX = (
 GIT_TIMEOUT_SECONDS = 2.0
 SQLITE_TIMEOUT_SECONDS = 1.0
 MAX_TARGET_SNAPSHOT_BYTES = 64 * 1024 * 1024
+LOCAL_SNAPSHOT_OVERHEAD_BYTES = 8 * 1024 * 1024
 
 # This is intentionally a historical, read-only compatibility contract.  A
 # registered project is not required to contain the central project's registry
@@ -72,6 +74,15 @@ class _UnsupportedTargetSchema(Exception):
 
 class _MissingTargetDatabase(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class _SnapshotFileIdentity:
+    device: int
+    inode: int
+    mode: int
+    size: int
+    modified_at_ns: int
 
 
 class ProjectSnapshotReader:
@@ -380,6 +391,7 @@ class ProjectSnapshotReader:
             return "UNSUPPORTED", None, None
         except OSError:
             return "UNAVAILABLE", None, None
+
     @staticmethod
     def _snapshot_file_identity(path):
         path = Path(path)
@@ -389,13 +401,30 @@ class ProjectSnapshotReader:
             return None
         if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             raise OSError("target database snapshot input is unavailable")
-        return (
-            metadata.st_dev,
-            metadata.st_ino,
-            metadata.st_mode,
-            metadata.st_size,
-            metadata.st_mtime_ns,
+        return _SnapshotFileIdentity(
+            device=metadata.st_dev,
+            inode=metadata.st_ino,
+            mode=metadata.st_mode,
+            size=metadata.st_size,
+            modified_at_ns=metadata.st_mtime_ns,
         )
+
+    @staticmethod
+    def _copy_snapshot_file(source, destination, remaining_bytes):
+        copied_bytes = 0
+        with (
+            Path(source).open("rb") as input_handle,
+            Path(destination).open("xb") as output_handle,
+        ):
+            while True:
+                chunk = input_handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                copied_bytes += len(chunk)
+                if copied_bytes > remaining_bytes:
+                    raise OSError("target database snapshot exceeds the size budget")
+                output_handle.write(chunk)
+        return copied_bytes
 
     @classmethod
     @contextmanager
@@ -408,16 +437,20 @@ class ProjectSnapshotReader:
         before = tuple(cls._snapshot_file_identity(source) for source in sources)
         if before[0] is None:
             raise OSError("target database snapshot input is unavailable")
-        total_bytes = sum(identity[3] for identity in before if identity is not None)
+        total_bytes = sum(identity.size for identity in before if identity is not None)
         if total_bytes > MAX_TARGET_SNAPSHOT_BYTES:
             raise OSError("target database snapshot exceeds the size budget")
         with tempfile.TemporaryDirectory(prefix="team-project-snapshot-") as directory:
-            if shutil.disk_usage(directory).free < total_bytes:
+            required_free_bytes = total_bytes + LOCAL_SNAPSHOT_OVERHEAD_BYTES
+            if shutil.disk_usage(directory).free < required_free_bytes:
                 raise OSError("target database snapshot has insufficient local space")
             local_sources = tuple(Path(directory) / source.name for source in sources)
+            remaining_bytes = MAX_TARGET_SNAPSHOT_BYTES
             for source, local_source, identity in zip(sources, local_sources, before):
                 if identity is not None:
-                    shutil.copyfile(str(source), str(local_source))
+                    remaining_bytes -= cls._copy_snapshot_file(
+                        source, local_source, remaining_bytes
+                    )
             after = tuple(cls._snapshot_file_identity(source) for source in sources)
             if after != before:
                 raise OSError("target database changed during snapshot capture")

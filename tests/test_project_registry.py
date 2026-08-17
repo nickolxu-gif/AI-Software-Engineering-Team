@@ -816,9 +816,23 @@ class ProjectRegistryTests(unittest.TestCase):
         with database.open("r+b") as handle:
             handle.truncate(MAX_TARGET_SNAPSHOT_BYTES + 1)
 
+        with self.assertRaisesRegex(OSError, "exceeds the size budget"):
+            with ProjectSnapshotReader._local_database_snapshot(database):
+                pass
         card = ProjectSnapshotReader(self.registered_entry()).snapshot()
 
         self.assertEqual(card["control_status"], "UNAVAILABLE")
+
+    def test_snapshot_reader_rejects_insufficient_local_snapshot_space(self):
+        database = self.make_compatible_target_database(self.target_root)
+
+        with mock.patch(
+            "team_control.project_registry.shutil.disk_usage",
+            return_value=mock.Mock(free=0),
+        ):
+            with self.assertRaisesRegex(OSError, "insufficient local space"):
+                with ProjectSnapshotReader._local_database_snapshot(database):
+                    pass
 
     def test_snapshot_reader_does_not_modify_target_database_or_wal_sidecars(self):
         database = self.make_compatible_target_database(self.target_root)
