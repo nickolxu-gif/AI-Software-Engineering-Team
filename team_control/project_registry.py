@@ -393,12 +393,7 @@ class ProjectSnapshotReader:
             return "UNAVAILABLE", None, None
 
     @staticmethod
-    def _snapshot_file_identity(path):
-        path = Path(path)
-        try:
-            metadata = path.lstat()
-        except FileNotFoundError:
-            return None
+    def _snapshot_file_identity_from_metadata(metadata):
         if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             raise OSError("target database snapshot input is unavailable")
         return _SnapshotFileIdentity(
@@ -409,22 +404,53 @@ class ProjectSnapshotReader:
             modified_at_ns=metadata.st_mtime_ns,
         )
 
+    @classmethod
+    def _snapshot_file_identity(cls, path):
+        try:
+            metadata = Path(path).lstat()
+        except FileNotFoundError:
+            return None
+        return cls._snapshot_file_identity_from_metadata(metadata)
+
     @staticmethod
-    def _copy_snapshot_file(source, destination, remaining_bytes):
-        copied_bytes = 0
-        with (
-            Path(source).open("rb") as input_handle,
-            Path(destination).open("xb") as output_handle,
-        ):
-            while True:
-                chunk = input_handle.read(1024 * 1024)
-                if not chunk:
-                    break
-                copied_bytes += len(chunk)
-                if copied_bytes > remaining_bytes:
-                    raise OSError("target database snapshot exceeds the size budget")
-                output_handle.write(chunk)
-        return copied_bytes
+    def _snapshot_header(descriptor):
+        return os.pread(descriptor, 100, 0)
+
+    @classmethod
+    def _copy_snapshot_file(cls, source, destination, expected_identity, remaining_bytes):
+        descriptor = os.open(str(source), os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            opened_identity = cls._snapshot_file_identity_from_metadata(
+                os.fstat(descriptor)
+            )
+            if opened_identity != expected_identity:
+                raise OSError("target database changed during snapshot capture")
+            header_before = cls._snapshot_header(descriptor)
+            copied_bytes = 0
+            with (
+                os.fdopen(descriptor, "rb", closefd=False) as input_handle,
+                Path(destination).open("xb") as output_handle,
+            ):
+                while True:
+                    chunk = input_handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    copied_bytes += len(chunk)
+                    if copied_bytes > remaining_bytes:
+                        raise OSError("target database snapshot exceeds the size budget")
+                    if copied_bytes > expected_identity.size:
+                        raise OSError("target database changed during snapshot capture")
+                    output_handle.write(chunk)
+            if (
+                copied_bytes != expected_identity.size
+                or cls._snapshot_file_identity_from_metadata(os.fstat(descriptor))
+                != expected_identity
+                or cls._snapshot_header(descriptor) != header_before
+            ):
+                raise OSError("target database changed during snapshot capture")
+            return copied_bytes
+        finally:
+            os.close(descriptor)
 
     @classmethod
     @contextmanager
@@ -451,7 +477,7 @@ class ProjectSnapshotReader:
             for source, local_source, identity in zip(sources, local_sources, before):
                 if identity is not None:
                     remaining_bytes -= cls._copy_snapshot_file(
-                        source, local_source, remaining_bytes
+                        source, local_source, identity, remaining_bytes
                     )
             after = tuple(cls._snapshot_file_identity(source) for source in sources)
             if after != before:
