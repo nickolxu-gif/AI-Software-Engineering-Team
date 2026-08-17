@@ -1,4 +1,5 @@
 import hashlib
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -824,12 +825,14 @@ class ProjectRegistryTests(unittest.TestCase):
 
         self.assertEqual(card["control_status"], "UNAVAILABLE")
 
-    def test_snapshot_reader_rejects_insufficient_local_snapshot_space(self):
+    def test_snapshot_reader_rejects_one_byte_below_the_full_copy_space_budget(self):
         database = self.make_compatible_target_database(self.target_root)
 
         with mock.patch(
             "team_control.project_registry.shutil.disk_usage",
-            return_value=mock.Mock(free=0),
+            return_value=mock.Mock(
+                free=MAX_TARGET_SNAPSHOT_BYTES + LOCAL_SNAPSHOT_OVERHEAD_BYTES - 1
+            ),
         ):
             with self.assertRaisesRegex(OSError, "insufficient local space"):
                 with ProjectSnapshotReader._local_database_snapshot(database):
@@ -896,24 +899,26 @@ class ProjectRegistryTests(unittest.TestCase):
         )
 
     def test_snapshot_reader_rejects_growth_during_copy_and_cleans_temporary_files(self):
-        database = self.make_compatible_target_database(self.target_root)
+        database = self.root / "target.db"
+        database.write_bytes(b"0")
         temporary_directory = tempfile.TemporaryDirectory(dir=str(self.root))
         temporary_path = Path(temporary_directory.name)
         original_copy = ProjectSnapshotReader._copy_snapshot_file
 
         def grow_database_before_copy(source, destination, remaining_bytes):
             with database.open("r+b") as handle:
-                handle.truncate(MAX_TARGET_SNAPSHOT_BYTES + 1)
+                handle.truncate(3)
             return original_copy(source, destination, remaining_bytes)
 
-        with mock.patch(
-            "team_control.project_registry.tempfile.TemporaryDirectory",
-            return_value=temporary_directory,
-        ), mock.patch.object(
-            ProjectSnapshotReader,
-            "_copy_snapshot_file",
-            side_effect=grow_database_before_copy,
-        ):
+        with mock.patch("team_control.project_registry.MAX_TARGET_SNAPSHOT_BYTES", 2), \
+             mock.patch(
+                 "team_control.project_registry.tempfile.TemporaryDirectory",
+                 return_value=temporary_directory,
+             ), mock.patch.object(
+                 ProjectSnapshotReader,
+                 "_copy_snapshot_file",
+                 side_effect=grow_database_before_copy,
+             ):
             with self.assertRaisesRegex(OSError, "exceeds the size budget"):
                 with ProjectSnapshotReader._local_database_snapshot(database):
                     pass
@@ -921,6 +926,25 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertFalse(temporary_path.exists())
         self.assertFalse(Path(str(database) + "-wal").exists())
         self.assertFalse(Path(str(database) + "-shm").exists())
+
+    def test_snapshot_reader_rejects_a_same_budget_change_after_copy(self):
+        database = self.make_compatible_target_database(self.target_root)
+        original_copy = ProjectSnapshotReader._copy_snapshot_file
+
+        def touch_database_after_copy(source, destination, remaining_bytes):
+            copied_bytes = original_copy(source, destination, remaining_bytes)
+            metadata = database.stat()
+            os.utime(database, ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1))
+            return copied_bytes
+
+        with mock.patch.object(
+            ProjectSnapshotReader,
+            "_copy_snapshot_file",
+            side_effect=touch_database_after_copy,
+        ):
+            with self.assertRaisesRegex(OSError, "changed during snapshot capture"):
+                with ProjectSnapshotReader._local_database_snapshot(database):
+                    pass
 
     def test_snapshot_reader_does_not_modify_target_database_or_wal_sidecars(self):
         database = self.make_compatible_target_database(self.target_root)
