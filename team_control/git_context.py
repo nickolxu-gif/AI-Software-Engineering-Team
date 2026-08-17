@@ -18,6 +18,10 @@ GIT_DISCOVERY_ENV = {
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_TERMINAL_PROMPT": "0",
 }
+GIT_DISCOVERY_PREFIX = (
+    "-c", "core.fsmonitor=false",
+    "-c", "maintenance.auto=false",
+)
 
 
 def system_git_executable():
@@ -110,11 +114,11 @@ class RepoContext:
         start = Path(candidate).resolve(strict=True)
         executable = system_git_executable()
         top = Path(run_argv(
-            [executable, "rev-parse", "--show-toplevel"], start,
+            [executable, *GIT_DISCOVERY_PREFIX, "rev-parse", "--show-toplevel"], start,
             env_overrides=GIT_DISCOVERY_ENV, inherit_env=False,
         ).stdout.strip()).resolve(strict=True)
         common_raw = Path(run_argv(
-            [executable, "rev-parse", "--git-common-dir"], start,
+            [executable, *GIT_DISCOVERY_PREFIX, "rev-parse", "--git-common-dir"], start,
             env_overrides=GIT_DISCOVERY_ENV, inherit_env=False,
         ).stdout.strip())
         common = common_raw if common_raw.is_absolute() else start / common_raw

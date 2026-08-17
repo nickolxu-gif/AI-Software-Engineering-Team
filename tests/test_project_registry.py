@@ -639,6 +639,7 @@ class ProjectRegistryTests(unittest.TestCase):
             self.assertEqual(call.kwargs["errors"], "replace")
             self.assertIs(call.kwargs["stdin"], subprocess.DEVNULL)
             self.assertEqual(call.kwargs["env"]["GIT_OPTIONAL_LOCKS"], "0")
+            self.assertEqual(call.kwargs["env"]["PATH"], "/usr/bin:/bin")
             self.assertEqual(call.kwargs["env"]["GIT_CONFIG_NOSYSTEM"], "1")
             self.assertEqual(call.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
 
@@ -653,6 +654,27 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertEqual(card["head_sha"], "HEAD_UNAVAILABLE")
         self.assertTrue(all(count == 0 for count in card["task_counts"].values()))
         self.assertIsNone(card["latest_task_updated_at"])
+
+    def test_snapshot_reader_marks_system_git_validation_failures_unavailable(self):
+        self.make_compatible_target_database(self.target_root)
+        reader = ProjectSnapshotReader(self.registered_entry())
+
+        with mock.patch(
+            "team_control.project_registry.system_git_executable",
+            side_effect=GitStateError("system git executable is unavailable"),
+        ):
+            card = reader.snapshot()
+
+        self.assertEqual(card["control_status"], "UNAVAILABLE")
+        self.assertEqual(card["head_sha"], "HEAD_UNAVAILABLE")
+
+    def test_snapshot_reader_rejects_virtual_table_schema_records(self):
+        self.assertFalse(ProjectSnapshotReader._is_plain_table(
+            "table", "CREATE VIRTUAL TABLE tasks USING fts5(state)"
+        ))
+        self.assertTrue(ProjectSnapshotReader._is_plain_table(
+            "table", "CREATE TABLE tasks (state TEXT)"
+        ))
 
     def test_snapshot_reader_uses_the_registered_linked_worktree_head(self):
         linked_root = self.root / "linked-target"
@@ -778,7 +800,7 @@ class ProjectRegistryTests(unittest.TestCase):
             index
             for index, call in enumerate(calls)
             if call[0] == "execute"
-            and call[1].startswith("SELECT type FROM sqlite_master")
+            and call[1].startswith("SELECT type, sql FROM sqlite_master")
         )
         self.assertLess(authorizer_index, schema_index)
         authorizer = calls[authorizer_index][1]

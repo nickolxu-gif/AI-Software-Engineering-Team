@@ -42,6 +42,10 @@ class GitContextTests(unittest.TestCase):
 
         for call in run.call_args_list:
             self.assertTrue(Path(call.args[0][0]).is_absolute())
+            self.assertEqual(
+                call.args[0][1:5],
+                ["-c", "core.fsmonitor=false", "-c", "maintenance.auto=false"],
+            )
             self.assertFalse(call.kwargs["inherit_env"])
             self.assertEqual(call.kwargs["env_overrides"]["GIT_TERMINAL_PROMPT"], "0")
 

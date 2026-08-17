@@ -38,7 +38,7 @@ TARGET_CONTROL_REQUIRED_SCHEMA = {
         "dispatch_id", "title", "objective", "risk_level", "state", "owner",
         "agent", "slug", "branch", "worktree_path", "task_base_sha",
         "current_head_sha", "updated_at",
-    )),
+    )) | TASK_INTAKE_REQUIRED_SCHEMA_COLUMNS.get("tasks", frozenset()),
     "events": frozenset((
         "dispatch_id", "sequence", "event_type", "payload_json", "created_at",
     )),
@@ -159,7 +159,7 @@ class ProjectSnapshotReader:
     @staticmethod
     def _git_environment():
         return {
-            "PATH": os.defpath,
+            "PATH": "/usr/bin:/bin",
             "LC_ALL": "C",
             "LANG": "C",
             "GIT_OPTIONAL_LOCKS": "0",
@@ -170,7 +170,11 @@ class ProjectSnapshotReader:
 
     @staticmethod
     def _readonly_git_prefix():
-        return (system_git_executable(), *READONLY_GIT_PREFIX[1:])
+        try:
+            executable = system_git_executable()
+        except GitStateError as error:
+            raise OSError("system git executable is unavailable") from error
+        return (executable, *READONLY_GIT_PREFIX[1:])
 
     def _registered_git_dir(self):
         completed = subprocess.run(
@@ -332,12 +336,20 @@ class ProjectSnapshotReader:
         return ("PRESENT", str(database), identity, snapshot_fingerprint)
 
     @staticmethod
-    def _validate_target_schema(connection):
+    def _is_plain_table(object_type, definition):
+        return (
+            object_type == "table"
+            and isinstance(definition, str)
+            and not definition.lstrip().upper().startswith("CREATE VIRTUAL TABLE")
+        )
+
+    @classmethod
+    def _validate_target_schema(cls, connection):
         for table, required_columns in TARGET_CONTROL_REQUIRED_SCHEMA.items():
             object_row = connection.execute(
-                "SELECT type FROM sqlite_master WHERE name = ?", (table,)
+                "SELECT type, sql FROM sqlite_master WHERE name = ?", (table,)
             ).fetchone()
-            if object_row is None or object_row[0] != "table":
+            if object_row is None or not cls._is_plain_table(*object_row):
                 raise _UnsupportedTargetSchema()
             columns = {
                 row[1]
