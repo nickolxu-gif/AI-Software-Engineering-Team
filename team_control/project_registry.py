@@ -177,64 +177,78 @@ class ProjectSnapshotReader:
             raise OSError("system git executable is unavailable") from error
         return (executable, *READONLY_GIT_PREFIX[1:])
 
+    def _registered_git_paths(self):
+        registered = self._registered_identity_snapshot()
+        if registered is False:
+            raise GitStateError("registered repository metadata is unavailable")
+        return registered[0], registered[2]
+
     def _registered_git_dir(self):
-        completed = subprocess.run(
-            [
-                *self._readonly_git_prefix(),
-                "-C", self.entry["root_path"],
-                "rev-parse", "--absolute-git-dir", "--git-common-dir",
-            ],
-            cwd=self.entry["root_path"],
-            check=False,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            timeout=GIT_TIMEOUT_SECONDS,
-            env=self._git_environment(),
-        )
+        root, registered_common_dir = self._registered_git_paths()
+        try:
+            completed = subprocess.run(
+                [
+                    *self._readonly_git_prefix(),
+                    "-C", root,
+                    "rev-parse", "--absolute-git-dir", "--git-common-dir",
+                ],
+                cwd=root,
+                check=False,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                timeout=GIT_TIMEOUT_SECONDS,
+                env=self._git_environment(),
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise OSError("registered repository metadata is unavailable") from error
         paths = completed.stdout.splitlines()
         if completed.returncode != 0 or len(paths) != 2:
             raise GitStateError("registered repository metadata is unavailable")
-        root = Path(self.entry["root_path"])
+        root_path = Path(root)
         try:
             git_dir = Path(paths[0])
             common_dir = Path(paths[1])
             if not git_dir.is_absolute():
-                git_dir = root / git_dir
+                git_dir = root_path / git_dir
             if not common_dir.is_absolute():
-                common_dir = root / common_dir
+                common_dir = root_path / common_dir
             git_dir, _git_dir_identity = self._identity(git_dir)
             common_dir, _common_dir_identity = self._identity(common_dir)
             git_dir.relative_to(common_dir)
         except (OSError, TypeError, ValueError):
             raise GitStateError("registered repository metadata is unavailable")
-        if str(common_dir) != self.entry["common_dir_path"]:
+        if str(common_dir) != registered_common_dir:
             raise GitStateError("registered repository metadata is unavailable")
         return str(git_dir)
 
     def _head_sha(self):
+        root, _registered_common_dir = self._registered_git_paths()
         git_dir = self._registered_git_dir()
-        completed = subprocess.run(
-            [
-                *self._readonly_git_prefix(),
-                "--git-dir", git_dir,
-                "--work-tree", self.entry["root_path"],
-                "rev-parse", "HEAD",
-            ],
-            cwd=self.entry["root_path"],
-            check=False,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            timeout=GIT_TIMEOUT_SECONDS,
-            env=self._git_environment(),
-        )
+        try:
+            completed = subprocess.run(
+                [
+                    *self._readonly_git_prefix(),
+                    "--git-dir", git_dir,
+                    "--work-tree", root,
+                    "rev-parse", "HEAD",
+                ],
+                cwd=root,
+                check=False,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                timeout=GIT_TIMEOUT_SECONDS,
+                env=self._git_environment(),
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise OSError("registered repository metadata is unavailable") from error
         value = completed.stdout.strip()
         if completed.returncode != 0 or len(value) not in (40, 64):
             raise GitStateError("registered repository head is unavailable")

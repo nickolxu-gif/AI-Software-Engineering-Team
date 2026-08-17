@@ -643,6 +643,68 @@ class ProjectRegistryTests(unittest.TestCase):
             self.assertEqual(call.kwargs["env"]["GIT_CONFIG_NOSYSTEM"], "1")
             self.assertEqual(call.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
 
+    def test_registered_git_dir_revalidates_and_uses_the_snapshot_root(self):
+        entry = self.registered_entry()
+        reader = ProjectSnapshotReader(entry)
+        registered = reader._registered_identity_snapshot()
+        self.assertIsNot(registered, False)
+        entry["root_path"] = str(self.root / "untrusted-root")
+        completed = mock.Mock(
+            returncode=0,
+            stdout="%s\n%s\n" % (registered[2], registered[2]),
+        )
+
+        with mock.patch.object(
+            reader, "_registered_identity_snapshot", return_value=registered
+        ) as snapshot, mock.patch(
+            "team_control.project_registry.subprocess.run",
+            return_value=completed,
+        ) as run:
+            git_dir = reader._registered_git_dir()
+
+        self.assertEqual(git_dir, registered[2])
+        snapshot.assert_called_once_with()
+        self.assertEqual(run.call_args.args[0][6], registered[0])
+        self.assertEqual(run.call_args.kwargs["cwd"], registered[0])
+
+    def test_registered_git_dir_normalizes_subprocess_timeout(self):
+        entry = self.registered_entry()
+        reader = ProjectSnapshotReader(entry)
+
+        with mock.patch(
+            "team_control.project_registry.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["git"], 2.0),
+        ):
+            with self.assertRaisesRegex(
+                OSError, "^registered repository metadata is unavailable$"
+            ) as error:
+                reader._registered_git_dir()
+
+        self.assertNotIn(entry["root_path"], str(error.exception))
+
+    def test_head_sha_revalidates_and_uses_the_snapshot_root(self):
+        entry = self.registered_entry()
+        reader = ProjectSnapshotReader(entry)
+        registered = reader._registered_identity_snapshot()
+        self.assertIsNot(registered, False)
+        entry["root_path"] = str(self.root / "untrusted-root")
+        completed = mock.Mock(returncode=0, stdout="%s\n" % ("a" * 40))
+
+        with mock.patch.object(
+            reader, "_registered_identity_snapshot", return_value=registered
+        ) as snapshot, mock.patch.object(
+            reader, "_registered_git_dir", return_value=registered[2]
+        ), mock.patch(
+            "team_control.project_registry.subprocess.run",
+            return_value=completed,
+        ) as run:
+            value = reader._head_sha()
+
+        self.assertEqual(value, "a" * 40)
+        snapshot.assert_called_once_with()
+        self.assertEqual(run.call_args.args[0][8], registered[0])
+        self.assertEqual(run.call_args.kwargs["cwd"], registered[0])
+
     def test_snapshot_reader_marks_git_read_failures_unavailable(self):
         self.make_compatible_target_database(self.target_root)
         reader = ProjectSnapshotReader(self.registered_entry())
