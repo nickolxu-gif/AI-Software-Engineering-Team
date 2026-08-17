@@ -794,31 +794,39 @@ class ProjectRegistryTests(unittest.TestCase):
         database = self.make_compatible_target_database(self.target_root)
         initial_identity = ProjectSnapshotReader._snapshot_file_identity(database)
         temporary_directory = tempfile.TemporaryDirectory(dir=str(self.root))
+        self.addCleanup(temporary_directory.cleanup)
         temporary_path = Path(temporary_directory.name)
         original_digest = ProjectSnapshotReader._snapshot_digest
-        mutated = False
+        original_contents = database.read_bytes()
+        digest_calls = 0
 
-        def mutate_after_reading_initial_digest(descriptor, expected_size):
-            nonlocal mutated
-            digest = original_digest(descriptor, expected_size)
-            if not mutated:
+        def mutate_only_during_copy(descriptor, expected_size):
+            nonlocal digest_calls
+            digest_calls += 1
+            if digest_calls == 1:
+                digest = original_digest(descriptor, expected_size)
                 metadata = database.stat()
-                with database.open("r+b") as handle:
-                    handle.seek(200)
-                    original_byte = handle.read(1)
-                    handle.seek(200)
-                    handle.write(bytes([original_byte[0] ^ 1]))
+                changed_contents = bytearray(original_contents)
+                changed_contents[200] ^= 1
+                database.write_bytes(changed_contents)
                 os.utime(
                     database,
                     ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
                 )
-                mutated = True
-            return digest
+                return digest
+            if digest_calls == 2:
+                metadata = database.stat()
+                database.write_bytes(original_contents)
+                os.utime(
+                    database,
+                    ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
+                )
+            return original_digest(descriptor, expected_size)
 
         with mock.patch.object(
             ProjectSnapshotReader,
             "_snapshot_digest",
-            side_effect=mutate_after_reading_initial_digest,
+            side_effect=mutate_only_during_copy,
         ), mock.patch(
             "team_control.project_registry.tempfile.TemporaryDirectory",
             return_value=temporary_directory,
@@ -827,6 +835,7 @@ class ProjectRegistryTests(unittest.TestCase):
                 with ProjectSnapshotReader._local_database_snapshot(database):
                     pass
 
+        self.assertEqual(digest_calls, 1)
         self.assertFalse(temporary_path.exists())
         self.assertEqual(
             ProjectSnapshotReader._snapshot_file_identity(database), initial_identity
@@ -840,6 +849,18 @@ class ProjectRegistryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(OSError, "exceeds the size budget"):
             ProjectSnapshotReader._copy_snapshot_file(source, destination, identity, 1)
+
+    def test_snapshot_reader_rejects_oversized_source_before_hashing_it(self):
+        source = self.root / "source.db"
+        destination = self.root / "copy.db"
+        source.write_bytes(b"exceeds")
+        identity = ProjectSnapshotReader._snapshot_file_identity(source)
+
+        with mock.patch.object(ProjectSnapshotReader, "_snapshot_digest") as digest:
+            with self.assertRaises(OSError):
+                ProjectSnapshotReader._copy_snapshot_file(source, destination, identity, 1)
+
+        digest.assert_not_called()
 
     def test_snapshot_reader_shares_the_total_budget_between_database_and_wal(self):
         database = self.root / "target.db"

@@ -429,11 +429,13 @@ class ProjectSnapshotReader:
 
     @classmethod
     def _copy_snapshot_file(cls, source, destination, expected_identity, remaining_bytes):
-        try:
-            open_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
-            os.pread
-        except AttributeError as error:
-            raise OSError("safe snapshot capture is unsupported on this platform") from error
+        if not all(
+            hasattr(os, name) for name in ("O_NOFOLLOW", "O_NONBLOCK", "pread")
+        ):
+            raise OSError("safe snapshot capture is unsupported on this platform")
+        if expected_identity.size > remaining_bytes:
+            raise OSError("target database snapshot exceeds the size budget")
+        open_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
         descriptor = os.open(str(source), open_flags)
         try:
             opened_identity = cls._snapshot_file_identity_from_metadata(
@@ -445,6 +447,7 @@ class ProjectSnapshotReader:
             if digest_before[0] != expected_identity.size:
                 raise OSError("target database changed during snapshot capture")
             copied_bytes = 0
+            copied_digest = hashlib.sha256()
             with (
                 os.fdopen(descriptor, "rb", closefd=False) as input_handle,
                 Path(destination).open("xb") as output_handle,
@@ -459,10 +462,12 @@ class ProjectSnapshotReader:
                     if copied_bytes > expected_identity.size:
                         raise OSError("target database changed during snapshot capture")
                     output_handle.write(chunk)
+                    copied_digest.update(chunk)
             if (
                 copied_bytes != expected_identity.size
                 or cls._snapshot_file_identity_from_metadata(os.fstat(descriptor))
                 != expected_identity
+                or copied_digest.digest() != digest_before[1]
                 or cls._snapshot_digest(descriptor, expected_identity.size)
                 != digest_before
             ):
