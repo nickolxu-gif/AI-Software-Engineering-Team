@@ -684,6 +684,29 @@ class ProjectRegistryTests(unittest.TestCase):
 
         run.assert_not_called()
 
+    def test_registered_git_dir_rejects_a_git_directory_outside_common_dir(self):
+        entry = self.registered_entry()
+        reader = ProjectSnapshotReader(entry)
+        registered = reader._registered_identity_snapshot()
+        self.assertIsNot(registered, False)
+        outside_git_dir = self.root / "outside-git-dir"
+        outside_git_dir.mkdir()
+        completed = mock.Mock(
+            returncode=0,
+            stdout="%s\n%s\n" % (outside_git_dir, registered[2]),
+        )
+
+        with mock.patch.object(
+            reader, "_registered_identity_snapshot", return_value=registered
+        ), mock.patch(
+            "team_control.project_registry.subprocess.run",
+            return_value=completed,
+        ):
+            with self.assertRaisesRegex(
+                GitStateError, "^registered repository metadata is unavailable$"
+            ):
+                reader._registered_git_dir()
+
     def test_registered_git_dir_normalizes_subprocess_timeout(self):
         entry = self.registered_entry()
         reader = ProjectSnapshotReader(entry)
