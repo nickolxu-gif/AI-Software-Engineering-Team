@@ -801,8 +801,8 @@ class ProjectRegistryTests(unittest.TestCase):
             ("O_NONBLOCK", 0),
             ("pread", None),
         ):
-            with self.subTest(attribute=attribute):
-                destination = self.root / ("copy-%s.db" % attribute)
+            with self.subTest(attribute=attribute, value=value):
+                destination = self.root / ("copy-%s-%s.db" % (attribute, value))
                 with mock.patch(
                     "team_control.project_registry.os.%s" % attribute, value
                 ), mock.patch("team_control.project_registry.os.open") as open_file:
