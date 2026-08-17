@@ -435,6 +435,7 @@ class ProjectSnapshotReader:
             not isinstance(nofollow_flag, int)
             or nofollow_flag == 0
             or not isinstance(nonblock_flag, int)
+            or nonblock_flag == 0
             or not callable(getattr(os, "pread", None))
         ):
             raise OSError("safe snapshot capture is unsupported on this platform")

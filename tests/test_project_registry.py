@@ -795,7 +795,12 @@ class ProjectRegistryTests(unittest.TestCase):
         source.write_bytes(b"safe")
         identity = ProjectSnapshotReader._snapshot_file_identity(source)
 
-        for attribute, value in (("O_NOFOLLOW", 0), ("O_NONBLOCK", None), ("pread", None)):
+        for attribute, value in (
+            ("O_NOFOLLOW", 0),
+            ("O_NONBLOCK", None),
+            ("O_NONBLOCK", 0),
+            ("pread", None),
+        ):
             with self.subTest(attribute=attribute):
                 destination = self.root / ("copy-%s.db" % attribute)
                 with mock.patch(
@@ -808,6 +813,40 @@ class ProjectRegistryTests(unittest.TestCase):
 
                 open_file.assert_not_called()
                 self.assertFalse(destination.exists())
+
+    def test_snapshot_reader_handles_unbuffered_short_reads(self):
+        source = self.root / "source.db"
+        destination = self.root / "copy.db"
+        source.write_bytes(b"short reads remain complete")
+        identity = ProjectSnapshotReader._snapshot_file_identity(source)
+        real_fdopen = os.fdopen
+
+        class ShortReader:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                self.handle.__enter__()
+                return self
+
+            def __exit__(self, *arguments):
+                return self.handle.__exit__(*arguments)
+
+            def read(self, size):
+                return self.handle.read(min(size, 3))
+
+        def short_fdopen(descriptor, *arguments, **kwargs):
+            return ShortReader(real_fdopen(descriptor, *arguments, **kwargs))
+
+        with mock.patch(
+            "team_control.project_registry.os.fdopen", side_effect=short_fdopen
+        ):
+            copied_bytes = ProjectSnapshotReader._copy_snapshot_file(
+                source, destination, identity, identity.size
+            )
+
+        self.assertEqual(copied_bytes, identity.size)
+        self.assertEqual(destination.read_bytes(), source.read_bytes())
 
     def test_snapshot_reader_rejects_content_changes_with_restored_identity(self):
         database = self.make_compatible_target_database(self.target_root)
