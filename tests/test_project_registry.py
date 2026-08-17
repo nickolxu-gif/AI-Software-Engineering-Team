@@ -11,6 +11,7 @@ from unittest import mock
 from team_control.errors import BoundaryError, ContractError, CursorStaleError, GitStateError
 from team_control.git_context import RepoContext
 from team_control.project_registry import (
+    MAX_TARGET_SNAPSHOT_BYTES,
     ProjectRegistryService,
     ProjectSnapshotReader,
     READONLY_GIT_PREFIX,
@@ -315,13 +316,13 @@ class ProjectRegistryTests(unittest.TestCase):
 
     def test_project_registry_pagination_uses_one_read_snapshot(self):
         self.registry.register("Target", self.target_root)
-        original_read_connection = self.store.read_connection
+        original_read_snapshot = self.store.read_snapshot
         calls = []
 
         @contextmanager
         def tracked_read_snapshot():
             calls.append("snapshot")
-            with original_read_connection() as connection:
+            with original_read_snapshot() as connection:
                 yield connection
 
         with mock.patch.object(
@@ -331,6 +332,33 @@ class ProjectRegistryTests(unittest.TestCase):
             self.store.list_project_registry_events(limit=1)
 
         self.assertEqual(calls, ["snapshot", "snapshot"])
+
+    def test_registry_read_snapshot_begins_and_rolls_back(self):
+        original_read_connection = self.store.read_connection
+        calls = []
+
+        @contextmanager
+        def recording_read_connection():
+            with original_read_connection() as connection:
+                class RecordingConnection:
+                    def execute(inner_self, statement, *parameters):
+                        calls.append(("execute", statement))
+                        return connection.execute(statement, *parameters)
+
+                    def rollback(inner_self):
+                        calls.append(("rollback",))
+                        return connection.rollback()
+
+                yield RecordingConnection()
+
+        with mock.patch.object(
+            self.store, "read_connection", side_effect=recording_read_connection
+        ):
+            with self.store.read_snapshot():
+                pass
+
+        self.assertIn(("execute", "BEGIN"), calls)
+        self.assertIn(("rollback",), calls)
 
     def test_register_rejects_a_supplied_symbolic_link_without_audit_event(self):
         link = self.root / "target-link"
@@ -663,8 +691,15 @@ class ProjectRegistryTests(unittest.TestCase):
                 stderr=subprocess.PIPE,
             )
 
+    def test_snapshot_reader_rejects_a_git_common_directory_mismatch(self):
+        entry = self.registered_entry()
+        entry["common_dir_path"] = str(self.root / "different-common-dir")
+
+        with self.assertRaises(GitStateError):
+            ProjectSnapshotReader(entry)._registered_git_dir()
+
     def test_snapshot_reader_uses_sqlite_readonly_mode_and_denies_write_actions(self):
-        self.make_compatible_target_database(self.target_root)
+        database = self.make_compatible_target_database(self.target_root)
         entry = self.registered_entry()
         real_connect = sqlite3.connect
         calls = []
@@ -695,8 +730,9 @@ class ProjectRegistryTests(unittest.TestCase):
 
         self.assertEqual(card["control_status"], "HEALTHY")
         connect = next(call for call in calls if call[0] == "connect")
-        self.assertIn("?mode=ro", connect[1][0])
-        self.assertTrue(connect[2]["uri"])
+        self.assertNotEqual(connect[1][0], str(database))
+        self.assertTrue(Path(connect[1][0]).is_relative_to(Path(tempfile.gettempdir())))
+        self.assertFalse(connect[2].get("uri", False))
         self.assertIn(("execute", "PRAGMA query_only = ON"), calls)
         authorizer_index = next(
             index for index, call in enumerate(calls) if call[0] == "authorizer"
@@ -774,6 +810,15 @@ class ProjectRegistryTests(unittest.TestCase):
             self.assertEqual(after, before)
         finally:
             writer.close()
+
+    def test_snapshot_reader_rejects_a_database_larger_than_the_snapshot_budget(self):
+        database = self.make_compatible_target_database(self.target_root)
+        with database.open("r+b") as handle:
+            handle.truncate(MAX_TARGET_SNAPSHOT_BYTES + 1)
+
+        card = ProjectSnapshotReader(self.registered_entry()).snapshot()
+
+        self.assertEqual(card["control_status"], "UNAVAILABLE")
 
     def test_snapshot_reader_does_not_modify_target_database_or_wal_sidecars(self):
         database = self.make_compatible_target_database(self.target_root)

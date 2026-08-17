@@ -24,6 +24,7 @@ READONLY_GIT_PREFIX = (
 )
 GIT_TIMEOUT_SECONDS = 2.0
 SQLITE_TIMEOUT_SECONDS = 1.0
+MAX_TARGET_SNAPSHOT_BYTES = 64 * 1024 * 1024
 
 # This is intentionally a historical, read-only compatibility contract.  A
 # registered project is not required to contain the central project's registry
@@ -355,22 +356,22 @@ class ProjectSnapshotReader:
         return counts, cls._safe_timestamp(latest)
 
     def _read_control_summary(self, database):
-        connection = None
         try:
             with self._local_database_snapshot(database) as local_database:
                 connection = sqlite3.connect(
-                    local_database.as_uri() + "?mode=ro",
-                    uri=True,
-                    timeout=SQLITE_TIMEOUT_SECONDS,
+                    str(local_database), timeout=SQLITE_TIMEOUT_SECONDS
                 )
-                connection.execute("PRAGMA query_only = ON")
-                connection.execute(
-                    "PRAGMA busy_timeout = %d" % int(SQLITE_TIMEOUT_SECONDS * 1000)
-                )
-                connection.set_authorizer(self._readonly_authorizer)
-                self._validate_target_schema(connection)
-                counts, latest = self._task_summary(connection)
-                return "HEALTHY", counts, latest
+                try:
+                    connection.execute("PRAGMA query_only = ON")
+                    connection.execute(
+                        "PRAGMA busy_timeout = %d" % int(SQLITE_TIMEOUT_SECONDS * 1000)
+                    )
+                    connection.set_authorizer(self._readonly_authorizer)
+                    self._validate_target_schema(connection)
+                    counts, latest = self._task_summary(connection)
+                    return "HEALTHY", counts, latest
+                finally:
+                    connection.close()
         except _UnsupportedTargetSchema:
             return "UNSUPPORTED", None, None
         except sqlite3.OperationalError:
@@ -379,10 +380,6 @@ class ProjectSnapshotReader:
             return "UNSUPPORTED", None, None
         except OSError:
             return "UNAVAILABLE", None, None
-        finally:
-            if connection is not None:
-                connection.close()
-
     @staticmethod
     def _snapshot_file_identity(path):
         path = Path(path)
@@ -407,12 +404,16 @@ class ProjectSnapshotReader:
         sources = (
             database,
             Path(str(database) + "-wal"),
-            Path(str(database) + "-shm"),
         )
         before = tuple(cls._snapshot_file_identity(source) for source in sources)
         if before[0] is None:
             raise OSError("target database snapshot input is unavailable")
+        total_bytes = sum(identity[3] for identity in before if identity is not None)
+        if total_bytes > MAX_TARGET_SNAPSHOT_BYTES:
+            raise OSError("target database snapshot exceeds the size budget")
         with tempfile.TemporaryDirectory(prefix="team-project-snapshot-") as directory:
+            if shutil.disk_usage(directory).free < total_bytes:
+                raise OSError("target database snapshot has insufficient local space")
             local_sources = tuple(Path(directory) / source.name for source in sources)
             for source, local_source, identity in zip(sources, local_sources, before):
                 if identity is not None:
