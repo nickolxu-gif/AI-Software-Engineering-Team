@@ -8,6 +8,30 @@ from .errors import BoundaryError, GitStateError
 
 
 COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+SYSTEM_GIT_PATH = Path("/usr/bin/git")
+GIT_DISCOVERY_ENV = {
+    "PATH": "/usr/bin:/bin",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_TERMINAL_PROMPT": "0",
+}
+
+
+def system_git_executable():
+    try:
+        metadata = SYSTEM_GIT_PATH.lstat()
+    except OSError as error:
+        raise GitStateError("system git executable is unavailable") from error
+    if (
+        not metadata.st_mode & 0o111
+        or not SYSTEM_GIT_PATH.is_file()
+        or SYSTEM_GIT_PATH.is_symlink()
+    ):
+        raise GitStateError("system git executable is unavailable")
+    return str(SYSTEM_GIT_PATH)
 
 
 def validate_component(value, label):
@@ -84,8 +108,15 @@ class RepoContext:
     @classmethod
     def discover(cls, candidate):
         start = Path(candidate).resolve(strict=True)
-        top = Path(run_argv(["git", "rev-parse", "--show-toplevel"], start).stdout.strip()).resolve(strict=True)
-        common_raw = Path(run_argv(["git", "rev-parse", "--git-common-dir"], start).stdout.strip())
+        executable = system_git_executable()
+        top = Path(run_argv(
+            [executable, "rev-parse", "--show-toplevel"], start,
+            env_overrides=GIT_DISCOVERY_ENV, inherit_env=False,
+        ).stdout.strip()).resolve(strict=True)
+        common_raw = Path(run_argv(
+            [executable, "rev-parse", "--git-common-dir"], start,
+            env_overrides=GIT_DISCOVERY_ENV, inherit_env=False,
+        ).stdout.strip())
         common = common_raw if common_raw.is_absolute() else start / common_raw
         return cls(root=top, common_dir=common.resolve(strict=True))
 

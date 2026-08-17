@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .contracts import TASK_STATES, validate_project_registry_display_name
 from .errors import BoundaryError, GitStateError
-from .git_context import RepoContext
+from .git_context import RepoContext, system_git_executable
 from .store import TASK_INTAKE_REQUIRED_SCHEMA_COLUMNS
 
 
@@ -33,6 +33,7 @@ LOCAL_SNAPSHOT_OVERHEAD_BYTES = 8 * 1024 * 1024
 # registered project is not required to contain the central project's registry
 # tables, and sampling must never initialize or migrate it.
 TARGET_CONTROL_REQUIRED_SCHEMA = {
+    **TASK_INTAKE_REQUIRED_SCHEMA_COLUMNS,
     "tasks": frozenset((
         "dispatch_id", "title", "objective", "risk_level", "state", "owner",
         "agent", "slug", "branch", "worktree_path", "task_base_sha",
@@ -65,7 +66,6 @@ TARGET_CONTROL_REQUIRED_SCHEMA = {
         "intent_id", "dispatch_id", "action", "target_sha", "status",
         "result_code", "created_at", "updated_at",
     )),
-    **TASK_INTAKE_REQUIRED_SCHEMA_COLUMNS,
 }
 
 
@@ -168,10 +168,14 @@ class ProjectSnapshotReader:
             "GIT_TERMINAL_PROMPT": "0",
         }
 
+    @staticmethod
+    def _readonly_git_prefix():
+        return (system_git_executable(), *READONLY_GIT_PREFIX[1:])
+
     def _registered_git_dir(self):
         completed = subprocess.run(
             [
-                *READONLY_GIT_PREFIX,
+                *self._readonly_git_prefix(),
                 "-C", self.entry["root_path"],
                 "rev-parse", "--absolute-git-dir", "--git-common-dir",
             ],
@@ -182,6 +186,7 @@ class ProjectSnapshotReader:
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             timeout=GIT_TIMEOUT_SECONDS,
             env=self._git_environment(),
         )
@@ -209,7 +214,7 @@ class ProjectSnapshotReader:
         git_dir = self._registered_git_dir()
         completed = subprocess.run(
             [
-                *READONLY_GIT_PREFIX,
+                *self._readonly_git_prefix(),
                 "--git-dir", git_dir,
                 "--work-tree", self.entry["root_path"],
                 "rev-parse", "HEAD",
@@ -221,6 +226,7 @@ class ProjectSnapshotReader:
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             timeout=GIT_TIMEOUT_SECONDS,
             env=self._git_environment(),
         )
@@ -318,11 +324,12 @@ class ProjectSnapshotReader:
     def _database_identity_snapshot(cls, common_dir):
         try:
             database, identity = cls._regular_database(common_dir)
+            snapshot_fingerprint = cls._snapshot_input_fingerprint(database)
         except _MissingTargetDatabase:
             return ("MISSING",)
         except OSError:
             return ("UNAVAILABLE",)
-        return ("PRESENT", str(database), identity)
+        return ("PRESENT", str(database), identity, snapshot_fingerprint)
 
     @staticmethod
     def _validate_target_schema(connection):
@@ -429,8 +436,8 @@ class ProjectSnapshotReader:
             offset += len(chunk)
         return offset, digest.digest()
 
-    @classmethod
-    def _copy_snapshot_file(cls, source, destination, expected_identity, remaining_bytes):
+    @staticmethod
+    def _snapshot_open_flags():
         nofollow_flag = getattr(os, "O_NOFOLLOW", None)
         nonblock_flag = getattr(os, "O_NONBLOCK", None)
         if (
@@ -441,10 +448,63 @@ class ProjectSnapshotReader:
             or not callable(getattr(os, "pread", None))
         ):
             raise OSError("safe snapshot capture is unsupported on this platform")
+        return os.O_RDONLY | nofollow_flag | nonblock_flag
+
+    @staticmethod
+    def _snapshot_sources(database):
+        database = Path(database)
+        return (
+            database,
+            Path(str(database) + "-wal"),
+            Path(str(database) + "-journal"),
+        )
+
+    @classmethod
+    def _snapshot_file_digest(cls, source, expected_identity):
+        descriptor = os.open(str(source), cls._snapshot_open_flags())
+        try:
+            if (
+                cls._snapshot_file_identity_from_metadata(os.fstat(descriptor))
+                != expected_identity
+            ):
+                raise OSError("target database changed during snapshot capture")
+            digest_size, digest = cls._snapshot_digest(
+                descriptor, expected_identity.size
+            )
+            if (
+                digest_size != expected_identity.size
+                or cls._snapshot_file_identity_from_metadata(os.fstat(descriptor))
+                != expected_identity
+            ):
+                raise OSError("target database changed during snapshot capture")
+            return digest
+        finally:
+            os.close(descriptor)
+
+    @classmethod
+    def _snapshot_input_fingerprint(cls, database):
+        sources = cls._snapshot_sources(database)
+        identities = tuple(cls._snapshot_file_identity(source) for source in sources)
+        if identities[0] is None:
+            raise OSError("target database snapshot input is unavailable")
+        total_bytes = sum(
+            identity.size for identity in identities if identity is not None
+        )
+        if total_bytes > MAX_TARGET_SNAPSHOT_BYTES:
+            raise OSError("target database snapshot exceeds the size budget")
+        fingerprint = tuple(
+            None if identity is None else (identity, cls._snapshot_file_digest(source, identity))
+            for source, identity in zip(sources, identities)
+        )
+        if tuple(cls._snapshot_file_identity(source) for source in sources) != identities:
+            raise OSError("target database changed during snapshot capture")
+        return fingerprint
+
+    @classmethod
+    def _copy_snapshot_file(cls, source, destination, expected_identity, remaining_bytes):
         if expected_identity.size > remaining_bytes:
             raise OSError("target database snapshot exceeds the size budget")
-        open_flags = os.O_RDONLY | nofollow_flag | nonblock_flag
-        descriptor = os.open(str(source), open_flags)
+        descriptor = os.open(str(source), cls._snapshot_open_flags())
         try:
             opened_identity = cls._snapshot_file_identity_from_metadata(
                 os.fstat(descriptor)
@@ -487,12 +547,7 @@ class ProjectSnapshotReader:
     @classmethod
     @contextmanager
     def _local_database_snapshot(cls, database):
-        database = Path(database)
-        sources = (
-            database,
-            Path(str(database) + "-wal"),
-            Path(str(database) + "-journal"),
-        )
+        sources = cls._snapshot_sources(database)
         before = tuple(cls._snapshot_file_identity(source) for source in sources)
         if before[0] is None:
             raise OSError("target database snapshot input is unavailable")

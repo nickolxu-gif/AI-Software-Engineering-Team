@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -24,6 +25,25 @@ class GitContextTests(unittest.TestCase):
             context = RepoContext.discover(repo / "scripts")
             self.assertEqual(context.root, repo.resolve())
             self.assertEqual(context.common_dir, (repo / ".git").resolve())
+
+    def test_discovery_uses_a_fixed_git_path_and_isolated_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            common = root / ".git"
+            common.mkdir()
+            completed = [
+                subprocess.CompletedProcess([], 0, str(root) + "\n", ""),
+                subprocess.CompletedProcess([], 0, str(common) + "\n", ""),
+            ]
+            with mock.patch(
+                "team_control.git_context.run_argv", side_effect=completed
+            ) as run:
+                RepoContext.discover(root)
+
+        for call in run.call_args_list:
+            self.assertTrue(Path(call.args[0][0]).is_absolute())
+            self.assertFalse(call.kwargs["inherit_env"])
+            self.assertEqual(call.kwargs["env_overrides"]["GIT_TERMINAL_PROMPT"], "0")
 
     def test_discovers_shared_git_common_directory_from_linked_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:

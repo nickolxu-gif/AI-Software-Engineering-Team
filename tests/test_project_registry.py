@@ -637,6 +637,7 @@ class ProjectRegistryTests(unittest.TestCase):
             self.assertEqual(call.kwargs["timeout"], 2.0)
             self.assertEqual(call.kwargs["encoding"], "utf-8")
             self.assertEqual(call.kwargs["errors"], "replace")
+            self.assertIs(call.kwargs["stdin"], subprocess.DEVNULL)
             self.assertEqual(call.kwargs["env"]["GIT_OPTIONAL_LOCKS"], "0")
             self.assertEqual(call.kwargs["env"]["GIT_CONFIG_NOSYSTEM"], "1")
             self.assertEqual(call.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
@@ -1151,6 +1152,37 @@ class ProjectRegistryTests(unittest.TestCase):
             return real_head()
 
         with mock.patch.object(reader, "_head_sha", side_effect=replace_database_before_result):
+            card = reader.snapshot()
+
+        self.assertEqual(card["control_status"], "IDENTITY_MISMATCH")
+        self.assertEqual(card["head_sha"], "HEAD_UNAVAILABLE")
+        self.assertTrue(all(count == 0 for count in card["task_counts"].values()))
+        self.assertIsNone(card["latest_task_updated_at"])
+
+    def test_snapshot_reader_discards_data_when_database_content_changes_with_restored_metadata(self):
+        database = self.make_compatible_target_database(self.target_root, "BLOCKED")
+        entry = self.registered_entry()
+        reader = ProjectSnapshotReader(entry)
+        original_metadata = database.stat()
+        real_head = reader._head_sha
+
+        def mutate_database_before_head():
+            connection = sqlite3.connect(str(database))
+            try:
+                connection.execute(
+                    "UPDATE tasks SET updated_at = ?",
+                    ("2026-08-17T00:00:00+00:00",),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            os.utime(
+                database,
+                ns=(original_metadata.st_atime_ns, original_metadata.st_mtime_ns),
+            )
+            return real_head()
+
+        with mock.patch.object(reader, "_head_sha", side_effect=mutate_database_before_head):
             card = reader.snapshot()
 
         self.assertEqual(card["control_status"], "IDENTITY_MISMATCH")
