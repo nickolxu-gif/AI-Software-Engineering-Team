@@ -792,15 +792,22 @@ class ProjectRegistryTests(unittest.TestCase):
 
     def test_snapshot_reader_fails_closed_without_required_os_capabilities(self):
         source = self.root / "source.db"
-        destination = self.root / "copy.db"
         source.write_bytes(b"safe")
         identity = ProjectSnapshotReader._snapshot_file_identity(source)
 
-        with mock.patch("team_control.project_registry.os.O_NOFOLLOW", None):
-            with self.assertRaisesRegex(OSError, "unsupported on this platform"):
-                ProjectSnapshotReader._copy_snapshot_file(
-                    source, destination, identity, identity.size
-                )
+        for attribute, value in (("O_NOFOLLOW", 0), ("O_NONBLOCK", None), ("pread", None)):
+            with self.subTest(attribute=attribute):
+                destination = self.root / ("copy-%s.db" % attribute)
+                with mock.patch(
+                    "team_control.project_registry.os.%s" % attribute, value
+                ), mock.patch("team_control.project_registry.os.open") as open_file:
+                    with self.assertRaisesRegex(OSError, "unsupported on this platform"):
+                        ProjectSnapshotReader._copy_snapshot_file(
+                            source, destination, identity, identity.size
+                        )
+
+                open_file.assert_not_called()
+                self.assertFalse(destination.exists())
 
     def test_snapshot_reader_rejects_content_changes_with_restored_identity(self):
         database = self.make_compatible_target_database(self.target_root)

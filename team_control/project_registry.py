@@ -433,6 +433,7 @@ class ProjectSnapshotReader:
         nonblock_flag = getattr(os, "O_NONBLOCK", None)
         if (
             not isinstance(nofollow_flag, int)
+            or nofollow_flag == 0
             or not isinstance(nonblock_flag, int)
             or not callable(getattr(os, "pread", None))
         ):
@@ -455,7 +456,7 @@ class ProjectSnapshotReader:
             copied_bytes = 0
             copied_digest = hashlib.sha256()
             with (
-                os.fdopen(descriptor, "rb", closefd=False) as input_handle,
+                os.fdopen(descriptor, "rb", buffering=0, closefd=False) as input_handle,
                 Path(destination).open("xb") as output_handle,
             ):
                 while copied_bytes < expected_identity.size:
