@@ -1,3 +1,4 @@
+import hashlib
 import os
 import shutil
 import sqlite3
@@ -413,19 +414,36 @@ class ProjectSnapshotReader:
         return cls._snapshot_file_identity_from_metadata(metadata)
 
     @staticmethod
-    def _snapshot_header(descriptor):
-        return os.pread(descriptor, 100, 0)
+    def _snapshot_digest(descriptor, expected_size):
+        digest = hashlib.sha256()
+        offset = 0
+        while offset < expected_size:
+            chunk = os.pread(
+                descriptor, min(1024 * 1024, expected_size - offset), offset
+            )
+            if not chunk:
+                break
+            digest.update(chunk)
+            offset += len(chunk)
+        return offset, digest.digest()
 
     @classmethod
     def _copy_snapshot_file(cls, source, destination, expected_identity, remaining_bytes):
-        descriptor = os.open(str(source), os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            open_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            os.pread
+        except AttributeError as error:
+            raise OSError("safe snapshot capture is unsupported on this platform") from error
+        descriptor = os.open(str(source), open_flags)
         try:
             opened_identity = cls._snapshot_file_identity_from_metadata(
                 os.fstat(descriptor)
             )
             if opened_identity != expected_identity:
                 raise OSError("target database changed during snapshot capture")
-            header_before = cls._snapshot_header(descriptor)
+            digest_before = cls._snapshot_digest(descriptor, expected_identity.size)
+            if digest_before[0] != expected_identity.size:
+                raise OSError("target database changed during snapshot capture")
             copied_bytes = 0
             with (
                 os.fdopen(descriptor, "rb", closefd=False) as input_handle,
@@ -445,7 +463,8 @@ class ProjectSnapshotReader:
                 copied_bytes != expected_identity.size
                 or cls._snapshot_file_identity_from_metadata(os.fstat(descriptor))
                 != expected_identity
-                or cls._snapshot_header(descriptor) != header_before
+                or cls._snapshot_digest(descriptor, expected_identity.size)
+                != digest_before
             ):
                 raise OSError("target database changed during snapshot capture")
             return copied_bytes

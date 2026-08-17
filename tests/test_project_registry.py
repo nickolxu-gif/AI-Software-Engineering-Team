@@ -788,41 +788,83 @@ class ProjectRegistryTests(unittest.TestCase):
 
         self.assertEqual(len(observed_flags), 1)
         self.assertTrue(observed_flags[0] & os.O_NOFOLLOW)
+        self.assertTrue(observed_flags[0] & os.O_NONBLOCK)
 
-    def test_snapshot_reader_rejects_header_changes_with_restored_identity(self):
+    def test_snapshot_reader_rejects_content_changes_with_restored_identity(self):
         database = self.make_compatible_target_database(self.target_root)
         initial_identity = ProjectSnapshotReader._snapshot_file_identity(database)
-        original_header = ProjectSnapshotReader._snapshot_header
+        temporary_directory = tempfile.TemporaryDirectory(dir=str(self.root))
+        temporary_path = Path(temporary_directory.name)
+        original_digest = ProjectSnapshotReader._snapshot_digest
         mutated = False
 
-        def mutate_after_reading_initial_header(descriptor):
+        def mutate_after_reading_initial_digest(descriptor, expected_size):
             nonlocal mutated
-            header = original_header(descriptor)
+            digest = original_digest(descriptor, expected_size)
             if not mutated:
                 metadata = database.stat()
                 with database.open("r+b") as handle:
-                    handle.seek(24)
+                    handle.seek(200)
                     original_byte = handle.read(1)
-                    handle.seek(24)
+                    handle.seek(200)
                     handle.write(bytes([original_byte[0] ^ 1]))
                 os.utime(
                     database,
                     ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
                 )
                 mutated = True
-            return header
+            return digest
 
         with mock.patch.object(
             ProjectSnapshotReader,
-            "_snapshot_header",
-            side_effect=mutate_after_reading_initial_header,
+            "_snapshot_digest",
+            side_effect=mutate_after_reading_initial_digest,
+        ), mock.patch(
+            "team_control.project_registry.tempfile.TemporaryDirectory",
+            return_value=temporary_directory,
         ):
             with self.assertRaisesRegex(OSError, "changed during snapshot capture"):
                 with ProjectSnapshotReader._local_database_snapshot(database):
                     pass
 
+        self.assertFalse(temporary_path.exists())
         self.assertEqual(
             ProjectSnapshotReader._snapshot_file_identity(database), initial_identity
+        )
+
+    def test_snapshot_reader_rejects_copy_over_the_total_budget(self):
+        source = self.root / "source.db"
+        destination = self.root / "copy.db"
+        source.write_bytes(b"exceeds")
+        identity = ProjectSnapshotReader._snapshot_file_identity(source)
+
+        with self.assertRaisesRegex(OSError, "exceeds the size budget"):
+            ProjectSnapshotReader._copy_snapshot_file(source, destination, identity, 1)
+
+    def test_snapshot_reader_shares_the_total_budget_between_database_and_wal(self):
+        database = self.root / "target.db"
+        wal = Path(str(database) + "-wal")
+        database.write_bytes(b"db")
+        wal.write_bytes(b"wal")
+        observed_remaining_bytes = []
+        original_copy = ProjectSnapshotReader._copy_snapshot_file
+
+        def record_copy(source, destination, identity, remaining_bytes):
+            observed_remaining_bytes.append((Path(source), remaining_bytes))
+            return original_copy(source, destination, identity, remaining_bytes)
+
+        with mock.patch.object(
+            ProjectSnapshotReader, "_copy_snapshot_file", side_effect=record_copy
+        ):
+            with ProjectSnapshotReader._local_database_snapshot(database):
+                pass
+
+        self.assertEqual(
+            observed_remaining_bytes,
+            [
+                (database, MAX_TARGET_SNAPSHOT_BYTES),
+                (wal, MAX_TARGET_SNAPSHOT_BYTES - database.stat().st_size),
+            ],
         )
 
     def test_snapshot_reader_drops_an_untrusted_latest_task_timestamp(self):
