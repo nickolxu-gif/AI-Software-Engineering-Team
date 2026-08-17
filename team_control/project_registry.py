@@ -489,6 +489,7 @@ class ProjectSnapshotReader:
         sources = (
             database,
             Path(str(database) + "-wal"),
+            Path(str(database) + "-journal"),
         )
         before = tuple(cls._snapshot_file_identity(source) for source in sources)
         if before[0] is None:
@@ -535,7 +536,11 @@ class ProjectSnapshotReader:
             card["latest_task_updated_at"] = latest
         try:
             card["head_sha"] = self._head_sha()
-        except (GitStateError, OSError, subprocess.TimeoutExpired):
+        except GitStateError:
+            card = self._public_card(self.entry, sampled_at=card["sampled_at"])
+            card["control_status"] = "IDENTITY_MISMATCH"
+            return card
+        except (OSError, subprocess.TimeoutExpired):
             pass
         registered_after = self._registered_identity_snapshot()
         database_after = (

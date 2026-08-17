@@ -700,6 +700,22 @@ class ProjectRegistryTests(unittest.TestCase):
         with self.assertRaises(GitStateError):
             ProjectSnapshotReader(entry)._registered_git_dir()
 
+    def test_snapshot_reader_marks_live_git_common_directory_drift_as_identity_mismatch(self):
+        self.make_compatible_target_database(self.target_root)
+        reader = ProjectSnapshotReader(self.registered_entry())
+
+        with mock.patch.object(
+            reader,
+            "_registered_git_dir",
+            side_effect=GitStateError("registered repository metadata is unavailable"),
+        ):
+            card = reader.snapshot()
+
+        self.assertEqual(card["control_status"], "IDENTITY_MISMATCH")
+        self.assertEqual(card["head_sha"], "HEAD_UNAVAILABLE")
+        self.assertTrue(all(count == 0 for count in card["task_counts"].values()))
+        self.assertIsNone(card["latest_task_updated_at"])
+
     def test_snapshot_reader_uses_sqlite_readonly_mode_and_denies_write_actions(self):
         database = self.make_compatible_target_database(self.target_root)
         entry = self.registered_entry()
@@ -957,6 +973,26 @@ class ProjectRegistryTests(unittest.TestCase):
                 (wal, MAX_TARGET_SNAPSHOT_BYTES - database.stat().st_size),
             ],
         )
+
+    def test_snapshot_reader_copies_a_rollback_journal_with_the_database_snapshot(self):
+        database = self.root / "target.db"
+        journal = Path(str(database) + "-journal")
+        database.write_bytes(b"db")
+        journal.write_bytes(b"journal")
+        observed_sources = []
+        original_copy = ProjectSnapshotReader._copy_snapshot_file
+
+        def record_copy(source, destination, identity, remaining_bytes):
+            observed_sources.append(Path(source))
+            return original_copy(source, destination, identity, remaining_bytes)
+
+        with mock.patch.object(
+            ProjectSnapshotReader, "_copy_snapshot_file", side_effect=record_copy
+        ):
+            with ProjectSnapshotReader._local_database_snapshot(database):
+                pass
+
+        self.assertEqual(observed_sources, [database, journal])
 
     def test_snapshot_reader_drops_an_untrusted_latest_task_timestamp(self):
         database = self.make_compatible_target_database(self.target_root)
