@@ -4,6 +4,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -129,6 +130,11 @@ class ProjectRegistryTests(unittest.TestCase):
         })
         self.assertNotIn("root_path", summary)
         self.assertNotIn("common_dir_path", summary)
+
+    def test_registry_constructor_retains_context_keyword_compatibility(self):
+        registry = ProjectRegistryService(context=self.context, store=self.store)
+
+        self.assertIs(registry.store, self.store)
 
     def test_register_rejects_invalid_display_names(self):
         for value in (True, None, 7, "", "   ", "line\nbreak", "x" * 81):
@@ -306,6 +312,25 @@ class ProjectRegistryTests(unittest.TestCase):
                     "event_id": entry["project_id"],
                 }
             )
+
+    def test_project_registry_pagination_uses_one_read_snapshot(self):
+        self.registry.register("Target", self.target_root)
+        original_read_connection = self.store.read_connection
+        calls = []
+
+        @contextmanager
+        def tracked_read_snapshot():
+            calls.append("snapshot")
+            with original_read_connection() as connection:
+                yield connection
+
+        with mock.patch.object(
+            self.store, "read_snapshot", side_effect=tracked_read_snapshot
+        ):
+            self.store.list_project_registry_entries_page(limit=1)
+            self.store.list_project_registry_events(limit=1)
+
+        self.assertEqual(calls, ["snapshot", "snapshot"])
 
     def test_register_rejects_a_supplied_symbolic_link_without_audit_event(self):
         link = self.root / "target-link"
@@ -563,19 +588,80 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertEqual(card["control_status"], "HEALTHY")
         self.assertEqual(
             [call.args[0] for call in observed.call_args_list],
-            [[
-                *READONLY_GIT_PREFIX,
-                "--git-dir", entry["common_dir_path"],
-                "--work-tree", entry["root_path"],
-                "rev-parse", "HEAD",
-            ]],
+            [
+                [
+                    *READONLY_GIT_PREFIX,
+                    "-C", entry["root_path"],
+                    "rev-parse", "--absolute-git-dir", "--git-common-dir",
+                ],
+                [
+                    *READONLY_GIT_PREFIX,
+                    "--git-dir", entry["common_dir_path"],
+                    "--work-tree", entry["root_path"],
+                    "rev-parse", "HEAD",
+                ],
+            ],
         )
-        self.assertEqual(observed.call_args.kwargs["timeout"], 2.0)
-        self.assertEqual(observed.call_args.kwargs["encoding"], "utf-8")
-        self.assertEqual(observed.call_args.kwargs["errors"], "replace")
-        self.assertEqual(observed.call_args.kwargs["env"]["GIT_OPTIONAL_LOCKS"], "0")
-        self.assertEqual(observed.call_args.kwargs["env"]["GIT_CONFIG_NOSYSTEM"], "1")
-        self.assertEqual(observed.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+        for call in observed.call_args_list:
+            self.assertEqual(call.kwargs["timeout"], 2.0)
+            self.assertEqual(call.kwargs["encoding"], "utf-8")
+            self.assertEqual(call.kwargs["errors"], "replace")
+            self.assertEqual(call.kwargs["env"]["GIT_OPTIONAL_LOCKS"], "0")
+            self.assertEqual(call.kwargs["env"]["GIT_CONFIG_NOSYSTEM"], "1")
+            self.assertEqual(call.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+
+    def test_snapshot_reader_uses_the_registered_linked_worktree_head(self):
+        linked_root = self.root / "linked-target"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "linked-target", str(linked_root)],
+            cwd=str(self.target_root),
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            subprocess.run(
+                ["git", "commit", "--allow-empty", "-m", "test: linked head"],
+                cwd=str(linked_root),
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            linked_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(linked_root),
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            ).stdout.strip()
+            main_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(self.target_root),
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            ).stdout.strip()
+            self.assertNotEqual(linked_head, main_head)
+
+            entry = self.registry.register("Linked Target", linked_root)
+            card = ProjectSnapshotReader(
+                self.store.get_project_registry_entry(entry["project_id"])
+            ).snapshot()
+
+            self.assertEqual(card["head_sha"], linked_head)
+        finally:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(linked_root)],
+                cwd=str(self.target_root),
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
 
     def test_snapshot_reader_uses_sqlite_readonly_mode_and_denies_write_actions(self):
         self.make_compatible_target_database(self.target_root)
@@ -612,7 +698,17 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertIn("?mode=ro", connect[1][0])
         self.assertTrue(connect[2]["uri"])
         self.assertIn(("execute", "PRAGMA query_only = ON"), calls)
-        authorizer = next(call[1] for call in calls if call[0] == "authorizer")
+        authorizer_index = next(
+            index for index, call in enumerate(calls) if call[0] == "authorizer"
+        )
+        schema_index = next(
+            index
+            for index, call in enumerate(calls)
+            if call[0] == "execute"
+            and call[1].startswith("SELECT type FROM sqlite_master")
+        )
+        self.assertLess(authorizer_index, schema_index)
+        authorizer = calls[authorizer_index][1]
         self.assertEqual(
             authorizer(getattr(sqlite3, "SQLITE_ATTACH", 24), None, None, None, None),
             sqlite3.SQLITE_DENY,
@@ -624,6 +720,13 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertEqual(
             authorizer(getattr(sqlite3, "SQLITE_PRAGMA", 19), None, None, None, None),
             sqlite3.SQLITE_DENY,
+        )
+        self.assertEqual(
+            authorizer(
+                getattr(sqlite3, "SQLITE_PRAGMA", 19),
+                "table_info", None, None, None,
+            ),
+            sqlite3.SQLITE_OK,
         )
 
     def test_snapshot_reader_drops_an_untrusted_latest_task_timestamp(self):
@@ -664,7 +767,7 @@ class ProjectRegistryTests(unittest.TestCase):
             card = ProjectSnapshotReader(entry).snapshot()
 
             after = {str(path): self.file_fingerprint(path) for path in tracked}
-            self.assertEqual(card["control_status"], "HEALTHY")
+            self.assertEqual(card["control_status"], "UNAVAILABLE")
             self.assertEqual(after, before)
         finally:
             writer.close()

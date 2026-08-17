@@ -1089,6 +1089,22 @@ class ControlStore:
         finally:
             connection.close()
 
+    @contextmanager
+    def read_snapshot(self):
+        """Keep a bounded, read-only SQLite snapshot for one compound read."""
+        with self.read_connection() as connection:
+            started = False
+            try:
+                connection.execute("BEGIN")
+                started = True
+                yield connection
+            finally:
+                if started:
+                    try:
+                        connection.rollback()
+                    except sqlite3.Error:
+                        pass
+
     def require_schema_compatible(self):
         with self.read_connection() as connection:
             self._require_schema_compatible_in_connection(connection)
@@ -1496,7 +1512,7 @@ class ControlStore:
             query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY created_at, project_id LIMIT ?"
         parameters.append(limit + 1)
-        with self.read_connection() as connection:
+        with self.read_snapshot() as connection:
             self._require_schema_compatible_in_connection(connection)
             if cursor_values is not None:
                 self._require_project_registry_cursor_anchor(
@@ -1575,7 +1591,7 @@ class ControlStore:
             query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY created_at, event_id LIMIT ?"
         parameters.append(limit + 1)
-        with self.read_connection() as connection:
+        with self.read_snapshot() as connection:
             self._require_schema_compatible_in_connection(connection)
             if cursor_values is not None:
                 self._require_project_registry_cursor_anchor(

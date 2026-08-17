@@ -152,11 +152,49 @@ class ProjectSnapshotReader:
             "GIT_TERMINAL_PROMPT": "0",
         }
 
-    def _head_sha(self):
+    def _registered_git_dir(self):
         completed = subprocess.run(
             [
                 *READONLY_GIT_PREFIX,
-                "--git-dir", self.entry["common_dir_path"],
+                "-C", self.entry["root_path"],
+                "rev-parse", "--absolute-git-dir", "--git-common-dir",
+            ],
+            cwd=self.entry["root_path"],
+            check=False,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=GIT_TIMEOUT_SECONDS,
+            env=self._git_environment(),
+        )
+        paths = completed.stdout.splitlines()
+        if completed.returncode != 0 or len(paths) != 2:
+            raise GitStateError("registered repository metadata is unavailable")
+        root = Path(self.entry["root_path"])
+        try:
+            git_dir = Path(paths[0])
+            common_dir = Path(paths[1])
+            if not git_dir.is_absolute():
+                git_dir = root / git_dir
+            if not common_dir.is_absolute():
+                common_dir = root / common_dir
+            git_dir, _git_dir_identity = self._identity(git_dir)
+            common_dir, _common_dir_identity = self._identity(common_dir)
+            git_dir.relative_to(common_dir)
+        except (OSError, TypeError, ValueError):
+            raise GitStateError("registered repository metadata is unavailable")
+        if str(common_dir) != self.entry["common_dir_path"]:
+            raise GitStateError("registered repository metadata is unavailable")
+        return str(git_dir)
+
+    def _head_sha(self):
+        git_dir = self._registered_git_dir()
+        completed = subprocess.run(
+            [
+                *READONLY_GIT_PREFIX,
+                "--git-dir", git_dir,
                 "--work-tree", self.entry["root_path"],
                 "rev-parse", "HEAD",
             ],
@@ -178,7 +216,12 @@ class ProjectSnapshotReader:
         return value
 
     @staticmethod
-    def _readonly_authorizer(action, _arg1, _arg2, _database, _source):
+    def _readonly_authorizer(action, arg1, _arg2, _database, _source):
+        if (
+            action == getattr(sqlite3, "SQLITE_PRAGMA", 19)
+            and arg1 == "table_info"
+        ):
+            return sqlite3.SQLITE_OK
         denied_actions = {
             getattr(sqlite3, "SQLITE_ATTACH", 24),
             getattr(sqlite3, "SQLITE_DETACH", 25),
@@ -273,6 +316,7 @@ class ProjectSnapshotReader:
                 raise _UnsupportedTargetSchema()
             columns = {
                 row[1]
+                # table is a fixed module-private schema key, never target input.
                 for row in connection.execute("PRAGMA table_info(%s)" % table)
             }
             if not required_columns.issubset(columns):
@@ -308,6 +352,9 @@ class ProjectSnapshotReader:
         return counts, cls._safe_timestamp(latest)
 
     def _read_control_summary(self, database):
+        wal_before = self._wal_identity(database)
+        if wal_before is not None:
+            return "UNAVAILABLE", None, None
         connection = None
         try:
             connection = sqlite3.connect(
@@ -319,9 +366,11 @@ class ProjectSnapshotReader:
             connection.execute(
                 "PRAGMA busy_timeout = %d" % int(SQLITE_TIMEOUT_SECONDS * 1000)
             )
-            self._validate_target_schema(connection)
             connection.set_authorizer(self._readonly_authorizer)
+            self._validate_target_schema(connection)
             counts, latest = self._task_summary(connection)
+            if self._wal_identity(database) != wal_before:
+                return "UNAVAILABLE", None, None
             return "HEALTHY", counts, latest
         except _UnsupportedTargetSchema:
             return "UNSUPPORTED", None, None
@@ -334,6 +383,17 @@ class ProjectSnapshotReader:
         finally:
             if connection is not None:
                 connection.close()
+
+    @staticmethod
+    def _wal_identity(database):
+        wal = Path(str(database) + "-wal")
+        try:
+            metadata = wal.lstat()
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise OSError("target WAL sidecar is unavailable")
+        return metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_size
 
     def snapshot(self):
         card = self._public_card(self.entry)
@@ -373,7 +433,7 @@ class ProjectSnapshotReader:
 class ProjectRegistryService:
     """Manage the central allowlist without mutating registered repositories."""
 
-    def __init__(self, _context, store):
+    def __init__(self, context, store):
         self.store = store
 
     @staticmethod
