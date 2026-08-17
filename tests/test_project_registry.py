@@ -681,6 +681,30 @@ class ProjectRegistryTests(unittest.TestCase):
                 reader._registered_git_dir()
 
         self.assertNotIn(entry["root_path"], str(error.exception))
+        self.assertIsNone(error.exception.__cause__)
+        self.assertTrue(error.exception.__suppress_context__)
+
+    def test_head_sha_suppresses_subprocess_timeout_context(self):
+        entry = self.registered_entry()
+        reader = ProjectSnapshotReader(entry)
+        registered = reader._registered_identity_snapshot()
+        self.assertIsNot(registered, False)
+
+        with mock.patch.object(
+            reader, "_registered_identity_snapshot", return_value=registered
+        ), mock.patch.object(
+            reader, "_registered_git_dir", return_value=registered[2]
+        ), mock.patch(
+            "team_control.project_registry.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["git"], 2.0),
+        ):
+            with self.assertRaisesRegex(
+                OSError, "^registered repository metadata is unavailable$"
+            ) as error:
+                reader._head_sha()
+
+        self.assertIsNone(error.exception.__cause__)
+        self.assertTrue(error.exception.__suppress_context__)
 
     def test_head_sha_revalidates_and_uses_the_snapshot_root(self):
         entry = self.registered_entry()

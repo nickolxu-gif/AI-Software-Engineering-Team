@@ -203,8 +203,8 @@ class ProjectSnapshotReader:
                 timeout=GIT_TIMEOUT_SECONDS,
                 env=self._git_environment(),
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise OSError("registered repository metadata is unavailable") from error
+        except (OSError, subprocess.TimeoutExpired):
+            raise OSError("registered repository metadata is unavailable") from None
         paths = completed.stdout.splitlines()
         if completed.returncode != 0 or len(paths) != 2:
             raise GitStateError("registered repository metadata is unavailable")
@@ -247,8 +247,8 @@ class ProjectSnapshotReader:
                 timeout=GIT_TIMEOUT_SECONDS,
                 env=self._git_environment(),
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise OSError("registered repository metadata is unavailable") from error
+        except (OSError, subprocess.TimeoutExpired):
+            raise OSError("registered repository metadata is unavailable") from None
         value = completed.stdout.strip()
         if completed.returncode != 0 or len(value) not in (40, 64):
             raise GitStateError("registered repository head is unavailable")
