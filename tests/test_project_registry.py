@@ -11,6 +11,7 @@ from unittest import mock
 from team_control.errors import BoundaryError, ContractError, CursorStaleError, GitStateError
 from team_control.git_context import RepoContext
 from team_control.project_registry import (
+    LOCAL_SNAPSHOT_OVERHEAD_BYTES,
     MAX_TARGET_SNAPSHOT_BYTES,
     ProjectRegistryService,
     ProjectSnapshotReader,
@@ -833,6 +834,28 @@ class ProjectRegistryTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "insufficient local space"):
                 with ProjectSnapshotReader._local_database_snapshot(database):
                     pass
+
+    def test_snapshot_reader_reserves_space_for_the_full_copy_budget(self):
+        database = self.make_compatible_target_database(self.target_root)
+        current_snapshot_bytes = database.stat().st_size
+
+        with mock.patch(
+            "team_control.project_registry.shutil.disk_usage",
+            return_value=mock.Mock(
+                free=current_snapshot_bytes + LOCAL_SNAPSHOT_OVERHEAD_BYTES
+            ),
+        ):
+            with self.assertRaisesRegex(OSError, "insufficient local space"):
+                with ProjectSnapshotReader._local_database_snapshot(database):
+                    pass
+
+    def test_snapshot_reader_copy_stops_when_a_source_exceeds_the_budget(self):
+        source = self.root / "source.db"
+        destination = self.root / "copy.db"
+        source.write_bytes(b"exceeds")
+
+        with self.assertRaisesRegex(OSError, "exceeds the size budget"):
+            ProjectSnapshotReader._copy_snapshot_file(source, destination, 1)
 
     def test_snapshot_reader_does_not_modify_target_database_or_wal_sidecars(self):
         database = self.make_compatible_target_database(self.target_root)

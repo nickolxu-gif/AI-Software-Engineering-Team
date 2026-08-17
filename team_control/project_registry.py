@@ -441,7 +441,9 @@ class ProjectSnapshotReader:
         if total_bytes > MAX_TARGET_SNAPSHOT_BYTES:
             raise OSError("target database snapshot exceeds the size budget")
         with tempfile.TemporaryDirectory(prefix="team-project-snapshot-") as directory:
-            required_free_bytes = total_bytes + LOCAL_SNAPSHOT_OVERHEAD_BYTES
+            required_free_bytes = (
+                MAX_TARGET_SNAPSHOT_BYTES + LOCAL_SNAPSHOT_OVERHEAD_BYTES
+            )
             if shutil.disk_usage(directory).free < required_free_bytes:
                 raise OSError("target database snapshot has insufficient local space")
             local_sources = tuple(Path(directory) / source.name for source in sources)
