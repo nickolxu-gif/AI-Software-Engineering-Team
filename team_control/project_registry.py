@@ -1,8 +1,11 @@
 import os
+import shutil
 import sqlite3
 import stat
 import subprocess
+import tempfile
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -352,26 +355,22 @@ class ProjectSnapshotReader:
         return counts, cls._safe_timestamp(latest)
 
     def _read_control_summary(self, database):
-        wal_before = self._wal_identity(database)
-        if wal_before is not None:
-            return "UNAVAILABLE", None, None
         connection = None
         try:
-            connection = sqlite3.connect(
-                database.as_uri() + "?mode=ro&immutable=1",
-                uri=True,
-                timeout=SQLITE_TIMEOUT_SECONDS,
-            )
-            connection.execute("PRAGMA query_only = ON")
-            connection.execute(
-                "PRAGMA busy_timeout = %d" % int(SQLITE_TIMEOUT_SECONDS * 1000)
-            )
-            connection.set_authorizer(self._readonly_authorizer)
-            self._validate_target_schema(connection)
-            counts, latest = self._task_summary(connection)
-            if self._wal_identity(database) != wal_before:
-                return "UNAVAILABLE", None, None
-            return "HEALTHY", counts, latest
+            with self._local_database_snapshot(database) as local_database:
+                connection = sqlite3.connect(
+                    local_database.as_uri() + "?mode=ro",
+                    uri=True,
+                    timeout=SQLITE_TIMEOUT_SECONDS,
+                )
+                connection.execute("PRAGMA query_only = ON")
+                connection.execute(
+                    "PRAGMA busy_timeout = %d" % int(SQLITE_TIMEOUT_SECONDS * 1000)
+                )
+                connection.set_authorizer(self._readonly_authorizer)
+                self._validate_target_schema(connection)
+                counts, latest = self._task_summary(connection)
+                return "HEALTHY", counts, latest
         except _UnsupportedTargetSchema:
             return "UNSUPPORTED", None, None
         except sqlite3.OperationalError:
@@ -385,15 +384,43 @@ class ProjectSnapshotReader:
                 connection.close()
 
     @staticmethod
-    def _wal_identity(database):
-        wal = Path(str(database) + "-wal")
+    def _snapshot_file_identity(path):
+        path = Path(path)
         try:
-            metadata = wal.lstat()
+            metadata = path.lstat()
         except FileNotFoundError:
             return None
         if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-            raise OSError("target WAL sidecar is unavailable")
-        return metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_size
+            raise OSError("target database snapshot input is unavailable")
+        return (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+        )
+
+    @classmethod
+    @contextmanager
+    def _local_database_snapshot(cls, database):
+        database = Path(database)
+        sources = (
+            database,
+            Path(str(database) + "-wal"),
+            Path(str(database) + "-shm"),
+        )
+        before = tuple(cls._snapshot_file_identity(source) for source in sources)
+        if before[0] is None:
+            raise OSError("target database snapshot input is unavailable")
+        with tempfile.TemporaryDirectory(prefix="team-project-snapshot-") as directory:
+            local_sources = tuple(Path(directory) / source.name for source in sources)
+            for source, local_source, identity in zip(sources, local_sources, before):
+                if identity is not None:
+                    shutil.copyfile(str(source), str(local_source))
+            after = tuple(cls._snapshot_file_identity(source) for source in sources)
+            if after != before:
+                raise OSError("target database changed during snapshot capture")
+            yield local_sources[0]
 
     def snapshot(self):
         card = self._public_card(self.entry)

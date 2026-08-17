@@ -767,7 +767,10 @@ class ProjectRegistryTests(unittest.TestCase):
             card = ProjectSnapshotReader(entry).snapshot()
 
             after = {str(path): self.file_fingerprint(path) for path in tracked}
-            self.assertEqual(card["control_status"], "UNAVAILABLE")
+            self.assertEqual(card["control_status"], "HEALTHY")
+            self.assertEqual(
+                card["latest_task_updated_at"], "2026-08-14T00:00:01+00:00"
+            )
             self.assertEqual(after, before)
         finally:
             writer.close()
