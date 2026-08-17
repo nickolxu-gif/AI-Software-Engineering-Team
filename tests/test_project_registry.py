@@ -542,12 +542,12 @@ class ProjectRegistryTests(unittest.TestCase):
 
         self.assertEqual(card["control_status"], "UNAVAILABLE")
 
-    def test_snapshot_reader_marks_a_missing_runtime_parent_unavailable(self):
+    def test_snapshot_reader_marks_a_missing_runtime_parent_uninitialized(self):
         entry = self.registered_entry()
 
         card = ProjectSnapshotReader(entry).snapshot()
 
-        self.assertEqual(card["control_status"], "UNAVAILABLE")
+        self.assertEqual(card["control_status"], "UNINITIALIZED")
 
     def test_snapshot_reader_marks_a_broken_runtime_parent_link_unavailable(self):
         entry = self.registered_entry()
@@ -616,6 +616,7 @@ class ProjectRegistryTests(unittest.TestCase):
             card = ProjectSnapshotReader(entry).snapshot()
 
         self.assertEqual(card["control_status"], "HEALTHY")
+        self.assertTrue(Path(READONLY_GIT_PREFIX[0]).is_absolute())
         self.assertEqual(
             [call.args[0] for call in observed.call_args_list],
             [
@@ -639,6 +640,18 @@ class ProjectRegistryTests(unittest.TestCase):
             self.assertEqual(call.kwargs["env"]["GIT_OPTIONAL_LOCKS"], "0")
             self.assertEqual(call.kwargs["env"]["GIT_CONFIG_NOSYSTEM"], "1")
             self.assertEqual(call.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+
+    def test_snapshot_reader_marks_git_read_failures_unavailable(self):
+        self.make_compatible_target_database(self.target_root)
+        reader = ProjectSnapshotReader(self.registered_entry())
+
+        with mock.patch.object(reader, "_head_sha", side_effect=OSError("missing git")):
+            card = reader.snapshot()
+
+        self.assertEqual(card["control_status"], "UNAVAILABLE")
+        self.assertEqual(card["head_sha"], "HEAD_UNAVAILABLE")
+        self.assertTrue(all(count == 0 for count in card["task_counts"].values()))
+        self.assertIsNone(card["latest_task_updated_at"])
 
     def test_snapshot_reader_uses_the_registered_linked_worktree_head(self):
         linked_root = self.root / "linked-target"

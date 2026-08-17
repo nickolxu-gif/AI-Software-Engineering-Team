@@ -18,7 +18,7 @@ from .store import TASK_INTAKE_REQUIRED_SCHEMA_COLUMNS
 
 
 READONLY_GIT_PREFIX = (
-    "git",
+    "/usr/bin/git",
     "-c",
     "core.fsmonitor=false",
     "-c",
@@ -275,16 +275,18 @@ class ProjectSnapshotReader:
         team_dir = common_dir / "team"
         runtime_dir = team_dir / "runtime"
         database = runtime_dir / "team.db"
-        try:
-            for directory in (common_dir, team_dir, runtime_dir):
+        for directory in (common_dir, team_dir, runtime_dir):
+            try:
                 metadata = directory.lstat()
-                if (
-                    stat.S_ISLNK(metadata.st_mode)
-                    or not stat.S_ISDIR(metadata.st_mode)
-                ):
-                    raise OSError("target database path is unavailable")
-        except FileNotFoundError as error:
-            raise OSError("target database parent is unavailable") from error
+            except FileNotFoundError as error:
+                if directory == common_dir:
+                    raise OSError("target database parent is unavailable") from error
+                raise _MissingTargetDatabase() from error
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISDIR(metadata.st_mode)
+            ):
+                raise OSError("target database path is unavailable")
         try:
             metadata_before = database.lstat()
         except FileNotFoundError as error:
@@ -541,7 +543,9 @@ class ProjectSnapshotReader:
             card["control_status"] = "IDENTITY_MISMATCH"
             return card
         except (OSError, subprocess.TimeoutExpired):
-            pass
+            card = self._public_card(self.entry, sampled_at=card["sampled_at"])
+            card["control_status"] = "UNAVAILABLE"
+            return card
         registered_after = self._registered_identity_snapshot()
         database_after = (
             self._database_identity_snapshot(registered_after[2])
