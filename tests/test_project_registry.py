@@ -790,43 +790,66 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertTrue(observed_flags[0] & os.O_NOFOLLOW)
         self.assertTrue(observed_flags[0] & os.O_NONBLOCK)
 
+    def test_snapshot_reader_fails_closed_without_required_os_capabilities(self):
+        source = self.root / "source.db"
+        destination = self.root / "copy.db"
+        source.write_bytes(b"safe")
+        identity = ProjectSnapshotReader._snapshot_file_identity(source)
+
+        with mock.patch("team_control.project_registry.os.O_NOFOLLOW", None):
+            with self.assertRaisesRegex(OSError, "unsupported on this platform"):
+                ProjectSnapshotReader._copy_snapshot_file(
+                    source, destination, identity, identity.size
+                )
+
     def test_snapshot_reader_rejects_content_changes_with_restored_identity(self):
         database = self.make_compatible_target_database(self.target_root)
         initial_identity = ProjectSnapshotReader._snapshot_file_identity(database)
         temporary_directory = tempfile.TemporaryDirectory(dir=str(self.root))
         self.addCleanup(temporary_directory.cleanup)
         temporary_path = Path(temporary_directory.name)
-        original_digest = ProjectSnapshotReader._snapshot_digest
         original_contents = database.read_bytes()
-        digest_calls = 0
+        source_metadata = database.stat()
+        changed_contents = bytearray(original_contents)
+        changed_contents[200] ^= 1
+        real_fdopen = os.fdopen
+        reads = 0
 
-        def mutate_only_during_copy(descriptor, expected_size):
-            nonlocal digest_calls
-            digest_calls += 1
-            if digest_calls == 1:
-                digest = original_digest(descriptor, expected_size)
-                metadata = database.stat()
-                changed_contents = bytearray(original_contents)
-                changed_contents[200] ^= 1
-                database.write_bytes(changed_contents)
-                os.utime(
-                    database,
-                    ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
-                )
-                return digest
-            if digest_calls == 2:
-                metadata = database.stat()
-                database.write_bytes(original_contents)
-                os.utime(
-                    database,
-                    ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
-                )
-            return original_digest(descriptor, expected_size)
+        class MutatingReader:
+            def __init__(self, handle):
+                self.handle = handle
 
-        with mock.patch.object(
-            ProjectSnapshotReader,
-            "_snapshot_digest",
-            side_effect=mutate_only_during_copy,
+            def __enter__(self):
+                self.handle.__enter__()
+                return self
+
+            def __exit__(self, *arguments):
+                return self.handle.__exit__(*arguments)
+
+            def read(self, size):
+                nonlocal reads
+                reads += 1
+                if reads == 1:
+                    database.write_bytes(changed_contents)
+                    os.utime(
+                        database,
+                        ns=(source_metadata.st_atime_ns, source_metadata.st_mtime_ns),
+                    )
+                    chunk = self.handle.read(size)
+                    database.write_bytes(original_contents)
+                    os.utime(
+                        database,
+                        ns=(source_metadata.st_atime_ns, source_metadata.st_mtime_ns),
+                    )
+                    return chunk
+                return self.handle.read(size)
+
+        def record_fdopen(descriptor, *arguments, **kwargs):
+            return MutatingReader(real_fdopen(descriptor, *arguments, **kwargs))
+
+        with mock.patch(
+            "team_control.project_registry.os.fdopen",
+            side_effect=record_fdopen,
         ), mock.patch(
             "team_control.project_registry.tempfile.TemporaryDirectory",
             return_value=temporary_directory,
@@ -835,8 +858,9 @@ class ProjectRegistryTests(unittest.TestCase):
                 with ProjectSnapshotReader._local_database_snapshot(database):
                     pass
 
-        self.assertEqual(digest_calls, 1)
+        self.assertEqual(reads, 1)
         self.assertFalse(temporary_path.exists())
+        self.assertEqual(database.read_bytes(), original_contents)
         self.assertEqual(
             ProjectSnapshotReader._snapshot_file_identity(database), initial_identity
         )

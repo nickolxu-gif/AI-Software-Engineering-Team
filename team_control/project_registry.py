@@ -429,13 +429,17 @@ class ProjectSnapshotReader:
 
     @classmethod
     def _copy_snapshot_file(cls, source, destination, expected_identity, remaining_bytes):
-        if not all(
-            hasattr(os, name) for name in ("O_NOFOLLOW", "O_NONBLOCK", "pread")
+        nofollow_flag = getattr(os, "O_NOFOLLOW", None)
+        nonblock_flag = getattr(os, "O_NONBLOCK", None)
+        if (
+            not isinstance(nofollow_flag, int)
+            or not isinstance(nonblock_flag, int)
+            or not callable(getattr(os, "pread", None))
         ):
             raise OSError("safe snapshot capture is unsupported on this platform")
         if expected_identity.size > remaining_bytes:
             raise OSError("target database snapshot exceeds the size budget")
-        open_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        open_flags = os.O_RDONLY | nofollow_flag | nonblock_flag
         descriptor = os.open(str(source), open_flags)
         try:
             opened_identity = cls._snapshot_file_identity_from_metadata(
@@ -443,8 +447,10 @@ class ProjectSnapshotReader:
             )
             if opened_identity != expected_identity:
                 raise OSError("target database changed during snapshot capture")
-            digest_before = cls._snapshot_digest(descriptor, expected_identity.size)
-            if digest_before[0] != expected_identity.size:
+            digest_size, digest_before = cls._snapshot_digest(
+                descriptor, expected_identity.size
+            )
+            if digest_size != expected_identity.size:
                 raise OSError("target database changed during snapshot capture")
             copied_bytes = 0
             copied_digest = hashlib.sha256()
@@ -452,24 +458,22 @@ class ProjectSnapshotReader:
                 os.fdopen(descriptor, "rb", closefd=False) as input_handle,
                 Path(destination).open("xb") as output_handle,
             ):
-                while True:
-                    chunk = input_handle.read(1024 * 1024)
+                while copied_bytes < expected_identity.size:
+                    chunk = input_handle.read(
+                        min(1024 * 1024, expected_identity.size - copied_bytes)
+                    )
                     if not chunk:
                         break
                     copied_bytes += len(chunk)
-                    if copied_bytes > remaining_bytes:
-                        raise OSError("target database snapshot exceeds the size budget")
-                    if copied_bytes > expected_identity.size:
-                        raise OSError("target database changed during snapshot capture")
                     output_handle.write(chunk)
                     copied_digest.update(chunk)
             if (
                 copied_bytes != expected_identity.size
                 or cls._snapshot_file_identity_from_metadata(os.fstat(descriptor))
                 != expected_identity
-                or copied_digest.digest() != digest_before[1]
+                or copied_digest.digest() != digest_before
                 or cls._snapshot_digest(descriptor, expected_identity.size)
-                != digest_before
+                != (digest_size, digest_before)
             ):
                 raise OSError("target database changed during snapshot capture")
             return copied_bytes
