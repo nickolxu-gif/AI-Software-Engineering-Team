@@ -682,7 +682,7 @@ class ProjectRegistryTests(unittest.TestCase):
 
         self.assertNotIn(entry["root_path"], str(error.exception))
         self.assertIsNone(error.exception.__cause__)
-        self.assertTrue(error.exception.__suppress_context__)
+        self.assertIsNone(error.exception.__context__)
 
     def test_head_sha_suppresses_subprocess_timeout_context(self):
         entry = self.registered_entry()
@@ -704,7 +704,7 @@ class ProjectRegistryTests(unittest.TestCase):
                 reader._head_sha()
 
         self.assertIsNone(error.exception.__cause__)
-        self.assertTrue(error.exception.__suppress_context__)
+        self.assertIsNone(error.exception.__context__)
 
     def test_head_sha_revalidates_and_uses_the_snapshot_root(self):
         entry = self.registered_entry()

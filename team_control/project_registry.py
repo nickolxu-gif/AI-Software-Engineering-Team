@@ -185,6 +185,7 @@ class ProjectSnapshotReader:
 
     def _registered_git_dir(self):
         root, registered_common_dir = self._registered_git_paths()
+        completed = None
         try:
             completed = subprocess.run(
                 [
@@ -204,7 +205,9 @@ class ProjectSnapshotReader:
                 env=self._git_environment(),
             )
         except (OSError, subprocess.TimeoutExpired):
-            raise OSError("registered repository metadata is unavailable") from None
+            pass
+        if completed is None:
+            raise OSError("registered repository metadata is unavailable")
         paths = completed.stdout.splitlines()
         if completed.returncode != 0 or len(paths) != 2:
             raise GitStateError("registered repository metadata is unavailable")
@@ -228,6 +231,7 @@ class ProjectSnapshotReader:
     def _head_sha(self):
         root, _registered_common_dir = self._registered_git_paths()
         git_dir = self._registered_git_dir()
+        completed = None
         try:
             completed = subprocess.run(
                 [
@@ -248,7 +252,9 @@ class ProjectSnapshotReader:
                 env=self._git_environment(),
             )
         except (OSError, subprocess.TimeoutExpired):
-            raise OSError("registered repository metadata is unavailable") from None
+            pass
+        if completed is None:
+            raise OSError("registered repository metadata is unavailable")
         value = completed.stdout.strip()
         if completed.returncode != 0 or len(value) not in (40, 64):
             raise GitStateError("registered repository head is unavailable")
