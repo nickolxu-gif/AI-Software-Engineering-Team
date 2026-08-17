@@ -899,52 +899,82 @@ class ProjectRegistryTests(unittest.TestCase):
         )
 
     def test_snapshot_reader_rejects_growth_during_copy_and_cleans_temporary_files(self):
-        database = self.root / "target.db"
-        database.write_bytes(b"0")
-        temporary_directory = tempfile.TemporaryDirectory(dir=str(self.root))
-        temporary_path = Path(temporary_directory.name)
-        original_copy = ProjectSnapshotReader._copy_snapshot_file
+        database = self.make_compatible_target_database(self.target_root)
+        writer = sqlite3.connect(str(database))
+        try:
+            journal_mode = writer.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+            if journal_mode.lower() != "wal":
+                self.skipTest("SQLite build does not support WAL fixtures")
+            writer.execute(
+                "UPDATE tasks SET updated_at = ?", ("2026-08-14T00:00:01+00:00",)
+            )
+            writer.commit()
+            wal = Path(str(database) + "-wal")
+            shm = Path(str(database) + "-shm")
+            before_sidecars = {
+                str(path): self.file_fingerprint(path) for path in (wal, shm)
+            }
+            initial_budget = database.stat().st_size + wal.stat().st_size + 1
+            temporary_directory = tempfile.TemporaryDirectory(dir=str(self.root))
+            temporary_path = Path(temporary_directory.name)
+            original_copy = ProjectSnapshotReader._copy_snapshot_file
 
-        def grow_database_before_copy(source, destination, remaining_bytes):
-            with database.open("r+b") as handle:
-                handle.truncate(3)
-            return original_copy(source, destination, remaining_bytes)
+            def grow_database_before_copy(source, destination, remaining_bytes):
+                with database.open("r+b") as handle:
+                    handle.truncate(initial_budget + 1)
+                return original_copy(source, destination, remaining_bytes)
 
-        with mock.patch("team_control.project_registry.MAX_TARGET_SNAPSHOT_BYTES", 2), \
-             mock.patch(
-                 "team_control.project_registry.tempfile.TemporaryDirectory",
-                 return_value=temporary_directory,
-             ), mock.patch.object(
-                 ProjectSnapshotReader,
-                 "_copy_snapshot_file",
-                 side_effect=grow_database_before_copy,
-             ):
-            with self.assertRaisesRegex(OSError, "exceeds the size budget"):
-                with ProjectSnapshotReader._local_database_snapshot(database):
-                    pass
+            with mock.patch(
+                "team_control.project_registry.MAX_TARGET_SNAPSHOT_BYTES",
+                initial_budget,
+            ), mock.patch(
+                "team_control.project_registry.tempfile.TemporaryDirectory",
+                return_value=temporary_directory,
+            ), mock.patch.object(
+                ProjectSnapshotReader,
+                "_copy_snapshot_file",
+                side_effect=grow_database_before_copy,
+            ):
+                with self.assertRaisesRegex(OSError, "exceeds the size budget"):
+                    with ProjectSnapshotReader._local_database_snapshot(database):
+                        pass
 
-        self.assertFalse(temporary_path.exists())
-        self.assertFalse(Path(str(database) + "-wal").exists())
-        self.assertFalse(Path(str(database) + "-shm").exists())
+            after_sidecars = {
+                str(path): self.file_fingerprint(path) for path in (wal, shm)
+            }
+            self.assertFalse(temporary_path.exists())
+            self.assertEqual(after_sidecars, before_sidecars)
+        finally:
+            writer.close()
 
     def test_snapshot_reader_rejects_a_same_budget_change_after_copy(self):
         database = self.make_compatible_target_database(self.target_root)
+        temporary_directory = tempfile.TemporaryDirectory(dir=str(self.root))
+        temporary_path = Path(temporary_directory.name)
         original_copy = ProjectSnapshotReader._copy_snapshot_file
 
         def touch_database_after_copy(source, destination, remaining_bytes):
             copied_bytes = original_copy(source, destination, remaining_bytes)
             metadata = database.stat()
-            os.utime(database, ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1))
+            os.utime(
+                database,
+                ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1_000_000_000),
+            )
             return copied_bytes
 
         with mock.patch.object(
             ProjectSnapshotReader,
             "_copy_snapshot_file",
             side_effect=touch_database_after_copy,
+        ), mock.patch(
+            "team_control.project_registry.tempfile.TemporaryDirectory",
+            return_value=temporary_directory,
         ):
             with self.assertRaisesRegex(OSError, "changed during snapshot capture"):
                 with ProjectSnapshotReader._local_database_snapshot(database):
                     pass
+
+        self.assertFalse(temporary_path.exists())
 
     def test_snapshot_reader_does_not_modify_target_database_or_wal_sidecars(self):
         database = self.make_compatible_target_database(self.target_root)
