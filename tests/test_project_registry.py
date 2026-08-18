@@ -668,6 +668,7 @@ class ProjectRegistryTests(unittest.TestCase):
         snapshot.assert_called_once_with()
         run.assert_called_once()
         argv = run.call_args.args[0]
+        self.assertIn("-C", argv)
         self.assertEqual(argv[argv.index("-C") + 1], registered[0])
         self.assertEqual(run.call_args.kwargs["cwd"], registered[0])
         self.assertNotIn(entry["root_path"], argv)
@@ -709,6 +710,7 @@ class ProjectRegistryTests(unittest.TestCase):
 
         run.assert_called_once()
         argv = run.call_args.args[0]
+        self.assertIn("-C", argv)
         self.assertEqual(argv[argv.index("-C") + 1], registered[0])
         self.assertEqual(run.call_args.kwargs["cwd"], registered[0])
 
