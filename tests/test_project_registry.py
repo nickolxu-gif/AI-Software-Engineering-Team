@@ -666,9 +666,11 @@ class ProjectRegistryTests(unittest.TestCase):
 
         self.assertEqual(observed_git_dir, str(git_dir))
         snapshot.assert_called_once_with()
-        self.assertEqual(run.call_args.args[0][6], registered[0])
+        run.assert_called_once()
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index("-C") + 1], registered[0])
         self.assertEqual(run.call_args.kwargs["cwd"], registered[0])
-        self.assertNotIn(entry["root_path"], run.call_args.args[0])
+        self.assertNotIn(entry["root_path"], argv)
         self.assertNotIn(entry["root_path"], run.call_args.kwargs["env"].values())
 
     def test_registered_git_dir_rejects_identity_mismatch_before_git_subprocess(self):
@@ -705,7 +707,9 @@ class ProjectRegistryTests(unittest.TestCase):
             ):
                 reader._registered_git_dir()
 
-        self.assertEqual(run.call_args.args[0][6], registered[0])
+        run.assert_called_once()
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index("-C") + 1], registered[0])
         self.assertEqual(run.call_args.kwargs["cwd"], registered[0])
 
     def test_registered_git_dir_normalizes_subprocess_timeout(self):
