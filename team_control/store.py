@@ -17,12 +17,15 @@ from .contracts import (
     INTENT_ACTIONS,
     SHA_RE,
     UUID_RE,
+    RFC3339_RE,
+    validate_project_registry_display_name,
     validate_task_intake_text,
     validate_record,
 )
 from .errors import (
     ApprovalError,
     BoundaryError,
+    CursorStaleError,
     ContractError,
     ReconciliationError,
     SchemaMigrationRequiredError,
@@ -41,6 +44,94 @@ def _sqlite_authorizer_action(name, fallback, sqlite_module=sqlite3):
 SQLITE_ATTACH_ACTION = _sqlite_authorizer_action("SQLITE_ATTACH", 24)
 SQLITE_DETACH_ACTION = _sqlite_authorizer_action("SQLITE_DETACH", 25)
 
+PROJECT_REGISTRY_SCHEMA = """CREATE TABLE project_registry (
+    project_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    root_path TEXT NOT NULL,
+    common_dir_path TEXT NOT NULL,
+    root_device INTEGER NOT NULL,
+    root_inode INTEGER NOT NULL,
+    root_mode INTEGER NOT NULL,
+    common_dir_device INTEGER NOT NULL,
+    common_dir_inode INTEGER NOT NULL,
+    common_dir_mode INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RETIRED')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    retired_at TEXT
+)"""
+PROJECT_REGISTRY_LEGACY_SCHEMA = """CREATE TABLE project_registry (
+    project_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL UNIQUE,
+    root_path TEXT NOT NULL UNIQUE,
+    common_dir_path TEXT NOT NULL UNIQUE,
+    root_device INTEGER NOT NULL,
+    root_inode INTEGER NOT NULL,
+    root_mode INTEGER NOT NULL,
+    common_dir_device INTEGER NOT NULL,
+    common_dir_inode INTEGER NOT NULL,
+    common_dir_mode INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RETIRED')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    retired_at TEXT
+)"""
+PROJECT_REGISTRY_MIGRATED_SCHEMA = """CREATE TABLE project_registry_migrated (
+    project_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    root_path TEXT NOT NULL,
+    common_dir_path TEXT NOT NULL,
+    root_device INTEGER NOT NULL,
+    root_inode INTEGER NOT NULL,
+    root_mode INTEGER NOT NULL,
+    common_dir_device INTEGER NOT NULL,
+    common_dir_inode INTEGER NOT NULL,
+    common_dir_mode INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RETIRED')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    retired_at TEXT
+)"""
+PROJECT_REGISTRY_INDEXES = {
+    "project_registry_active_display_name": (
+        "CREATE UNIQUE INDEX project_registry_active_display_name "
+        "ON project_registry(display_name) WHERE status = 'ACTIVE'"
+    ),
+    "project_registry_active_root_path": (
+        "CREATE UNIQUE INDEX project_registry_active_root_path "
+        "ON project_registry(root_path) WHERE status = 'ACTIVE'"
+    ),
+    "project_registry_active_common_dir_path": (
+        "CREATE UNIQUE INDEX project_registry_active_common_dir_path "
+        "ON project_registry(common_dir_path) WHERE status = 'ACTIVE'"
+    ),
+    "project_registry_active_root_identity": (
+        "CREATE UNIQUE INDEX project_registry_active_root_identity "
+        "ON project_registry(root_device, root_inode, root_mode) "
+        "WHERE status = 'ACTIVE'"
+    ),
+    "project_registry_active_common_dir_identity": (
+        "CREATE UNIQUE INDEX project_registry_active_common_dir_identity "
+        "ON project_registry(common_dir_device, common_dir_inode, common_dir_mode) "
+        "WHERE status = 'ACTIVE'"
+    ),
+}
+PROJECT_REGISTRY_EVENTS_SCHEMA = """CREATE TABLE project_registry_events (
+    event_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES project_registry(project_id),
+    event_type TEXT NOT NULL CHECK (
+        event_type IN ('PROJECT_REGISTERED', 'PROJECT_RETIRED')
+    ),
+    created_at TEXT NOT NULL
+)"""
+PROJECT_REGISTRY_EVENTS_MIGRATED_SCHEMA = """CREATE TABLE project_registry_events_migrated (
+    event_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES project_registry_migrated(project_id),
+    event_type TEXT NOT NULL CHECK (
+        event_type IN ('PROJECT_REGISTERED', 'PROJECT_RETIRED')
+    ),
+    created_at TEXT NOT NULL
+)"""
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -169,7 +260,16 @@ CREATE TABLE IF NOT EXISTS blockers (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-"""
+""" + PROJECT_REGISTRY_SCHEMA.replace(
+    "CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1
+) + ";\n" + PROJECT_REGISTRY_EVENTS_SCHEMA.replace(
+    "CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1
+) + ";\n" + "\n".join(
+    "CREATE UNIQUE INDEX IF NOT EXISTS %s%s;" % (
+        name, statement.split(name, 1)[1]
+    )
+    for name, statement in PROJECT_REGISTRY_INDEXES.items()
+) + "\n"
 
 
 class StoreBusyError(TeamControlError):
@@ -211,6 +311,8 @@ INTENT_RESULT_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 MAX_PENDING_INTENT_BATCH = 25
 MAX_TASK_INTAKE_RECORDS = 100
 MAX_TASK_INTAKE_LIST_OFFSET = 10000
+MAX_PROJECT_REGISTRY_ENTRIES = 20
+PROJECT_REGISTRY_STATUSES = frozenset(("ACTIVE", "RETIRED"))
 TASK_INTAKE_STATUSES = frozenset(("PENDING", "ACKNOWLEDGED"))
 TASK_INTAKE_LEGACY_SCHEMA = """CREATE TABLE task_intake_requests (
     intake_id TEXT PRIMARY KEY,
@@ -280,6 +382,15 @@ REQUIRED_SCHEMA_COLUMNS = {
     "blockers": frozenset((
         "blocker_id", "dispatch_id", "reason", "owner", "status",
         "resolution_condition", "created_at", "updated_at",
+    )),
+    "project_registry": frozenset((
+        "project_id", "display_name", "root_path", "common_dir_path",
+        "root_device", "root_inode", "root_mode", "common_dir_device",
+        "common_dir_inode", "common_dir_mode",
+        "status", "created_at", "updated_at", "retired_at",
+    )),
+    "project_registry_events": frozenset((
+        "event_id", "project_id", "event_type", "created_at",
     )),
 }
 
@@ -501,7 +612,9 @@ class ControlStore:
                         connection.execute(statement)
                 self._migrate_reviews_schema(connection)
                 self._migrate_task_intake_schema(connection)
+                self._migrate_project_registry_schema(connection)
                 self._validate_task_intake_handling_schema(connection)
+                self._validate_project_registry_schema(connection)
 
     def _migrate_reviews_schema(self, connection):
         columns = {
@@ -657,6 +770,205 @@ class ControlStore:
                 "task intake handling schema is unsupported"
             )
 
+    def _migrate_project_registry_schema(self, connection):
+        schemas = {
+            row["name"]: row["sql"]
+            for row in connection.execute(
+                """SELECT name, sql FROM sqlite_master
+                   WHERE type = 'table' AND name IN (?, ?)""",
+                ("project_registry", "project_registry_events"),
+            )
+        }
+        if set(schemas) != {"project_registry", "project_registry_events"}:
+            raise ReconciliationError(
+                "project registry schema is missing after initialization"
+            )
+        normalized_registry = self._normalized_schema_sql(
+            schemas["project_registry"]
+        )
+        if normalized_registry == self._normalized_schema_sql(
+            PROJECT_REGISTRY_SCHEMA
+        ):
+            return
+        if (
+            normalized_registry
+            != self._normalized_schema_sql(PROJECT_REGISTRY_LEGACY_SCHEMA)
+            or self._normalized_schema_sql(schemas["project_registry_events"])
+            != self._normalized_schema_sql(PROJECT_REGISTRY_EVENTS_SCHEMA)
+        ):
+            raise SchemaUnsupportedError(
+                "project registry schema is not a supported legacy version"
+            )
+        persistent_triggers = connection.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type = 'trigger'
+                 AND tbl_name IN ('project_registry', 'project_registry_events')"""
+        ).fetchone()
+        if persistent_triggers is not None:
+            raise SchemaUnsupportedError(
+                "project registry schema has unsupported objects"
+            )
+        indexes = {
+            row["name"]: row["sql"]
+            for row in connection.execute(
+                """SELECT name, sql FROM sqlite_master
+                   WHERE type = 'index' AND sql IS NOT NULL
+                     AND tbl_name IN ('project_registry', 'project_registry_events')"""
+            )
+        }
+        if set(indexes) != set(PROJECT_REGISTRY_INDEXES) or any(
+            self._normalized_schema_sql(indexes[name])
+            != self._normalized_schema_sql(expected)
+            for name, expected in PROJECT_REGISTRY_INDEXES.items()
+        ):
+            raise SchemaUnsupportedError(
+                "project registry schema has unsupported objects"
+            )
+        orphan_event = connection.execute(
+            """SELECT 1
+               FROM project_registry_events AS event
+               LEFT JOIN project_registry AS project
+                 ON project.project_id = event.project_id
+               WHERE project.project_id IS NULL
+               LIMIT 1"""
+        ).fetchone()
+        if orphan_event is not None:
+            raise SchemaUnsupportedError(
+                "project registry legacy events contain an orphan project"
+            )
+        connection.execute(PROJECT_REGISTRY_MIGRATED_SCHEMA)
+        connection.execute(PROJECT_REGISTRY_EVENTS_MIGRATED_SCHEMA)
+        migrated_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(project_registry_events_migrated)"
+        ).fetchall()
+        if {
+            (row["table"], row["from"], row["to"])
+            for row in migrated_foreign_keys
+        } != {("project_registry_migrated", "project_id", "project_id")}:
+            raise ReconciliationError(
+                "project registry event migration foreign key is invalid"
+            )
+        columns = (
+            "project_id", "display_name", "root_path", "common_dir_path",
+            "root_device", "root_inode", "root_mode", "common_dir_device",
+            "common_dir_inode", "common_dir_mode", "status", "created_at",
+            "updated_at", "retired_at",
+        )
+        column_list = ", ".join(columns)
+        connection.execute(
+            "INSERT INTO project_registry_migrated (%s) "
+            "SELECT %s FROM project_registry" % (column_list, column_list)
+        )
+        connection.execute(
+            """INSERT INTO project_registry_events_migrated (
+                   event_id, project_id, event_type, created_at
+               ) SELECT event_id, project_id, event_type, created_at
+               FROM project_registry_events"""
+        )
+        connection.execute("DROP TABLE project_registry_events")
+        connection.execute("DROP TABLE project_registry")
+        connection.execute(
+            "ALTER TABLE project_registry_migrated RENAME TO project_registry"
+        )
+        connection.execute(
+            "ALTER TABLE project_registry_events_migrated "
+            "RENAME TO project_registry_events"
+        )
+        for statement in PROJECT_REGISTRY_INDEXES.values():
+            connection.execute(statement)
+
+    def _validate_project_registry_schema(self, connection):
+        expected_schemas = {
+            "project_registry": PROJECT_REGISTRY_SCHEMA,
+            "project_registry_events": PROJECT_REGISTRY_EVENTS_SCHEMA,
+        }
+        rows = {
+            row["name"]: row["sql"]
+            for row in connection.execute(
+                """SELECT name, sql FROM sqlite_master
+                   WHERE type = 'table' AND name IN (?, ?)""",
+                tuple(expected_schemas),
+            )
+        }
+        if set(rows) != set(expected_schemas):
+            raise ReconciliationError(
+                "project registry schema is missing after initialization"
+            )
+        if (
+            self._normalized_schema_sql(rows["project_registry"])
+            == self._normalized_schema_sql(PROJECT_REGISTRY_LEGACY_SCHEMA)
+            and self._normalized_schema_sql(rows["project_registry_events"])
+            == self._normalized_schema_sql(PROJECT_REGISTRY_EVENTS_SCHEMA)
+        ):
+            legacy_indexes = {
+                row["name"]: row["sql"]
+                for row in connection.execute(
+                """SELECT name, sql FROM sqlite_master
+                   WHERE type = 'index' AND sql IS NOT NULL
+                     AND tbl_name IN ('project_registry', 'project_registry_events')"""
+                )
+            }
+            legacy_triggers = connection.execute(
+                """SELECT 1 FROM sqlite_master
+                   WHERE type = 'trigger'
+                     AND tbl_name IN ('project_registry', 'project_registry_events')"""
+            ).fetchone()
+            if legacy_triggers is not None:
+                raise SchemaUnsupportedError(
+                    "project registry schema has unsupported objects"
+                )
+            if legacy_indexes:
+                if (
+                    set(legacy_indexes) != set(PROJECT_REGISTRY_INDEXES)
+                    or any(
+                        self._normalized_schema_sql(legacy_indexes[name])
+                        != self._normalized_schema_sql(expected)
+                        for name, expected in PROJECT_REGISTRY_INDEXES.items()
+                    )
+                ):
+                    raise SchemaUnsupportedError(
+                        "project registry schema has unsupported objects"
+                    )
+            raise SchemaMigrationRequiredError(
+                "project registry schema migration is required; run init"
+            )
+        for table, expected_schema in expected_schemas.items():
+            if self._normalized_schema_sql(rows[table]) != self._normalized_schema_sql(
+                expected_schema
+            ):
+                raise SchemaUnsupportedError(
+                    "project registry schema is unsupported"
+                )
+        self._validate_project_registry_schema_objects(connection)
+
+    @staticmethod
+    def _validate_project_registry_schema_objects(connection):
+        indexes = {
+            row["name"]: row["sql"]
+            for row in connection.execute(
+            """SELECT name, sql FROM sqlite_master
+               WHERE type = 'index' AND sql IS NOT NULL
+                 AND tbl_name IN ('project_registry', 'project_registry_events')"""
+            )
+        }
+        persistent_triggers = connection.execute(
+            """SELECT name FROM sqlite_master
+               WHERE type = 'trigger'
+                 AND tbl_name IN ('project_registry', 'project_registry_events')"""
+        ).fetchall()
+        if set(indexes) != set(PROJECT_REGISTRY_INDEXES) or persistent_triggers:
+            raise SchemaUnsupportedError(
+                "project registry schema has unsupported objects"
+            )
+        for name, expected in PROJECT_REGISTRY_INDEXES.items():
+            if (
+                ControlStore._normalized_schema_sql(indexes[name])
+                != ControlStore._normalized_schema_sql(expected)
+            ):
+                raise SchemaUnsupportedError(
+                    "project registry schema has unsupported objects"
+                )
+
     @staticmethod
     def _validate_task_intake_schema_objects(connection):
         extra_indexes = connection.execute(
@@ -777,6 +1089,22 @@ class ControlStore:
         finally:
             connection.close()
 
+    @contextmanager
+    def read_snapshot(self):
+        """Keep a bounded, read-only SQLite snapshot for one compound read."""
+        with self.read_connection() as connection:
+            started = False
+            try:
+                connection.execute("BEGIN")
+                started = True
+                yield connection
+            finally:
+                if started:
+                    try:
+                        connection.rollback()
+                    except sqlite3.Error:
+                        pass
+
     def require_schema_compatible(self):
         with self.read_connection() as connection:
             self._require_schema_compatible_in_connection(connection)
@@ -847,6 +1175,7 @@ class ControlStore:
         ):
             raise SchemaUnsupportedError("task intake handling schema is unsupported")
         self._validate_task_intake_schema_objects(connection)
+        self._validate_project_registry_schema(connection)
 
     def create_task(self, record):
         validate_record("task", record)
@@ -985,6 +1314,312 @@ class ControlStore:
                 "SELECT * FROM tasks WHERE dispatch_id = ?", (dispatch_id,)
             ).fetchone()
         return dict(row) if row is not None else None
+
+    @staticmethod
+    def _project_registry_entry_from_row(row):
+        if row is None:
+            return None
+        if row["status"] not in PROJECT_REGISTRY_STATUSES:
+            raise ReconciliationError("stored project registry status is invalid")
+        return {
+            "project_id": row["project_id"],
+            "display_name": row["display_name"],
+            "root_path": row["root_path"],
+            "common_dir_path": row["common_dir_path"],
+            "root_device": row["root_device"],
+            "root_inode": row["root_inode"],
+            "root_mode": row["root_mode"],
+            "common_dir_device": row["common_dir_device"],
+            "common_dir_inode": row["common_dir_inode"],
+            "common_dir_mode": row["common_dir_mode"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "retired_at": row["retired_at"],
+        }
+
+    @staticmethod
+    def _validate_project_registry_project_id(project_id):
+        if not isinstance(project_id, str) or UUID_RE.fullmatch(project_id) is None:
+            raise ContractError("project registry project_id is invalid")
+        return project_id
+
+    @classmethod
+    def _validate_project_registry_entry_inputs(
+        cls, project_id, display_name, root_path, common_dir_path,
+        root_device, root_inode, root_mode, common_dir_device,
+        common_dir_inode, common_dir_mode,
+    ):
+        cls._validate_project_registry_project_id(project_id)
+        validate_project_registry_display_name(display_name)
+        for value, label in ((root_path, "root_path"),
+                             (common_dir_path, "common_dir_path")):
+            if (
+                not isinstance(value, str)
+                or not value
+                or "\0" in value
+                or not Path(value).is_absolute()
+            ):
+                raise ContractError("project registry %s is invalid" % label)
+        for value, label in (
+            (root_device, "root_device"),
+            (root_inode, "root_inode"),
+            (root_mode, "root_mode"),
+            (common_dir_device, "common_dir_device"),
+            (common_dir_inode, "common_dir_inode"),
+            (common_dir_mode, "common_dir_mode"),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ContractError("project registry %s is invalid" % label)
+
+    @staticmethod
+    def _validate_project_registry_limit(limit):
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= MAX_PROJECT_REGISTRY_ENTRIES
+        ):
+            raise ContractError(
+                "project registry limit must be an integer from 1 to %d"
+                % MAX_PROJECT_REGISTRY_ENTRIES
+            )
+        return limit
+
+    @staticmethod
+    def _validate_project_registry_cursor(cursor, identifier_key):
+        if (
+            type(cursor) is not dict
+            or set(cursor) != {"created_at", identifier_key}
+            or not isinstance(cursor["created_at"], str)
+            or len(cursor["created_at"]) > 64
+            or RFC3339_RE.fullmatch(cursor["created_at"]) is None
+            or not isinstance(cursor[identifier_key], str)
+            or UUID_RE.fullmatch(cursor[identifier_key]) is None
+        ):
+            raise ContractError("project registry cursor is invalid")
+        try:
+            normalize_timestamp(cursor["created_at"])
+        except (IndexError, ValueError):
+            raise ContractError("project registry cursor is invalid")
+        return cursor["created_at"], str(uuid.UUID(cursor[identifier_key]))
+
+    @staticmethod
+    def _require_project_registry_cursor_anchor(
+        connection, table, identifier_column, cursor_values, filter_column=None,
+        filter_value=None,
+    ):
+        query = "SELECT 1 FROM %s WHERE created_at = ? AND %s = ?" % (
+            table, identifier_column,
+        )
+        parameters = list(cursor_values)
+        if filter_column is not None:
+            query += " AND %s = ?" % filter_column
+            parameters.append(filter_value)
+        if connection.execute(query, tuple(parameters)).fetchone() is None:
+            raise CursorStaleError("project registry cursor is stale; restart paging")
+
+    def create_project_registry_entry(
+        self, project_id, display_name, root_path, common_dir_path,
+        root_device, root_inode, root_mode, common_dir_device,
+        common_dir_inode, common_dir_mode,
+    ):
+        display_name = validate_project_registry_display_name(display_name)
+        self._validate_project_registry_entry_inputs(
+            project_id, display_name, root_path, common_dir_path,
+            root_device, root_inode, root_mode, common_dir_device,
+            common_dir_inode, common_dir_mode,
+        )
+        created_at = utc_now()
+        try:
+            with self.mutation() as connection:
+                self._require_schema_compatible_in_connection(connection)
+                active_count = connection.execute(
+                    "SELECT COUNT(*) FROM project_registry WHERE status = 'ACTIVE'"
+                ).fetchone()[0]
+                if active_count >= MAX_PROJECT_REGISTRY_ENTRIES:
+                    raise ContractError(
+                        "project registry has reached its active project limit"
+                    )
+                connection.execute(
+                    """INSERT INTO project_registry (
+                           project_id, display_name, root_path, common_dir_path,
+                           root_device, root_inode, root_mode,
+                           common_dir_device, common_dir_inode, common_dir_mode,
+                           status, created_at, updated_at, retired_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, NULL)""",
+                    (
+                        project_id, display_name, root_path, common_dir_path,
+                        root_device, root_inode, root_mode,
+                        common_dir_device, common_dir_inode, common_dir_mode,
+                        created_at, created_at,
+                    ),
+                )
+                connection.execute(
+                    """INSERT INTO project_registry_events (
+                           event_id, project_id, event_type, created_at
+                       ) VALUES (?, ?, 'PROJECT_REGISTERED', ?)""",
+                    (str(uuid.uuid4()), project_id, created_at),
+                )
+                row = connection.execute(
+                    "SELECT * FROM project_registry WHERE project_id = ?",
+                    (project_id,),
+                ).fetchone()
+        except sqlite3.IntegrityError as error:
+            raise ContractError(
+                "project registry entry conflicts with an existing project"
+            ) from error
+        return self._project_registry_entry_from_row(row)
+
+    def get_project_registry_entry(self, project_id):
+        self._validate_project_registry_project_id(project_id)
+        with self.read_connection() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            row = connection.execute(
+                "SELECT * FROM project_registry WHERE project_id = ?", (project_id,)
+            ).fetchone()
+        return self._project_registry_entry_from_row(row)
+
+    def list_project_registry_entries(
+        self, status=None, limit=MAX_PROJECT_REGISTRY_ENTRIES
+    ):
+        return self.list_project_registry_entries_page(status=status, limit=limit)[
+            "entries"
+        ]
+
+    def list_project_registry_entries_page(
+        self, status=None, limit=MAX_PROJECT_REGISTRY_ENTRIES, cursor=None
+    ):
+        if status is not None and status not in PROJECT_REGISTRY_STATUSES:
+            raise ContractError("project registry status is invalid")
+        self._validate_project_registry_limit(limit)
+        query = "SELECT * FROM project_registry"
+        parameters = []
+        conditions = []
+        cursor_values = None
+        if status is not None:
+            conditions.append("status = ?")
+            parameters.append(status)
+        if cursor is not None:
+            created_at, project_id = self._validate_project_registry_cursor(
+                cursor, "project_id"
+            )
+            cursor_values = (created_at, project_id)
+            conditions.append(
+                "(created_at > ? OR (created_at = ? AND project_id > ?))"
+            )
+            parameters.extend((created_at, created_at, project_id))
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY created_at, project_id LIMIT ?"
+        parameters.append(limit + 1)
+        with self.read_snapshot() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            if cursor_values is not None:
+                self._require_project_registry_cursor_anchor(
+                    connection, "project_registry", "project_id", cursor_values,
+                    "status" if status is not None else None, status,
+                )
+            rows = connection.execute(query, tuple(parameters)).fetchall()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        next_cursor = None
+        if has_more:
+            next_cursor = {
+                "created_at": rows[-1]["created_at"],
+                "project_id": rows[-1]["project_id"],
+            }
+        return {
+            "entries": [self._project_registry_entry_from_row(row) for row in rows],
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+        }
+
+    def retire_project_registry_entry(self, project_id):
+        self._validate_project_registry_project_id(project_id)
+        retired_at = utc_now()
+        with self.mutation() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            row = connection.execute(
+                "SELECT * FROM project_registry WHERE project_id = ?", (project_id,)
+            ).fetchone()
+            entry = self._project_registry_entry_from_row(row)
+            if entry is None:
+                raise ContractError("project registry entry was not found")
+            if entry["status"] != "ACTIVE":
+                raise ContractError("project registry entry is already retired")
+            connection.execute(
+                """UPDATE project_registry
+                   SET status = 'RETIRED', updated_at = ?, retired_at = ?
+                   WHERE project_id = ?""",
+                (retired_at, retired_at, project_id),
+            )
+            connection.execute(
+                """INSERT INTO project_registry_events (
+                       event_id, project_id, event_type, created_at
+                   ) VALUES (?, ?, 'PROJECT_RETIRED', ?)""",
+                (str(uuid.uuid4()), project_id, retired_at),
+            )
+            row = connection.execute(
+                "SELECT * FROM project_registry WHERE project_id = ?", (project_id,)
+            ).fetchone()
+        return self._project_registry_entry_from_row(row)
+
+    def list_project_registry_events(self, project_id=None, limit=20, cursor=None):
+        if project_id is not None:
+            self._validate_project_registry_project_id(project_id)
+        self._validate_project_registry_limit(limit)
+        query = (
+            "SELECT event_id, project_id, event_type, created_at "
+            "FROM project_registry_events"
+        )
+        conditions = []
+        parameters = []
+        cursor_values = None
+        if project_id is not None:
+            conditions.append("project_id = ?")
+            parameters.append(project_id)
+        if cursor is not None:
+            created_at, event_id = self._validate_project_registry_cursor(
+                cursor, "event_id"
+            )
+            cursor_values = (created_at, event_id)
+            conditions.append(
+                "(created_at > ? OR (created_at = ? AND event_id > ?))"
+            )
+            parameters.extend((created_at, created_at, event_id))
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY created_at, event_id LIMIT ?"
+        parameters.append(limit + 1)
+        with self.read_snapshot() as connection:
+            self._require_schema_compatible_in_connection(connection)
+            if cursor_values is not None:
+                self._require_project_registry_cursor_anchor(
+                    connection, "project_registry_events", "event_id", cursor_values,
+                    "project_id" if project_id is not None else None, project_id,
+                )
+            rows = connection.execute(query, tuple(parameters)).fetchall()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        events = [
+            {
+                "event_type": row["event_type"],
+                "project_id": row["project_id"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+        next_cursor = None
+        if has_more:
+            next_cursor = {
+                "created_at": rows[-1]["created_at"],
+                "event_id": rows[-1]["event_id"],
+            }
+        return {
+            "events": events,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+        }
 
     @staticmethod
     def _intent_from_row(row):

@@ -10,7 +10,7 @@ const state = {
   selectedEvents: null, selectedEventsTaskId: null, selectedEventsSourceHead: null,
   evidence: null, evidenceTaskId: null, evidenceSourceHead: null,
   taskGeneration: 0, evidenceGeneration: 0, refreshing: false,
-  taskQuery: '', riskFilter: ''
+  taskQuery: '', riskFilter: '', projectFilter: ''
 };
 const content = document.querySelector('#content');
 const statusRegion = document.querySelector('#status-region');
@@ -107,7 +107,9 @@ const STATUS_ZH = {
   RESOLVED: '已解决', PENDING: '待处理', CONSUMED: '已使用', EXPIRED: '已过期',
   REJECTED: '已拒绝', ACCEPT: '通过', MODIFY: '需修改', BLOCK: '不通过', ESCALATE: '升级处理',
   CURRENT: '当前有效', STALE: '已过期', ATTENTION: '需要关注', HEALTHY: '正常',
-  UNKNOWN: '状态无法确认'
+  UNKNOWN: '状态无法确认', ACTIVE: '登记有效', RETIRED: '已退休',
+  UNINITIALIZED: '未初始化', UNAVAILABLE: '暂不可用', UNSUPPORTED: '不支持',
+  IDENTITY_MISMATCH: '身份不匹配', HEAD_UNAVAILABLE: 'HEAD 不可用'
 };
 const REASON_ZH = {
   PENDING_APPROVAL: '等待人工批准', OPEN_BLOCKER: '存在未解决阻塞', STALE_REVIEW: '审查已过期',
@@ -150,12 +152,27 @@ function bindTaskLinks() {
   }));
 }
 function renderOverview() {
-  const project = state.data.project; const counts = project.counts; const queue = project.attention_items || [];
+  const project = state.data.project || {};
+  const health = project.health || 'UNAVAILABLE';
+  const headSha = project.head_sha || 'UNAVAILABLE';
+  const branch = project.branch || 'UNAVAILABLE';
+  const worktreeCount = project.worktree_count ?? 'UNAVAILABLE';
+  const counts = {
+    active_tasks: 0, blocked_tasks: 0, pending_intents: 0,
+    pending_task_intakes: 0, pending_approvals: 0,
+    stale_reviews: 0, stale_evidence: 0, ...(project.counts || {})
+  };
+  const queue = project.attention_items || [];
+  const healthBanner = health === 'ATTENTION'
+    ? `项目状态 ATTENTION · ${escapeHtml(STATUS_ZH.ATTENTION)}${queue.length ? ` · ${escapeHtml(queue.length)} 项异常` : ''}`
+    : health === 'HEALTHY'
+      ? `项目状态 HEALTHY · ${escapeHtml(STATUS_ZH.HEALTHY)}`
+      : `项目状态 UNAVAILABLE · ${escapeHtml(STATUS_ZH.UNAVAILABLE)}`;
   const intake = `<section class="panel task-intake"><h2>提交新工程需求</h2><p class="meta">仅进入本地收件箱；Codex 会在下一次工程会话补全七问、风险和执行方案。此处不会创建任务、分支或 Worktree。</p><label>标题 <input id="intake-title" maxlength="120" required></label><label>目标 <textarea id="intake-objective" maxlength="2000" required></textarea></label><label>补充背景（可选） <textarea id="intake-context" maxlength="2000"></textarea></label><button id="submit-task-intake">提交给 Codex</button></section>`;
   content.innerHTML = `<h1>工程总览</h1><p class="subhead">异常优先 · 所有工程动作仍由 Codex 执行</p>
-    <section class="banner"><div><strong>${project.health === 'ATTENTION' ? `项目状态 ATTENTION · ${escapeHtml(STATUS_ZH.ATTENTION)}${queue.length ? ` · ${escapeHtml(queue.length)} 项异常` : ''}` : `项目状态 HEALTHY · ${escapeHtml(STATUS_ZH.HEALTHY)}`}</strong><div class="meta">来源 HEAD ${escapeHtml(project.head_sha)}</div></div><div>请回到 Codex 处理</div></section>
-    <section class="cards"><div class="card">活跃任务<div class="metric">${escapeHtml(counts.active_tasks)}</div></div><div class="card">阻塞任务<div class="metric">${escapeHtml(counts.blocked_tasks)}</div></div><div class="card">待处理意图<div class="metric">${escapeHtml(counts.pending_intents)}</div></div><div class="card">待处理需求<div class="metric">${escapeHtml(counts.pending_task_intakes)}</div></div><div class="card">待审批<div class="metric">${escapeHtml(counts.pending_approvals)}</div></div><div class="card">过期证据<div class="metric">${escapeHtml(counts.stale_reviews + counts.stale_evidence)}</div></div></section>
-    <div class="grid"><section class="panel"><h2>优先队列</h2>${queue.length ? queue.map(taskRow).join('') : renderEmpty('暂无异常任务')}</section><aside class="panel"><h2>Codex 建议</h2><p>优先处理审批、阻塞和方向问题。此页面不会执行修改。</p><p class="meta">分支 ${escapeHtml(project.branch)} · Worktree ${escapeHtml(project.worktree_count)}</p></aside></div>${intake}`;
+    <section class="banner"><div><strong>${healthBanner}</strong><div class="meta">来源 HEAD ${escapeHtml(headSha)}</div></div><div>请回到 Codex 处理</div></section>
+    <section class="cards"><div class="card">已登记项目<div class="metric">${escapeHtml((state.data.projects || []).length)}</div></div><div class="card">活跃任务<div class="metric">${escapeHtml(counts.active_tasks)}</div></div><div class="card">阻塞任务<div class="metric">${escapeHtml(counts.blocked_tasks)}</div></div><div class="card">待处理意图<div class="metric">${escapeHtml(counts.pending_intents)}</div></div><div class="card">待处理需求<div class="metric">${escapeHtml(counts.pending_task_intakes)}</div></div><div class="card">待审批<div class="metric">${escapeHtml(counts.pending_approvals)}</div></div><div class="card">过期证据<div class="metric">${escapeHtml(counts.stale_reviews + counts.stale_evidence)}</div></div></section>
+    <div class="grid"><section class="panel"><h2>优先队列</h2>${queue.length ? queue.map(taskRow).join('') : renderEmpty('暂无异常任务')}</section><aside class="panel"><h2>Codex 建议</h2><p>优先处理审批、阻塞和方向问题。此页面不会执行修改。</p><p class="meta">分支 ${escapeHtml(branch)} · Worktree ${escapeHtml(worktreeCount)}</p></aside></div>${intake}`;
   bindTaskLinks();
   bindTaskIntakeControl();
 }
@@ -260,6 +277,31 @@ function renderTasks() {
   document.querySelector('#task-search').addEventListener('input', event => { state.taskQuery = event.target.value; renderTasks(); const input = document.querySelector('#task-search'); input.focus(); input.setSelectionRange(input.value.length, input.value.length); });
   document.querySelector('#risk-filter').addEventListener('change', event => { state.riskFilter = event.target.value; renderTasks(); document.querySelector('#risk-filter').focus(); });
 }
+function projectMatches(item, query) {
+  if (!query) return true;
+  const taskCounts = Object.entries(item.task_counts || {}).map(([state, count]) => `${state} ${count}`).join(' ');
+  return [item.display_name, item.registry_status, item.control_status, taskCounts]
+    .join(' ').toLocaleLowerCase('zh-CN').includes(query);
+}
+function renderProjectCard(item) {
+  const counts = Object.entries(item.task_counts || {}).filter(([, count]) => count > 0)
+    .map(([state, count]) => `${statusText(state)} ${count}`).join(' · ') || '暂无任务';
+  const head = item.head_sha === 'HEAD_UNAVAILABLE' ? statusText(item.head_sha) : shortSha(item.head_sha);
+  return `<article class="project-card"><div class="row-head"><strong>${escapeHtml(item.display_name)}</strong>${statusBadge(item.control_status, item.control_status === 'HEALTHY')}</div><div class="meta">登记状态 ${escapeHtml(statusText(item.registry_status))} · HEAD ${escapeHtml(head)}</div><dl class="project-facts"><div><dt>任务计数</dt><dd>${escapeHtml(counts)}</dd></div><div><dt>采样时间</dt><dd>${escapeHtml(item.sampled_at)}</dd></div></dl><p>请回到 Codex 中继续</p></article>`;
+}
+function renderProjects() {
+  const query = state.projectFilter.trim().toLocaleLowerCase('zh-CN');
+  const items = (state.data.projects || []).filter(item => projectMatches(item, query));
+  content.innerHTML = `<h1>项目</h1><p class="subhead">仅显示由 Codex 手工登记的本地项目安全摘要；此页面不会登记、删除或打开项目。</p><div class="filters"><label>筛选 <input id="project-filter" value="${escapeHtml(state.projectFilter)}" placeholder="名称或状态"></label></div><section class="project-grid">${items.length ? items.map(renderProjectCard).join('') : renderEmpty('没有匹配的已登记项目')}</section>`;
+  const filter = document.querySelector('#project-filter');
+  filter.addEventListener('input', event => {
+    state.projectFilter = event.target.value;
+    renderProjects();
+    const input = document.querySelector('#project-filter');
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  });
+}
 function renderAgents() {
   const agents = state.data.details.flatMap(detail => (detail.agents || []).map(agent => ({ ...agent, task: detail.task.dispatch_id })));
   content.innerHTML = `<h1>Agents</h1><p class="subhead">首屏活跃任务的最近 Agent 汇报</p>${agents.length ? agents.map(agent => `<article class="row"><div class="row-head"><strong>${escapeHtml(agent.agent_id)}</strong>${statusBadge(agent.state, agent.state === 'COMPLETED')}</div><div class="meta">${escapeHtml(agent.role)} · 任务 ${escapeHtml(agent.task)} · 进度 ${escapeHtml(agent.progress)}%</div></article>`).join('') : renderEmpty('当前没有 Agent 汇报')}`;
@@ -277,7 +319,7 @@ function renderEvidence() {
 }
 function renderCurrent() {
   if (state.error && !state.data) return renderError(state.error);
-  ({ overview: renderOverview, tasks: renderTasks, agents: renderAgents, approvals: renderApprovals, evidence: renderEvidence }[state.view] || renderOverview)();
+  ({ overview: renderOverview, projects: renderProjects, tasks: renderTasks, agents: renderAgents, approvals: renderApprovals, evidence: renderEvidence }[state.view] || renderOverview)();
 }
 function updateNav() { document.querySelectorAll('nav [data-view]').forEach(button => { const active = button.dataset.view === state.view; if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); }); }
 async function mapLimit(values, limit, mapper) {
@@ -326,8 +368,8 @@ async function refresh() {
   try {
     const focusedTask = document.activeElement?.dataset?.task || null;
     const selectedTaskAtStart = state.selectedTask;
-    const [project, tasks, approvals] = await Promise.all([getJson('/api/project'), getJson('/api/tasks?limit=100&offset=0'), getJson('/api/approvals?limit=100&offset=0')]);
-    const sourceHeads = new Set([project.source_head_sha, tasks.source_head_sha, approvals.source_head_sha]);
+    const [project, projects, tasks, approvals] = await Promise.all([getJson('/api/project'), getJson('/api/projects'), getJson('/api/tasks?limit=100&offset=0'), getJson('/api/approvals?limit=100&offset=0')]);
+    const sourceHeads = new Set([project.source_head_sha, projects.source_head_sha, tasks.source_head_sha, approvals.source_head_sha]);
     if (sourceHeads.size !== 1) throw Object.assign(new Error('并行快照来源 HEAD 不一致'), { code: 'SOURCE_HEAD_MISMATCH' });
     const expectedHead = project.source_head_sha;
     const active = tasks.data.items.filter(task => !['CLOSED', 'RELEASED'].includes(task.state));
@@ -342,7 +384,7 @@ async function refresh() {
     }
     const details = detailPayloads.map(payload => payload.data);
     const selectedDetail = details.find(detail => detail.task.dispatch_id === selectedTaskAtStart) || null;
-    state.data = { project: project.data, tasks: tasks.data.items, approvals: approvals.data.items, details };
+    state.data = { project: project.data, projects: projects.data.items, tasks: tasks.data.items, approvals: approvals.data.items, details };
     state.sourceHeadSha = expectedHead;
     if (state.selectedTask === selectedTaskAtStart) {
       state.selectedDetail = selectedDetail;

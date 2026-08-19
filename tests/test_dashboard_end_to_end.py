@@ -13,6 +13,7 @@ from pathlib import Path
 from team_control.dashboard_read_model import DashboardReadModel
 from team_control.dashboard_server import create_server
 from team_control.git_context import RepoContext
+from team_control.project_registry import ProjectRegistryService
 from team_control.service import ControlPlane
 from team_control.store import ControlStore
 from tests.helpers import make_repo
@@ -137,6 +138,16 @@ class DashboardEndToEndTests(unittest.TestCase):
                 "dashboard-end-to-end-nonce",
                 10,
             )
+            unavailable_target = make_repo(Path(temporary) / "unavailable-target")
+            ProjectRegistryService(context, store).register(
+                "Unavailable target", unavailable_target
+            )
+            unavailable_database = (
+                RepoContext.discover(unavailable_target).common_dir
+                / "team" / "runtime" / "team.db"
+            )
+            unavailable_database.parent.mkdir(parents=True)
+            unavailable_database.symlink_to(Path(temporary) / "missing-team.db")
 
             before = repository_snapshot(repo, store.path)
             model = DashboardReadModel(context, store)
@@ -151,6 +162,7 @@ class DashboardEndToEndTests(unittest.TestCase):
                 api_paths = (
                     "/api/health",
                     "/api/project",
+                    "/api/projects",
                     "/api/tasks?limit=100&offset=0",
                     "/api/tasks/%s" % blocked["dispatch_id"],
                     "/api/tasks/%s/events?limit=100&offset=0"
@@ -166,6 +178,12 @@ class DashboardEndToEndTests(unittest.TestCase):
                     payloads[path] = json.loads(body)
 
                 project = payloads["/api/project"]["data"]
+                projects = payloads["/api/projects"]["data"]
+                self.assertEqual(projects["count"], 1)
+                self.assertEqual(
+                    projects["items"][0]["control_status"], "UNAVAILABLE"
+                )
+                self.assertNotIn(str(unavailable_target), json.dumps(projects))
                 leading = [
                     item["dispatch_id"]
                     for item in project["attention_items"][:2]

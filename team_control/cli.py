@@ -4,17 +4,27 @@ import sys
 from pathlib import Path
 
 from .doctor import WorktreeDoctor
-from .errors import BoundaryError, ContractError, TeamControlError
+from .errors import BoundaryError, ContractError, GitStateError, TeamControlError
 from .git_context import RepoContext
 from .intents import IntentService, safe_intent_summary
+from .project_registry import ProjectRegistryService
 from .service import ControlPlane
 from .store import ControlStore
 
 
 COMMANDS = (
     "approvals", "doctor", "init", "intents", "process-intent",
-    "process-pending-intents", "start", "status", "transition",
+    "process-pending-intents", "projects", "start", "status", "transition",
 )
+PROJECT_COMMANDS = ("register", "retire", "list")
+PROJECT_COMMAND_USAGE = {
+    "register": (
+        "team-control --repo PATH projects register "
+        "--display-name NAME --path ABSOLUTE_PATH"
+    ),
+    "retire": "team-control --repo PATH projects retire --project-id UUID",
+    "list": "team-control --repo PATH projects list",
+}
 COMMAND_USAGE = {
     "approvals": "team-control --repo PATH approvals [--dispatch-id ID]",
     "doctor": (
@@ -27,6 +37,7 @@ COMMAND_USAGE = {
     "process-pending-intents": (
         "team-control --repo PATH process-pending-intents --limit 1..25"
     ),
+    "projects": "team-control --repo PATH projects {register,retire,list}",
     "start": (
         "team-control --repo PATH start --dispatch-id ID --title TITLE "
         "--objective OBJECTIVE --risk {L1,L2,L3} --agent AGENT --slug SLUG"
@@ -96,6 +107,15 @@ def build_parser():
     pending_intents = commands.add_parser("process-pending-intents")
     pending_intents.add_argument("--limit", required=True, type=int)
 
+    projects = commands.add_parser("projects")
+    project_commands = projects.add_subparsers(dest="project_command", required=True)
+    register = project_commands.add_parser("register")
+    register.add_argument("--display-name", required=True)
+    register.add_argument("--path", required=True)
+    retire = project_commands.add_parser("retire")
+    retire.add_argument("--project-id", required=True)
+    project_commands.add_parser("list")
+
     doctor = commands.add_parser("doctor")
     doctor.add_argument("mode", choices=("inspect", "repair"))
     doctor.add_argument("--dispatch-id", required=True)
@@ -105,7 +125,7 @@ def build_parser():
     return parser
 
 
-def _help_scope(argv):
+def _argv_command_scope(argv):
     index = 0
     while index < len(argv):
         argument = argv[index]
@@ -115,14 +135,26 @@ def _help_scope(argv):
         if argument.startswith("--repo="):
             index += 1
             continue
-        if argument in COMMANDS:
-            return argument
-        index += 1
-    return None
+        if argument.startswith("-"):
+            return None, None
+        return argument, index
+    return None, None
+
+
+def _help_scope(argv):
+    command, command_index = _argv_command_scope(argv)
+    if command not in COMMANDS:
+        return None, None
+    if command != "projects":
+        return command, None
+    project_arguments = argv[command_index + 1:]
+    if project_arguments and project_arguments[0] in PROJECT_COMMANDS:
+        return command, project_arguments[0]
+    return command, None
 
 
 def help_payload(argv):
-    command = _help_scope(argv)
+    command, project_command = _help_scope(argv)
     if command is None:
         return {
             "commands": list(COMMANDS),
@@ -134,10 +166,18 @@ def help_payload(argv):
         "command": command,
         "program": "team-control",
         "status": "help",
-        "usage": COMMAND_USAGE[command],
+        "usage": (
+            PROJECT_COMMAND_USAGE[project_command]
+            if project_command is not None
+            else COMMAND_USAGE[command]
+        ),
     }
+    if project_command is not None:
+        payload["project_command"] = project_command
     if command == "doctor":
         payload["modes"] = ["inspect", "repair"]
+    if command == "projects" and project_command is None:
+        payload["subcommands"] = list(PROJECT_COMMANDS)
     return payload
 
 
@@ -165,6 +205,26 @@ def execute(args):
     if not store.path.is_file():
         raise ContractError("control plane is not initialized; run init first")
     store.require_schema_compatible()
+
+    if args.command == "projects":
+        registry = ProjectRegistryService(context, store)
+        if args.project_command == "register":
+            try:
+                return registry.register(args.display_name, args.path)
+            except GitStateError as error:
+                raise BoundaryError(
+                    "project repository cannot be inspected"
+                ) from error
+        if args.project_command == "retire":
+            return registry.retire(args.project_id)
+        if args.project_command == "list":
+            return {
+                "projects": [
+                    registry.safe_summary(entry)
+                    for entry in store.list_project_registry_entries(status="ACTIVE")
+                ]
+            }
+        raise ContractError("unknown project registry command")
 
     control = ControlPlane(context, store)
     if args.command == "start":
@@ -211,7 +271,15 @@ def main(argv=None):
         if any(argument in ("-h", "--help") for argument in arguments):
             emit(help_payload(arguments))
             return 0
-        args = build_parser().parse_args(arguments)
+        try:
+            args = build_parser().parse_args(arguments)
+        except ContractError as error:
+            command, _ = _argv_command_scope(arguments)
+            if command in COMMANDS:
+                raise ContractError(
+                    "invalid %s command arguments" % command
+                ) from error
+            raise ContractError("invalid command arguments") from error
         result = execute(args)
         emit(result)
         return 0

@@ -13,6 +13,7 @@ from team_control.git_context import RepoContext
 from team_control.intents import IntentService
 from team_control.service import ControlPlane
 from team_control.store import ControlStore
+from team_control.errors import GitStateError
 from tests.helpers import make_repo, run
 
 
@@ -83,11 +84,24 @@ class CliTests(unittest.TestCase):
             set(subparser_action.choices),
             {
                 "approvals", "doctor", "init", "intents", "process-intent",
-                "process-pending-intents", "start", "status", "transition",
+                "process-pending-intents", "projects", "start", "status",
+                "transition",
             },
         )
         for command, subparser in subparser_action.choices.items():
             with self.subTest(command=command):
+                self.assertFalse(subparser.allow_abbrev)
+        projects = subparser_action.choices["projects"]
+        project_subparser_action = next(
+            action
+            for action in projects._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        self.assertEqual(
+            set(project_subparser_action.choices), {"register", "retire", "list"}
+        )
+        for command, subparser in project_subparser_action.choices.items():
+            with self.subTest(project_command=command):
                 self.assertFalse(subparser.allow_abbrev)
 
     def test_abbreviated_help_is_single_json_error_not_argparse_help(self):
@@ -122,6 +136,36 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(doctor_payload["modes"], ["inspect", "repair"])
 
+            module_projects_help = run_cli(repo, "projects", "--help")
+            projects_payload = assert_json_help(
+                self, module_projects_help, command="projects"
+            )
+            self.assertEqual(
+                projects_payload["subcommands"], ["register", "retire", "list"]
+            )
+            self.assertEqual(
+                projects_payload["usage"],
+                "team-control --repo PATH projects {register,retire,list}",
+            )
+
+            project_help_cases = {
+                "register": (
+                    "team-control --repo PATH projects register "
+                    "--display-name NAME --path ABSOLUTE_PATH"
+                ),
+                "retire": (
+                    "team-control --repo PATH projects retire --project-id UUID"
+                ),
+                "list": "team-control --repo PATH projects list",
+            }
+            for project_command, usage in project_help_cases.items():
+                with self.subTest(entrypoint="module", command=project_command):
+                    result = run_cli(repo, "projects", project_command, "--help")
+                    payload = assert_json_help(self, result, command="projects")
+                    self.assertEqual(payload["project_command"], project_command)
+                    self.assertEqual(payload["usage"], usage)
+                    self.assertNotIn("subcommands", payload)
+
             wrapper_help = run(
                 [str(repo / "scripts" / "team-control"), "--help"],
                 elsewhere,
@@ -133,6 +177,21 @@ class CliTests(unittest.TestCase):
                 elsewhere,
             )
             assert_json_help(self, wrapper_doctor_help, command="doctor")
+
+            for project_command, usage in project_help_cases.items():
+                with self.subTest(entrypoint="wrapper", command=project_command):
+                    result = run(
+                        [
+                            str(repo / "scripts" / "team-control"),
+                            "projects",
+                            project_command,
+                            "--help",
+                        ],
+                        elsewhere,
+                    )
+                    payload = assert_json_help(self, result, command="projects")
+                    self.assertEqual(payload["project_command"], project_command)
+                    self.assertEqual(payload["usage"], usage)
 
             doctor_wrapper_help = run(
                 [str(repo / "scripts" / "worktree-doctor"), "--help"],
@@ -394,6 +453,226 @@ class CliTests(unittest.TestCase):
             repaired_payload = assert_single_json_line(self, repaired)
             self.assertEqual(repaired_payload["classification"], "HEALTHY")
             self.assertTrue(Path(repaired_payload["path"]).is_dir())
+
+    def test_projects_commands_register_list_and_retire_safe_summaries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            central = make_cli_repo(tmp_path / "central")
+            target = make_repo(tmp_path / "target project")
+            target_database = (
+                RepoContext.discover(target).common_dir / "team" / "runtime" / "team.db"
+            )
+            self.assertFalse(target_database.exists())
+            run_cli(central, "init")
+
+            registered = run_cli(
+                central,
+                "projects",
+                "register",
+                "--display-name",
+                "Local Target",
+                "--path",
+                str(target),
+            )
+            registered_payload = assert_single_json_line(self, registered)
+            self.assertEqual(set(registered_payload), {
+                "project_id", "display_name", "status", "created_at", "updated_at",
+            })
+            self.assertEqual(registered_payload["display_name"], "Local Target")
+            self.assertEqual(registered_payload["status"], "ACTIVE")
+            self.assertNotIn(str(target), registered.stdout)
+            self.assertFalse(target_database.exists())
+
+            listed = run_cli(central, "projects", "list")
+            listed_payload = assert_single_json_line(self, listed)
+            self.assertEqual(list(listed_payload), ["projects"])
+            self.assertEqual(listed_payload["projects"], [registered_payload])
+            self.assertNotIn(str(target), listed.stdout)
+
+            retired = run_cli(
+                central,
+                "projects",
+                "retire",
+                "--project-id",
+                registered_payload["project_id"],
+            )
+            retired_payload = assert_single_json_line(self, retired)
+            self.assertEqual(set(retired_payload), {
+                "project_id", "display_name", "status", "created_at", "updated_at",
+            })
+            self.assertEqual(retired_payload["status"], "RETIRED")
+            self.assertNotIn(str(target), retired.stdout)
+            self.assertEqual(
+                assert_single_json_line(self, run_cli(central, "projects", "list")),
+                {"projects": []},
+            )
+            self.assertFalse(target_database.exists())
+
+            # Existing central commands remain available after registry activity.
+            self.assertEqual(
+                assert_single_json_line(
+                    self,
+                    run_cli(central, "intents"),
+                ),
+                {"intents": []},
+            )
+
+    def test_projects_reject_unknown_subcommands_and_missing_required_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            central = make_cli_repo(tmp_path / "central")
+            run_cli(central, "init")
+
+            unknown = run_cli(central, "projects", "scan", check=False)
+            self.assertNotEqual(unknown.returncode, 0)
+            self.assertEqual(unknown.stdout, "")
+            self.assertEqual(
+                assert_single_json_line(self, unknown, "stderr")["error"]["code"],
+                "CONTRACT_ERROR",
+            )
+
+            missing_path = run_cli(
+                central,
+                "projects",
+                "register",
+                "--display-name",
+                "Missing Path",
+                check=False,
+            )
+            self.assertNotEqual(missing_path.returncode, 0)
+            self.assertEqual(missing_path.stdout, "")
+            self.assertEqual(
+                assert_single_json_line(
+                    self, missing_path, "stderr"
+                )["error"]["code"],
+                "CONTRACT_ERROR",
+            )
+
+            absent_target = tmp_path / "private target path"
+            invalid_target = run_cli(
+                central,
+                "projects",
+                "register",
+                "--display-name",
+                "Unavailable",
+                "--path",
+                str(absent_target),
+                check=False,
+            )
+            self.assertNotEqual(invalid_target.returncode, 0)
+            self.assertEqual(invalid_target.stdout, "")
+            self.assertEqual(
+                assert_single_json_line(
+                    self, invalid_target, "stderr"
+                )["error"]["code"],
+                "BOUNDARY_ERROR",
+            )
+            self.assertNotIn(str(absent_target), invalid_target.stderr)
+
+    def test_projects_register_redacts_target_git_errors_at_cli_boundary(self):
+        from team_control import cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            central = make_cli_repo(tmp_path / "central")
+            run_cli(central, "init")
+            private_target = str(tmp_path / "private" / "target")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with mock.patch.object(
+                cli.ProjectRegistryService,
+                "register",
+                side_effect=GitStateError(
+                    "git target inspection failed: %s" % private_target
+                ),
+            ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = cli.main([
+                    "--repo",
+                    str(central),
+                    "projects",
+                    "register",
+                    "--display-name",
+                    "Private Target",
+                    "--path",
+                    private_target,
+                ])
+
+            self.assertEqual(result, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertTrue(stderr.getvalue().endswith("\n"))
+            self.assertEqual(stderr.getvalue().count("\n"), 1)
+            payload = json.loads(stderr.getvalue())
+            self.assertEqual(payload["error"]["code"], "BOUNDARY_ERROR")
+            self.assertNotIn(private_target, stderr.getvalue())
+
+    def test_projects_argparse_errors_never_echo_an_absolute_argument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            central = make_cli_repo(tmp_path / "central")
+            private_argument = str(tmp_path / "very-private" / "target")
+
+            result = run_cli(
+                central, "projects", private_argument, check=False
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(
+                assert_single_json_line(self, result, "stderr")["error"]["code"],
+                "CONTRACT_ERROR",
+            )
+            self.assertNotIn(private_argument, result.stderr)
+
+    def test_any_argparse_error_never_echoes_an_absolute_command_or_stray_argument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            central = make_cli_repo(tmp_path / "central")
+            private_command = str(tmp_path / "very-private" / "command")
+            private_stray_argument = str(tmp_path / "very-private" / "stray")
+
+            for arguments, private_value in (
+                ((private_command,), private_command),
+                (("status", "--dispatch-id", "safe", private_stray_argument), private_stray_argument),
+            ):
+                with self.subTest(arguments=arguments):
+                    result = run_cli(central, *arguments, check=False)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+                    self.assertEqual(
+                        assert_single_json_line(self, result, "stderr")["error"]["code"],
+                        "CONTRACT_ERROR",
+                    )
+                    self.assertEqual(
+                        assert_single_json_line(self, result, "stderr")["error"]["message"],
+                        (
+                            "invalid status command arguments"
+                            if arguments[0] == "status"
+                            else "invalid command arguments"
+                        ),
+                    )
+                    self.assertNotIn(private_value, result.stderr)
+
+    def test_projects_help_does_not_treat_an_option_value_as_a_subcommand(self):
+        from team_control import cli
+
+        payload = cli.help_payload([
+            "--repo", "/private/central", "projects", "--path", "list", "--help",
+        ])
+
+        self.assertEqual(payload["command"], "projects")
+        self.assertNotIn("project_command", payload)
+        self.assertEqual(payload["subcommands"], ["register", "retire", "list"])
+
+    def test_help_scope_does_not_treat_an_unknown_option_value_as_a_command(self):
+        from team_control import cli
+
+        payload = cli.help_payload([
+            "--unknown-option", "projects", "--help",
+        ])
+
+        self.assertNotIn("command", payload)
+        self.assertEqual(payload["commands"], list(cli.COMMANDS))
 
     def test_domain_and_argparse_errors_are_machine_readable(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -6,7 +7,15 @@ from pathlib import Path
 from unittest import mock
 
 from team_control.errors import BoundaryError, GitStateError
-from team_control.git_context import RepoContext, canonical_under, run_argv, validate_component
+from team_control.git_context import (
+    GIT_DISCOVERY_ENV,
+    SYSTEM_GIT_PATH,
+    RepoContext,
+    _resolved_git_discovery_path,
+    canonical_under,
+    run_argv,
+    validate_component,
+)
 from tests.helpers import make_repo, run
 
 
@@ -24,6 +33,86 @@ class GitContextTests(unittest.TestCase):
             context = RepoContext.discover(repo / "scripts")
             self.assertEqual(context.root, repo.resolve())
             self.assertEqual(context.common_dir, (repo / ".git").resolve())
+
+    def test_discovery_uses_a_fixed_git_path_and_isolated_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            common = root / ".git"
+            common.mkdir()
+            completed = [
+                subprocess.CompletedProcess([], 0, str(root) + "\n", ""),
+                subprocess.CompletedProcess([], 0, str(common) + "\n", ""),
+            ]
+            with mock.patch(
+                "team_control.git_context.run_argv", side_effect=completed
+            ) as run:
+                RepoContext.discover(root)
+
+        for call in run.call_args_list:
+            self.assertEqual(call.args[0][0], str(SYSTEM_GIT_PATH))
+            self.assertEqual(
+                call.args[0][1:5],
+                ["-c", "core.fsmonitor=false", "-c", "maintenance.auto=false"],
+            )
+            self.assertFalse(call.kwargs["inherit_env"])
+            self.assertEqual(call.kwargs["env_overrides"], GIT_DISCOVERY_ENV)
+
+    def test_discovery_rejects_an_empty_git_path_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            completed = [
+                subprocess.CompletedProcess([], 0, "\n", ""),
+                subprocess.CompletedProcess([], 0, str(root) + "\n", ""),
+            ]
+            with mock.patch(
+                "team_control.git_context.run_argv", side_effect=completed
+            ):
+                with self.assertRaises(GitStateError) as caught:
+                    RepoContext.discover(root)
+
+        self.assertEqual(str(caught.exception), "git discovery returned an empty path")
+
+    def test_discovery_hides_an_inaccessible_git_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            missing = root / "missing-git-path"
+            completed = [subprocess.CompletedProcess([], 0, str(missing) + "\n", "")]
+            with mock.patch(
+                "team_control.git_context.run_argv", side_effect=completed
+            ):
+                with self.assertRaises(GitStateError) as caught:
+                    RepoContext.discover(root)
+
+        self.assertEqual(str(caught.exception), "git discovery returned an inaccessible path")
+        self.assertNotIn(str(missing), str(caught.exception))
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+
+    def test_discovery_hides_a_plain_runtime_path_resolution_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(
+                Path,
+                "resolve",
+                side_effect=RuntimeError("symlink loop from %s" % root),
+            ):
+                with self.assertRaises(GitStateError) as caught:
+                    _resolved_git_discovery_path(str(root), root)
+
+        self.assertEqual(str(caught.exception), "git discovery returned an inaccessible path")
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+
+    def test_discovery_does_not_hide_a_non_path_runtime_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(
+                Path,
+                "resolve",
+                side_effect=RecursionError("unexpected resolver recursion"),
+            ):
+                with self.assertRaises(RecursionError):
+                    _resolved_git_discovery_path(str(root), root)
 
     def test_discovers_shared_git_common_directory_from_linked_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:

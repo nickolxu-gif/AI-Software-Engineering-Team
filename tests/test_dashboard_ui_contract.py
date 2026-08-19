@@ -10,9 +10,9 @@ JS = ROOT / "apps" / "dashboard" / "app.js"
 
 
 class DashboardUiContractTests(unittest.TestCase):
-    def test_five_views_and_controlled_request_status_exist(self):
+    def test_navigation_views_and_controlled_request_status_exist(self):
         html = HTML.read_text(encoding="utf-8")
-        for label in ("总览", "任务", "Agents", "审批", "证据", "受控意图"):
+        for label in ("总览", "项目", "任务", "Agents", "审批", "证据", "受控意图"):
             self.assertIn(label, html)
         for landmark in ("<nav", "<main", "aria-live", "aria-current"):
             self.assertIn(landmark, html)
@@ -76,6 +76,35 @@ class DashboardUiContractTests(unittest.TestCase):
         )
         self.assertIn("detailPayloads", javascript)
         self.assertIn("eventPayload", javascript)
+
+    def test_projects_view_is_read_only_and_filters_fetched_safe_cards(self):
+        html = HTML.read_text(encoding="utf-8")
+        javascript = JS.read_text(encoding="utf-8")
+        self.assertIn('data-view="projects"', html)
+        self.assertIn("/api/projects", javascript)
+        self.assertIn(
+            "new Set([project.source_head_sha, projects.source_head_sha, "
+            "tasks.source_head_sha, approvals.source_head_sha])",
+            javascript,
+        )
+        self.assertIn("projectFilter", javascript)
+        self.assertIn("const project = state.data.project || {};", javascript)
+        self.assertIn("const health = project.health || 'UNAVAILABLE';", javascript)
+        self.assertIn("const headSha = project.head_sha || 'UNAVAILABLE';", javascript)
+        self.assertIn("const branch = project.branch || 'UNAVAILABLE';", javascript)
+        self.assertIn("const worktreeCount = project.worktree_count ?? 'UNAVAILABLE';", javascript)
+        self.assertIn("const counts = {", javascript)
+        self.assertIn("...(project.counts || {})", javascript)
+        self.assertIn("(state.data.projects || []).length", javascript)
+        self.assertIn("项目状态 UNAVAILABLE", javascript)
+        self.assertIn("请回到 Codex 中继续", javascript)
+        for forbidden in (
+            "/api/projects/register", "/api/projects/delete", "showDirectoryPicker",
+            "item.root_path", "item.common_dir_path", "item.remote",
+            "item.objective", "item.context", "item.evidence", "item.nonce",
+            "item.raw_error", "target-detail",
+        ):
+            self.assertNotIn(forbidden, javascript)
 
     def test_secondary_caches_are_bound_to_task_and_head(self):
         javascript = JS.read_text(encoding="utf-8")

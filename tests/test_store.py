@@ -8,7 +8,12 @@ from pathlib import Path
 from unittest import mock
 
 from team_control import store as store_module
-from team_control.errors import BoundaryError, ReconciliationError
+from team_control.errors import (
+    BoundaryError,
+    ReconciliationError,
+    SchemaMigrationRequiredError,
+    SchemaUnsupportedError,
+)
 from team_control.git_context import RepoContext
 from tests.helpers import make_repo, run
 
@@ -61,6 +66,15 @@ EXPECTED_COLUMNS = {
         "blocker_id", "dispatch_id", "reason", "owner", "status",
         "resolution_condition", "created_at", "updated_at",
     ),
+    "project_registry": (
+        "project_id", "display_name", "root_path", "common_dir_path",
+        "root_device", "root_inode", "root_mode", "common_dir_device",
+        "common_dir_inode", "common_dir_mode",
+        "status", "created_at", "updated_at", "retired_at",
+    ),
+    "project_registry_events": (
+        "event_id", "project_id", "event_type", "created_at",
+    ),
 }
 
 EXPECTED_PRIMARY_KEYS = {
@@ -75,6 +89,8 @@ EXPECTED_PRIMARY_KEYS = {
     "agents": {"dispatch_id": 1, "agent_id": 2},
     "reviews": {"review_id": 1},
     "blockers": {"blocker_id": 1},
+    "project_registry": {"project_id": 1},
+    "project_registry_events": {"event_id": 1},
 }
 
 EXPECTED_NULLABLE = {
@@ -89,6 +105,8 @@ EXPECTED_NULLABLE = {
     "agents": {"model"},
     "reviews": set(),
     "blockers": {"resolution_condition"},
+    "project_registry": {"retired_at"},
+    "project_registry_events": set(),
 }
 
 
@@ -195,6 +213,7 @@ class StoreTests(unittest.TestCase):
 
                 for table in set(EXPECTED_COLUMNS) - {
                     "tasks", "task_intake_requests", "task_intake_handlings",
+                    "project_registry", "project_registry_events",
                 }:
                     with self.subTest(foreign_key_table=table):
                         foreign_keys = connection.execute(
@@ -218,6 +237,15 @@ class StoreTests(unittest.TestCase):
                     },
                 )
 
+                registry_event_keys = connection.execute(
+                    "PRAGMA foreign_key_list(project_registry_events)"
+                ).fetchall()
+                self.assertEqual(
+                    {(row["table"], row["from"], row["to"])
+                     for row in registry_event_keys},
+                    {("project_registry", "project_id", "project_id")},
+                )
+
                 for table in ("approvals", "operations", "intents", "task_intake_requests"):
                     unique_columns = set()
                     for index in connection.execute(
@@ -229,6 +257,229 @@ class StoreTests(unittest.TestCase):
                             ).fetchall()
                             unique_columns.add(tuple(row["name"] for row in columns))
                     self.assertEqual(unique_columns, {("idempotency_key",)})
+
+    def test_missing_project_registry_table_requires_schema_migration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+            with store.mutation() as connection:
+                connection.execute("DROP TABLE project_registry_events")
+
+            with self.assertRaises(SchemaMigrationRequiredError):
+                store.require_schema_compatible()
+
+    def test_project_registry_schema_requires_its_unique_check_and_foreign_key_contracts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+            connection = sqlite3.connect(str(store.path))
+            try:
+                connection.execute("PRAGMA foreign_keys = OFF")
+                connection.execute("DROP TABLE project_registry_events")
+                connection.execute("DROP TABLE project_registry")
+                connection.execute(
+                    """CREATE TABLE project_registry (
+                           project_id TEXT PRIMARY KEY,
+                           display_name TEXT NOT NULL,
+                           root_path TEXT NOT NULL,
+                           common_dir_path TEXT NOT NULL,
+                           root_device INTEGER NOT NULL,
+                           root_inode INTEGER NOT NULL,
+                           root_mode INTEGER NOT NULL,
+                           common_dir_device INTEGER NOT NULL,
+                           common_dir_inode INTEGER NOT NULL,
+                           common_dir_mode INTEGER NOT NULL,
+                           status TEXT NOT NULL,
+                           created_at TEXT NOT NULL,
+                           updated_at TEXT NOT NULL,
+                           retired_at TEXT
+                       )"""
+                )
+                connection.execute(
+                    """CREATE TABLE project_registry_events (
+                           event_id TEXT PRIMARY KEY,
+                           project_id TEXT NOT NULL,
+                           event_type TEXT NOT NULL,
+                           created_at TEXT NOT NULL
+                       )"""
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with self.assertRaises(SchemaUnsupportedError):
+                store.require_schema_compatible()
+
+    def test_project_registry_schema_rejects_a_persistent_trigger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+            with store.mutation() as connection:
+                connection.execute(
+                    """CREATE TRIGGER project_registry_persistent_trigger
+                       AFTER INSERT ON project_registry
+                       BEGIN
+                           SELECT 1;
+                       END"""
+                )
+
+            with self.assertRaises(SchemaUnsupportedError):
+                store.require_schema_compatible()
+
+    def test_normal_project_registry_schema_is_compatible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+
+            store.require_schema_compatible()
+
+    def test_init_migrates_every_admissible_pre_change_registry_schema(self):
+        for with_expected_partial_indexes in (False, True):
+            with self.subTest(partial_indexes=with_expected_partial_indexes), tempfile.TemporaryDirectory() as tmp:
+                store, _ = self.make_store(Path(tmp))
+                store.initialize()
+                project_id = "123e4567-e89b-12d3-a456-426614174002"
+                event_id = "123e4567-e89b-12d3-a456-426614174003"
+                legacy_schema = """CREATE TABLE project_registry (
+                project_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL UNIQUE,
+                root_path TEXT NOT NULL UNIQUE,
+                common_dir_path TEXT NOT NULL UNIQUE,
+                root_device INTEGER NOT NULL,
+                root_inode INTEGER NOT NULL,
+                root_mode INTEGER NOT NULL,
+                common_dir_device INTEGER NOT NULL,
+                common_dir_inode INTEGER NOT NULL,
+                common_dir_mode INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RETIRED')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                retired_at TEXT
+                )"""
+                with store.mutation() as connection:
+                    connection.execute("PRAGMA foreign_keys = OFF")
+                    connection.execute("DROP TABLE project_registry_events")
+                    connection.execute("DROP TABLE project_registry")
+                    connection.execute(legacy_schema)
+                    connection.execute(
+                    """CREATE TABLE project_registry_events (
+                        event_id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES project_registry(project_id),
+                        event_type TEXT NOT NULL CHECK (
+                            event_type IN ('PROJECT_REGISTERED', 'PROJECT_RETIRED')
+                        ),
+                        created_at TEXT NOT NULL
+                    )"""
+                    )
+                    if with_expected_partial_indexes:
+                        for statement in store_module.PROJECT_REGISTRY_INDEXES.values():
+                            connection.execute(statement)
+                    connection.execute(
+                    """INSERT INTO project_registry VALUES (
+                        ?, 'Legacy', '/private/root', '/private/common',
+                        1, 2, 3, 4, 5, 6, 'ACTIVE', '2026-08-14T00:00:00+00:00',
+                        '2026-08-14T00:00:00+00:00', NULL
+                    )""",
+                    (project_id,),
+                    )
+                    connection.execute(
+                    """INSERT INTO project_registry_events VALUES (
+                        ?, ?, 'PROJECT_REGISTERED', '2026-08-14T00:00:00+00:00'
+                    )""",
+                    (event_id, project_id),
+                    )
+
+                with self.assertRaises(SchemaMigrationRequiredError):
+                    store.require_schema_compatible()
+                store.initialize()
+                retired = store.retire_project_registry_entry(project_id)
+                replacement = store.create_project_registry_entry(
+                "123e4567-e89b-12d3-a456-426614174004",
+                "Legacy",
+                "/private/root",
+                "/private/common",
+                1, 2, 3, 4, 5, 6,
+                )
+
+                self.assertEqual((retired["status"], replacement["status"]), ("RETIRED", "ACTIVE"))
+                self.assertEqual(len(store.list_project_registry_entries()), 2)
+                with store.read_connection() as connection:
+                    foreign_keys = connection.execute(
+                        "PRAGMA foreign_key_list(project_registry_events)"
+                    ).fetchall()
+                self.assertEqual(
+                    {(row["table"], row["from"], row["to"]) for row in foreign_keys},
+                    {("project_registry", "project_id", "project_id")},
+                )
+
+    def test_init_rejects_legacy_project_registry_orphan_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self.make_store(Path(tmp))
+            store.initialize()
+            legacy_schema = """CREATE TABLE project_registry (
+                project_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL UNIQUE,
+                root_path TEXT NOT NULL UNIQUE,
+                common_dir_path TEXT NOT NULL UNIQUE,
+                root_device INTEGER NOT NULL,
+                root_inode INTEGER NOT NULL,
+                root_mode INTEGER NOT NULL,
+                common_dir_device INTEGER NOT NULL,
+                common_dir_inode INTEGER NOT NULL,
+                common_dir_mode INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RETIRED')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                retired_at TEXT
+            )"""
+            connection = sqlite3.connect(str(store.path))
+            try:
+                connection.execute("PRAGMA foreign_keys = OFF")
+                connection.execute("DROP TABLE project_registry_events")
+                connection.execute("DROP TABLE project_registry")
+                connection.execute(legacy_schema)
+                connection.execute(
+                    """CREATE TABLE project_registry_events (
+                        event_id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES project_registry(project_id),
+                        event_type TEXT NOT NULL CHECK (
+                            event_type IN ('PROJECT_REGISTERED', 'PROJECT_RETIRED')
+                        ),
+                        created_at TEXT NOT NULL
+                    )"""
+                )
+                connection.execute(
+                    """INSERT INTO project_registry_events VALUES (
+                        '123e4567-e89b-12d3-a456-426614174003',
+                        '123e4567-e89b-12d3-a456-426614174002',
+                        'PROJECT_REGISTERED', '2026-08-14T00:00:00+00:00'
+                    )"""
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            connection = sqlite3.connect(str(store.path))
+            try:
+                before = connection.execute(
+                    """SELECT type, name, tbl_name, sql FROM sqlite_master
+                       WHERE name NOT LIKE 'sqlite_%'
+                       ORDER BY type, name"""
+                ).fetchall()
+            finally:
+                connection.close()
+            with self.assertRaises(SchemaUnsupportedError):
+                store.initialize()
+            connection = sqlite3.connect(str(store.path))
+            try:
+                after = connection.execute(
+                    """SELECT type, name, tbl_name, sql FROM sqlite_master
+                       WHERE name NOT LIKE 'sqlite_%'
+                       ORDER BY type, name"""
+                ).fetchall()
+            finally:
+                connection.close()
+            self.assertEqual(after, before)
 
     def test_initialize_is_idempotent_and_preserves_existing_rows(self):
         with tempfile.TemporaryDirectory() as tmp:

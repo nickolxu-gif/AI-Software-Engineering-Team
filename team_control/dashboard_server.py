@@ -211,6 +211,9 @@ def make_handler(model, assets_dir, intent_token):
             if path == "/api/project":
                 self._query(())
                 return model.project()
+            if path == "/api/projects":
+                self._query(())
+                return model.projects()
             if path == "/api/tasks":
                 query = self._query(("limit", "offset", "state", "risk", "attention", "q"))
                 pagination = {
@@ -409,7 +412,9 @@ def make_handler(model, assets_dir, intent_token):
             try:
                 if path in STATIC_FILES:
                     self._query(())
-                elif path in ("/api/health", "/api/project", "/api/session"):
+                elif path in (
+                    "/api/health", "/api/project", "/api/projects", "/api/session",
+                ):
                     self._query(())
                 elif path == "/api/tasks":
                     self._query(("limit", "offset", "state", "risk", "attention", "q"))

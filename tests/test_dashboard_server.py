@@ -23,6 +23,7 @@ from team_control.dashboard_main import (
 )
 from team_control.dashboard_server import create_server
 from team_control.git_context import RepoContext
+from team_control.project_registry import ProjectRegistryService
 from team_control.service import ControlPlane
 from team_control.store import ControlStore
 from tests.helpers import make_repo
@@ -181,6 +182,47 @@ class DashboardServerTests(unittest.TestCase):
                 self.assertEqual(response.status, 405)
                 self.assertEqual(payload["error"]["code"], "READ_ONLY")
         self.assertEqual(self.database_digest(), before)
+
+    def test_projects_endpoint_has_only_public_cards_and_is_read_only(self):
+        target = make_repo(Path(self.temporary.name) / "registered-target")
+        ProjectRegistryService(self.model.context, self.store).register(
+            "Registered target", target
+        )
+        response, payload, body = self.request("GET", "/api/projects")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(set(payload["data"]), {"items", "count"})
+        self.assertEqual(payload["data"]["count"], 1)
+        self.assertEqual(set(payload["data"]["items"][0]), {
+            "project_id", "display_name", "registry_status", "sampled_at",
+            "head_sha", "control_status", "task_counts",
+            "latest_task_updated_at",
+        })
+        encoded = body.decode("utf-8")
+        self.assertNotIn(str(target), encoded)
+        self.assertNotIn(str(RepoContext.discover(target).common_dir), encoded)
+
+        response, payload, body = self.request("HEAD", "/api/projects")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(body, b"")
+        origin = "http://127.0.0.1:%d" % self.port
+        response, payload, body = self.request(
+            "OPTIONS", "/api/projects", headers={"Origin": origin}
+        )
+        self.assertEqual(response.status, 204)
+        self.assertEqual(response.getheader("Allow"), "GET, HEAD, OPTIONS")
+        for method in ("POST", "PUT", "PATCH", "DELETE"):
+            with self.subTest(method=method):
+                response, payload, body = self.request(method, "/api/projects")
+                self.assertEqual(response.status, 405)
+                self.assertEqual(payload["error"]["code"], "READ_ONLY")
+
+    def test_projects_endpoint_rejects_queries_and_unknown_actions(self):
+        response, payload, body = self.request("GET", "/api/projects?limit=1")
+        self.assertEqual(response.status, 400)
+        self.assertEqual(payload["error"]["code"], "INVALID_REQUEST")
+        response, payload, body = self.request("GET", "/api/projects/register")
+        self.assertEqual(response.status, 404)
+        self.assertEqual(payload["error"]["code"], "NOT_FOUND")
 
     def test_dashboard_assets_expose_only_bounded_intent_controls(self):
         app = (PROJECT_ROOT / "apps" / "dashboard" / "app.js").read_text(
