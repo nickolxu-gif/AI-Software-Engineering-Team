@@ -52,6 +52,8 @@ def _resolved_git_discovery_path(raw_path, start, allow_relative=False):
     except OSError:
         resolved = None
     except RuntimeError as error:
+        # Older pathlib uses plain RuntimeError for a symlink loop; keep
+        # subclasses such as RecursionError visible as genuine failures.
         if type(error) is not RuntimeError:
             raise
         resolved = None

@@ -88,7 +88,7 @@ class GitContextTests(unittest.TestCase):
         self.assertIsNone(caught.exception.__cause__)
         self.assertIsNone(caught.exception.__context__)
 
-    def test_discovery_hides_a_runtime_path_resolution_failure(self):
+    def test_discovery_hides_a_plain_runtime_path_resolution_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with mock.patch.object(
