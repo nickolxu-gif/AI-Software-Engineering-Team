@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-**Git 治理、MVP 0 控制平面、MVP 1 本地工作台、MVP 2A/2B/2C 控制循环，以及 MVP 2D 受控任务需求入口均已整合到 `main`。**
+**Git 治理、MVP 0 控制平面、MVP 1 本地工作台、MVP 2A/2B/2C 控制循环、MVP 2D 受控任务需求入口，以及 MVP 3A 本地项目注册台均已整合到 `main`。**
 
 - `main` 是唯一稳定主线；Git bootstrap 历史基线 SHA 为 `cd459565b8bb24156f92e400a11769d254eccda9`。
 - MVP 0 任务分支已 fast-forward 整合到 `main`；MVP 0 集成 SHA 为 `f4b60ab4a4f3112912641fd8b56667b27d6fb819`。
@@ -23,7 +23,7 @@
 - 控制平面设计：`docs/superpowers/specs/2026-08-08-ai-engineering-team-control-plane-design.md`。
 - MVP 0 实施计划：`docs/superpowers/plans/2026-08-08-mvp0-control-plane.md`。
 - 这里的 `Minor` 指 `git worktree add` 失败后可能残留目录、分支或 Worktree metadata；不是对象存储。Codex 必须先检查实际 Git 状态，再决定安全重建或转为 `BLOCKED`，不得自动强删未知数据。
-- 当前授权阶段：MVP 0、MVP 1、MVP 2A、MVP 2B、MVP 2C 已整合；MVP 3 和 GitHub Remote 尚未进入实施。
+- 当前授权阶段：MVP 0、MVP 1、MVP 2A、MVP 2B、MVP 2C、MVP 2D、MVP 3A 已整合；GitHub Remote 未配置，属于独立后续任务。
 
 ### MVP 0 Control Plane
 
@@ -115,6 +115,17 @@
 - 整合后默认 Python 与 Python 3.14 全量测试各 370 项均通过；`git diff --check` 与 `./scripts/repo-health.sh` 均通过。
 - MiMo 当前没有可调用的独立入口，已如实记录 `NOT_RUN_EXTERNAL_CAPABILITY_UNAVAILABLE`，未伪造盘点结论；Codex 门禁审阅为 `ACCEPT_FOR_INTEGRATION`。
 - GitHub remote、push、发布与 MVP 3 仍需 Human 明确新派活；不得因本次整合自动进入。
+
+### MVP 3A 本地项目注册台（多项目只读控制台）
+
+**状态：INTEGRATED**
+
+- 任务：`20260814-001`；主线 no-ff 合并 SHA 为 `72d4aeb`；当前 `main` 头为 `b6d2983`。
+- 完成范围：本地项目注册表（`register / retire / list`）与 Dashboard 项目视图（上限 20 项、fail-closed 采样、状态与头信息只读展示），不含跨项目写入、扫描磁盘、GitHub、远程服务、后台任务、完整客户端写操作。
+- 审核路径：仅使用 Claude Code V4（strict PASS 包）作为最终审阅。
+- 验收结果：`./scripts/repo-health.sh` PASS、`git diff --check` 通过、默认 `python3` 与 `python3.14` 全量测试 456/456 通过。
+- 产物：`artifacts/dispatches/20260814-001/dispatch.md`、`artifacts/dispatches/20260814-001/verification.md`。
+- 仍未配置 GitHub remote，未发生 push、发布、GitHub 账号/凭据绑定、后台写入服务扩展。
 
 可使用以下命令复核最终 Worktree 和分支状态：
 
