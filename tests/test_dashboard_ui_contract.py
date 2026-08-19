@@ -89,8 +89,12 @@ class DashboardUiContractTests(unittest.TestCase):
         )
         self.assertIn("projectFilter", javascript)
         self.assertIn("const project = state.data.project || {};", javascript)
+        self.assertIn("const health = project.health || 'UNAVAILABLE';", javascript)
+        self.assertIn("const headSha = project.head_sha || 'UNAVAILABLE';", javascript)
         self.assertIn("const counts = {", javascript)
         self.assertIn("...(project.counts || {})", javascript)
+        self.assertIn("(state.data.projects || []).length", javascript)
+        self.assertIn("项目状态 UNAVAILABLE", javascript)
         self.assertIn("请回到 Codex 中继续", javascript)
         for forbidden in (
             "/api/projects/register", "/api/projects/delete", "showDirectoryPicker",
