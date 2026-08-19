@@ -18,7 +18,7 @@ Codex 会在前台请求中读取项目规则、检查 Git，并使用 MVP 0 已
 
 - Codex 是唯一主入口和工程控制者；MVP 2A 工作台可以提交三类受控意图，MVP 2B 提供逐条门禁队列，MVP 2C 让 Codex 在正常工程请求开始时主动、安全地处理有限批次。
 - `scripts/open-team-dashboard` 是 Codex 使用的一键启动器，你不需要自己运行。
-- GitHub Remote 尚未配置；打开本地工作台不会配置 GitHub Remote，也不会 push。
+- GitHub Remote 已配置完成（Private 仓库）；打开本地工作台不会涉及远端推送或发布。
 
 MVP 0 稳定控制 CLI 包含 `init`、`start`、针对已知 `dispatch_id` 的 `status`、`transition`、`approvals` 列表和 `doctor inspect/repair`。MVP 2A 的本地工作台能查看全局首屏，并提交暂停、恢复或审批准备意图；MVP 2C 让 Codex 每次正常工程请求最多处理 10 条已提交意图。浏览器不能处理意图、修改 Git、调 Agent、merge、push、发布或消费审批 nonce。
 
@@ -266,20 +266,15 @@ Doctor 不会自动删除未知目录，不会丢弃额外提交，不会执行 
 
 ### 8.2 GitHub 当前状态
 
-GitHub Remote 尚未配置，本地控制平面和 MVP 1 工作台都不依赖 GitHub。启动工作台不会配置 GitHub Remote；当前不能声称已经创建远端、设置 `origin`、首次 push、分支保护或 CI。
+GitHub Remote 已完成 private 仓库创建：`https://github.com/nickolxu-gif/AI-Software-Engineering-Team`。工作台本身仍然是本地控制平面，不会自动进行推送、发布或审批消费。
 
-未来启用时，应作为独立高影响任务，由你明确确认：
+注意：当前该 private 仓库在现有 GitHub 账号计划下不支持分支保护/rulesets API（403），分支保护将作为独立补齐任务执行。
 
-1. GitHub 个人账户或组织；
-2. 仓库名称；
-3. Private 或 Public（默认建议 Private）；
-4. 认证方式；
-5. 是否允许创建远端仓库和首次 push；
-6. 主分支保护、PR Review、必要检查和恢复方案。
+后续可选动作（你确认后执行）：
 
-你届时可以说：
-
-> 我确认启动 GitHub Remote 独立任务。先给我配置方案和风险，不要创建仓库或 push，等我确认账户、仓库名、可见性和认证方式。
+1. 升级账号/仓库计划以启用分支保护；
+2. 或确认公开仓库策略（若接受公开可见性影响）后再做保护策略；
+3. 按你当前规则补齐 PR Review 与 CI 约束。
 
 ## 9. MVP 1 本地只读工作台
 

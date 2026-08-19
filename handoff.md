@@ -12,7 +12,7 @@
 - MVP 0 任务分支已 fast-forward 整合到 `main`；MVP 0 集成 SHA 为 `f4b60ab4a4f3112912641fd8b56667b27d6fb819`。
 - MVP 1 任务分支已通过 no-ff merge 整合到 `main`；MVP 1 集成 SHA 为 `a0d11656b7dd0fbdc2cd6114eed70adc06ebd1b2`。
 - MVP 0 任务 Worktree 已清理；MVP 1 任务 Worktree 只在本 handoff 提交、状态闭环和最终复验完成前保留。
-- 当前没有配置 remote。
+- 已完成 GitHub Remote：`origin` 已绑定到私有仓库 `https://github.com/nickolxu-gif/AI-Software-Engineering-Team.git`，并已完成首次 `main` 推送。
 - `scripts/new-agent-worktree.sh` 与 `scripts/repo-health.sh` 已完成；可复核命令事实见 `GIT_BOOTSTRAP_VERIFICATION.md`。
 - Git bootstrap 验证工件：`GIT_BOOTSTRAP_VERIFICATION.md`、`GIT_BOOTSTRAP_REVIEW_LOG.md`。
 - `REVIEW_ITERATION_2026-08-08.md` 是状态为 `MODIFY` 的审阅证据，不是现行规范。
@@ -23,7 +23,7 @@
 - 控制平面设计：`docs/superpowers/specs/2026-08-08-ai-engineering-team-control-plane-design.md`。
 - MVP 0 实施计划：`docs/superpowers/plans/2026-08-08-mvp0-control-plane.md`。
 - 这里的 `Minor` 指 `git worktree add` 失败后可能残留目录、分支或 Worktree metadata；不是对象存储。Codex 必须先检查实际 Git 状态，再决定安全重建或转为 `BLOCKED`，不得自动强删未知数据。
-- 当前授权阶段：MVP 0、MVP 1、MVP 2A、MVP 2B、MVP 2C、MVP 2D、MVP 3A 已整合；GitHub Remote 未配置，属于独立后续任务。
+- 当前授权阶段：MVP 0、MVP 1、MVP 2A、MVP 2B、MVP 2C、MVP 2D、MVP 3A 已整合；GitHub Remote 已完成配置与推送（私有仓库，分支保护受账号方案限制待补齐）。
 
 ### MVP 0 Control Plane
 
@@ -39,7 +39,7 @@
 - 已知任务状态示例：`./scripts/team-control status --dispatch-id 20260808-009`。仅在该任务已经登记时有效；MVP 0 没有稳定的全局任务列表接口。
 - Minor 规则：先运行 Doctor `inspect`；只有明确的 `REPAIRABLE_BRANCH_ONLY` 才允许 `repair`。未知目录、脏文件、额外提交、注册冲突、符号链接或无法证明安全的 metadata 一律转为 `BLOCKED`，不得自动删除。
 - 验收工件：`artifacts/dispatches/20260808-mvp0-acceptance/verification.md`。
-- GitHub Remote、云服务或生产发布仍未配置。
+- GitHub Remote 已配置；云服务或生产发布仍未配置。
 
 ### MVP 1 Local Read-only Dashboard
 
@@ -114,7 +114,7 @@
 - 独立验收：Claude Code / Opus V4 对完整 SQLite hardening 包严格 `PASS`；安全证据和验收记录位于 `artifacts/dispatches/20260812-008/verification.md`。未使用 CodeBuddy 或其他 fallback。
 - 整合后默认 Python 与 Python 3.14 全量测试各 370 项均通过；`git diff --check` 与 `./scripts/repo-health.sh` 均通过。
 - MiMo 当前没有可调用的独立入口，已如实记录 `NOT_RUN_EXTERNAL_CAPABILITY_UNAVAILABLE`，未伪造盘点结论；Codex 门禁审阅为 `ACCEPT_FOR_INTEGRATION`。
-- GitHub remote、push、发布与 MVP 3 仍需 Human 明确新派活；不得因本次整合自动进入。
+- GitHub 保护规则补齐、push 扩展与 MVP 3 仍需 Human 明确新派活；不得因本次整合自动进入。
 
 ### MVP 3A 本地项目注册台（多项目只读控制台）
 
@@ -125,7 +125,18 @@
 - 审核路径：仅使用 Claude Code V4（strict PASS 包）作为最终审阅。
 - 验收结果：`./scripts/repo-health.sh` PASS、`git diff --check` 通过、默认 `python3` 与 `python3.14` 全量测试 456/456 通过。
 - 产物：`artifacts/dispatches/20260814-001/dispatch.md`、`artifacts/dispatches/20260814-001/verification.md`。
-- 仍未配置 GitHub remote，未发生 push、发布、GitHub 账号/凭据绑定、后台写入服务扩展。
+- 已完成 GitHub Remote 创建与首次 push；未发生生产发布、GitHub 账号/凭据写入、后台写入服务扩展。
+
+### GitHub Remote 独立实施（20260819-002）
+
+**状态：COMPLETED**
+
+- 任务：`20260819-002`；
+- 仓库：`https://github.com/nickolxu-gif/AI-Software-Engineering-Team`（Private）；
+- 远端：`origin` 已建立并追踪；
+- 首次推送：本地 `main` 已成功推送到 `origin/main`；
+- 保护能力：当前 private 仓库与当前账号/计划不支持 `branch protection` 与 `rulesets` API（返回 403）；该缺口已记录为待补齐风险项，不影响本次 push 完成；
+- 证据：`artifacts/dispatches/20260819-002/dispatch.md`、`artifacts/dispatches/20260819-002/verification.md`。
 
 可使用以下命令复核最终 Worktree 和分支状态：
 
