@@ -91,6 +91,8 @@ class DashboardUiContractTests(unittest.TestCase):
         self.assertIn("const project = state.data.project || {};", javascript)
         self.assertIn("const health = project.health || 'UNAVAILABLE';", javascript)
         self.assertIn("const headSha = project.head_sha || 'UNAVAILABLE';", javascript)
+        self.assertIn("const branch = project.branch || 'UNAVAILABLE';", javascript)
+        self.assertIn("const worktreeCount = project.worktree_count ?? 'UNAVAILABLE';", javascript)
         self.assertIn("const counts = {", javascript)
         self.assertIn("...(project.counts || {})", javascript)
         self.assertIn("(state.data.projects || []).length", javascript)

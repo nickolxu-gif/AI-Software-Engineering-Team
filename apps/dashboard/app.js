@@ -155,6 +155,8 @@ function renderOverview() {
   const project = state.data.project || {};
   const health = project.health || 'UNAVAILABLE';
   const headSha = project.head_sha || 'UNAVAILABLE';
+  const branch = project.branch || 'UNAVAILABLE';
+  const worktreeCount = project.worktree_count ?? 'UNAVAILABLE';
   const counts = {
     active_tasks: 0, blocked_tasks: 0, pending_intents: 0,
     pending_task_intakes: 0, pending_approvals: 0,
@@ -170,7 +172,7 @@ function renderOverview() {
   content.innerHTML = `<h1>工程总览</h1><p class="subhead">异常优先 · 所有工程动作仍由 Codex 执行</p>
     <section class="banner"><div><strong>${healthBanner}</strong><div class="meta">来源 HEAD ${escapeHtml(headSha)}</div></div><div>请回到 Codex 处理</div></section>
     <section class="cards"><div class="card">已登记项目<div class="metric">${escapeHtml((state.data.projects || []).length)}</div></div><div class="card">活跃任务<div class="metric">${escapeHtml(counts.active_tasks)}</div></div><div class="card">阻塞任务<div class="metric">${escapeHtml(counts.blocked_tasks)}</div></div><div class="card">待处理意图<div class="metric">${escapeHtml(counts.pending_intents)}</div></div><div class="card">待处理需求<div class="metric">${escapeHtml(counts.pending_task_intakes)}</div></div><div class="card">待审批<div class="metric">${escapeHtml(counts.pending_approvals)}</div></div><div class="card">过期证据<div class="metric">${escapeHtml(counts.stale_reviews + counts.stale_evidence)}</div></div></section>
-    <div class="grid"><section class="panel"><h2>优先队列</h2>${queue.length ? queue.map(taskRow).join('') : renderEmpty('暂无异常任务')}</section><aside class="panel"><h2>Codex 建议</h2><p>优先处理审批、阻塞和方向问题。此页面不会执行修改。</p><p class="meta">分支 ${escapeHtml(project.branch)} · Worktree ${escapeHtml(project.worktree_count)}</p></aside></div>${intake}`;
+    <div class="grid"><section class="panel"><h2>优先队列</h2>${queue.length ? queue.map(taskRow).join('') : renderEmpty('暂无异常任务')}</section><aside class="panel"><h2>Codex 建议</h2><p>优先处理审批、阻塞和方向问题。此页面不会执行修改。</p><p class="meta">分支 ${escapeHtml(branch)} · Worktree ${escapeHtml(worktreeCount)}</p></aside></div>${intake}`;
   bindTaskLinks();
   bindTaskIntakeControl();
 }
