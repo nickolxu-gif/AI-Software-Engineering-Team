@@ -268,7 +268,7 @@ Doctor 不会自动删除未知目录，不会丢弃额外提交，不会执行 
 
 GitHub Remote 已完成公开仓库创建：`https://github.com/nickolxu-gif/AI-Software-Engineering-Team`。工作台本身仍然是本地控制平面，不会自动进行推送、发布或审批消费。
 
-仓库已切为 Public 并执行成功的分支保护设置（main）。当前 `rulesets` 与 `branches/main/protection` 可调用，分支保护参数可见。
+仓库已切为 Public 并执行成功的分支保护设置（main）。当前 `rulesets` 与 `branches/main/protection` 均可调用，分支保护与 ruleset 参数可见。
 
 ### 8.3 GitHub 分支保护补齐（可复用）
 

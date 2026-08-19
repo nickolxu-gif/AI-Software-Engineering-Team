@@ -32,8 +32,52 @@
 
 同时：
 
-- `gh api "/repos/nickolxu-gif/AI-Software-Engineering-Team/rulesets"` 返回 `[]`（可访问）；
+- 执行前：`gh api "/repos/nickolxu-gif/AI-Software-Engineering-Team/rulesets"` 返回 `[]`（可访问）；
 - `gh api "/repos/nickolxu-gif/AI-Software-Engineering-Team/branches/main/protection"` 同步返回当前保护配置。
+
+已执行补强：
+
+```bash
+cat >/tmp/main-ruleset.json <<'JSON'
+{
+  "name": "main-branch-guard",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/main"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "pull_request",
+      "parameters": {
+        "allowed_merge_methods": ["merge", "squash", "rebase"],
+        "dismiss_stale_reviews_on_push": false,
+        "dismissal_restriction": { "enabled": false },
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_approving_review_count": 1,
+        "required_review_thread_resolution": true
+      }
+    },
+    { "type": "required_linear_history" },
+    { "type": "required_signatures" }
+  ]
+}
+JSON
+gh api -X POST "/repos/nickolxu-gif/AI-Software-Engineering-Team/rulesets" --input /tmp/main-ruleset.json
+gh api "/repos/nickolxu-gif/AI-Software-Engineering-Team/rulesets"
+```
+
+返回：
+
+```json
+{"id":21044452,"name":"main-branch-guard","target":"branch","source_type":"Repository","source":"nickolxu-gif/AI-Software-Engineering-Team","enforcement":"active","conditions":{"ref_name":{"exclude":[],"include":["refs/heads/main"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":false,"required_reviewers":[],"require_code_owner_review":false,"require_last_push_approval":false,"required_review_thread_resolution":true,"allowed_merge_methods":["merge","squash","rebase"]}},{"type":"required_linear_history"},{"type":"required_signatures"}]}
+```
+
+说明：ruleset 已成功落地到仓库，形成对 `main` 的额外受控治理层。
 
 ## 4. 风险与后续
 
