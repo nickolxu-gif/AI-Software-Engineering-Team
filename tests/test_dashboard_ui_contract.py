@@ -10,7 +10,7 @@ JS = ROOT / "apps" / "dashboard" / "app.js"
 
 
 class DashboardUiContractTests(unittest.TestCase):
-    def test_five_views_and_controlled_request_status_exist(self):
+    def test_navigation_views_and_controlled_request_status_exist(self):
         html = HTML.read_text(encoding="utf-8")
         for label in ("总览", "项目", "任务", "Agents", "审批", "证据", "受控意图"):
             self.assertIn(label, html)
@@ -88,6 +88,7 @@ class DashboardUiContractTests(unittest.TestCase):
             javascript,
         )
         self.assertIn("projectFilter", javascript)
+        self.assertIn("(state.data.projects || []).length", javascript)
         self.assertIn("请回到 Codex 中继续", javascript)
         for forbidden in (
             "/api/projects/register", "/api/projects/delete", "showDirectoryPicker",
