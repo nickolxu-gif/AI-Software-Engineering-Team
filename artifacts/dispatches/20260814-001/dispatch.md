@@ -4,7 +4,7 @@
 > Owner / Builder：Codex
 > 风险：L2（已授权的本地跨仓库只读汇总）
 > 基线：`c160e21d29bf2071aae0d52219deffcda5c31e84`
-> 当前候选：以本任务隔离 Worktree 的 HEAD 为准；Claude 严格验收与本地整合仍待完成。
+> 当前候选：以本任务隔离 Worktree 的 HEAD 为准；Claude 严格验收与本地整合已完成。
 
 ## Q1 目标、范围与完成标准
 
