@@ -1,6 +1,6 @@
 # Dispatch Record：20260814-001 MVP 3A 本地多项目控制台
 
-> 状态：`REVIEWING`
+> 状态：`ACCEPT_PENDING`
 > Owner / Builder：Codex
 > 风险：L2（已授权的本地跨仓库只读汇总）
 > 基线：`c2db9dfec1302716b420553ff6837955c208d819`
