@@ -3,7 +3,7 @@
 - 任务：MVP 3A 本地多项目控制台
 - 当前候选：`db6b9919c4db5bde6f3b6a9a35e9f4a0cfb4d0a5`
 - 实施基线：`c160e21d29bf2071aae0d52219deffcda5c31e84`
-- 任务状态：`ACCEPT_PENDING`
+- 任务状态：`INTEGRATED`
 - 工作区：`/Users/qinxu/Documents/vibe coding/AI-Software-Engineering-Team/.worktrees/20260818-002-codex-mvp3a-rereview`
 
 ## 1. 确定性检查
@@ -38,4 +38,10 @@
 
 ## 4. 后续动作
 
-进入本地 main 无 fast-forward 合并，随后做 post-merge 全量检查与状态更新。
+已完成本地 main 无 fast-forward 合并，合并后主线 SHA 为 `72d4aeb`。
+
+## 5. Post-merge 复测
+
+- 默认 `python3`：456/456 通过。
+- `/usr/bin/python3.14`：456/456 通过。
+- `./scripts/repo-health.sh`：PASS。
