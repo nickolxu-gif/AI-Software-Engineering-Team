@@ -49,7 +49,11 @@ def _resolved_git_discovery_path(raw_path, start, allow_relative=False):
         candidate = start / candidate
     try:
         resolved = candidate.resolve(strict=True)
-    except (OSError, RuntimeError):
+    except OSError:
+        resolved = None
+    except RuntimeError as error:
+        if type(error) is not RuntimeError:
+            raise
         resolved = None
     if resolved is None:
         raise GitStateError("git discovery returned an inaccessible path")

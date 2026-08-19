@@ -103,6 +103,17 @@ class GitContextTests(unittest.TestCase):
         self.assertIsNone(caught.exception.__cause__)
         self.assertIsNone(caught.exception.__context__)
 
+    def test_discovery_does_not_hide_a_non_path_runtime_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(
+                Path,
+                "resolve",
+                side_effect=RecursionError("unexpected resolver recursion"),
+            ):
+                with self.assertRaises(RecursionError):
+                    _resolved_git_discovery_path(str(root), root)
+
     def test_discovers_shared_git_common_directory_from_linked_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = make_repo(Path(tmp) / "repo")
