@@ -142,8 +142,7 @@
 
 - 状态：`COMPLETED`
 - 目标：统一命令补齐 main 分支保护规则；
-- 结果：`scripts/github-branch-protection.sh` 在 Public 仓库下执行成功，已创建 `main` 的 `required_pull_request_reviews` 与 `required_conversation_resolution`，`required_status_checks.strict=true`；
-- 备注：`scripts/github-branch-protection.sh` 作为后续可复用治理脚本保留，rulesets 可按后续策略继续扩展。
+- 结果：`scripts/github-branch-protection.sh` 在 Public 仓库下执行成功，已创建 `main` 的 `required_pull_request_reviews` 与 `required_conversation_resolution`，`required_status_checks.strict=true`；并新增 `main-branch-guard` ruleset（含 pull_request、required_linear_history、required_signatures）。
 
 可使用以下命令复核最终 Worktree 和分支状态：
 

@@ -45,4 +45,4 @@
 
 ## Q6 结果与后续
 
-- 当前任务状态：完成。`main` 分支保护已成功写入（PR 审核与严格状态检查/会话解析要求均已生效），等待你确认是否继续补齐 rulesets 细化策略。
+- 当前任务状态：完成。`main` 分支保护已成功写入（PR 审核与严格状态检查/会话解析要求均已生效）；并新增 `main-branch-guard` ruleset，包含 pull_request、required_linear_history、required_signatures。
