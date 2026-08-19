@@ -32,7 +32,7 @@ def test_register_writes_private_identity_and_audit_event_atomically(self):
     self.assertEqual(events, [{"event_type": "PROJECT_REGISTERED", "project_id": result["project_id"], "created_at": entry["created_at"]}])
     self.assertNotIn("root_path", self.registry.safe_summary(entry))
 
-def test_register_rejects_symlink_duplicate_and_twenty_first_active_project(self):
+def test_register_rejects_symlink_and_duplicate_project(self):
     with self.assertRaises(ContractError):
         self.registry.register("", self.target_repo)
     with self.assertRaises(BoundaryError):
