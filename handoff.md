@@ -132,11 +132,18 @@
 **状态：COMPLETED**
 
 - 任务：`20260819-002`；
-- 仓库：`https://github.com/nickolxu-gif/AI-Software-Engineering-Team`（Private）；
+- 仓库：`https://github.com/nickolxu-gif/AI-Software-Engineering-Team`（目前 Public）；
 - 远端：`origin` 已建立并追踪；
 - 首次推送：本地 `main` 已成功推送到 `origin/main`；
-- 保护能力：当前 private 仓库与当前账号/计划不支持 `branch protection` 与 `rulesets` API（返回 403）；该缺口已记录为待补齐风险项，不影响本次 push 完成；
+- 保护能力：当前仓库已切换为 Public，可执行分支保护设置；与 rulesets 写权限仍按后续安全策略按需补齐；
 - 证据：`artifacts/dispatches/20260819-002/dispatch.md`、`artifacts/dispatches/20260819-002/verification.md`。
+
+### GitHub 分支保护补齐（20260819-003）
+
+- 状态：`COMPLETED`
+- 目标：统一命令补齐 main 分支保护规则；
+- 结果：`scripts/github-branch-protection.sh` 在 Public 仓库下执行成功，已创建 `main` 的 `required_pull_request_reviews` 与 `required_conversation_resolution`，`required_status_checks.strict=true`；
+- 备注：`scripts/github-branch-protection.sh` 作为后续可复用治理脚本保留，rulesets 可按后续策略继续扩展。
 
 可使用以下命令复核最终 Worktree 和分支状态：
 

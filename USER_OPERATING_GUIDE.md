@@ -266,14 +266,25 @@ Doctor 不会自动删除未知目录，不会丢弃额外提交，不会执行 
 
 ### 8.2 GitHub 当前状态
 
-GitHub Remote 已完成 private 仓库创建：`https://github.com/nickolxu-gif/AI-Software-Engineering-Team`。工作台本身仍然是本地控制平面，不会自动进行推送、发布或审批消费。
+GitHub Remote 已完成公开仓库创建：`https://github.com/nickolxu-gif/AI-Software-Engineering-Team`。工作台本身仍然是本地控制平面，不会自动进行推送、发布或审批消费。
 
-注意：当前该 private 仓库在现有 GitHub 账号计划下不支持分支保护/rulesets API（403），分支保护将作为独立补齐任务执行。
+仓库已切为 Public 并执行成功的分支保护设置（main）。当前 `rulesets` 与 `branches/main/protection` 可调用，分支保护参数可见。
+
+### 8.3 GitHub 分支保护补齐（可复用）
+
+补齐命令已提供：`scripts/github-branch-protection.sh`。你可先做 dry-run 验证参数，再在额度/权限可用时执行真实调用。
+
+```bash
+./scripts/github-branch-protection.sh --owner nickolxu-gif --repo AI-Software-Engineering-Team --branch main --status-checks --dry-run
+./scripts/github-branch-protection.sh --owner nickolxu-gif --repo AI-Software-Engineering-Team --branch main --status-checks
+```
+
+脚本会输出当前分支保护结果；你可直接复用到验收记录里。当前执行结果为已更新保护对象并返回保护配置。
 
 后续可选动作（你确认后执行）：
 
 1. 升级账号/仓库计划以启用分支保护；
-2. 或确认公开仓库策略（若接受公开可见性影响）后再做保护策略；
+2. 按团队策略补齐 `rulesets` 级策略；
 3. 按你当前规则补齐 PR Review 与 CI 约束。
 
 ## 9. MVP 1 本地只读工作台
