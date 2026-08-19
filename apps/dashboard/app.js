@@ -152,7 +152,13 @@ function bindTaskLinks() {
   }));
 }
 function renderOverview() {
-  const project = state.data.project; const counts = project.counts; const queue = project.attention_items || [];
+  const project = state.data.project || {};
+  const counts = {
+    active_tasks: 0, blocked_tasks: 0, pending_intents: 0,
+    pending_task_intakes: 0, pending_approvals: 0,
+    stale_reviews: 0, stale_evidence: 0, ...(project.counts || {})
+  };
+  const queue = project.attention_items || [];
   const intake = `<section class="panel task-intake"><h2>提交新工程需求</h2><p class="meta">仅进入本地收件箱；Codex 会在下一次工程会话补全七问、风险和执行方案。此处不会创建任务、分支或 Worktree。</p><label>标题 <input id="intake-title" maxlength="120" required></label><label>目标 <textarea id="intake-objective" maxlength="2000" required></textarea></label><label>补充背景（可选） <textarea id="intake-context" maxlength="2000"></textarea></label><button id="submit-task-intake">提交给 Codex</button></section>`;
   content.innerHTML = `<h1>工程总览</h1><p class="subhead">异常优先 · 所有工程动作仍由 Codex 执行</p>
     <section class="banner"><div><strong>${project.health === 'ATTENTION' ? `项目状态 ATTENTION · ${escapeHtml(STATUS_ZH.ATTENTION)}${queue.length ? ` · ${escapeHtml(queue.length)} 项异常` : ''}` : `项目状态 HEALTHY · ${escapeHtml(STATUS_ZH.HEALTHY)}`}</strong><div class="meta">来源 HEAD ${escapeHtml(project.head_sha)}</div></div><div>请回到 Codex 处理</div></section>

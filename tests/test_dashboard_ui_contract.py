@@ -88,7 +88,9 @@ class DashboardUiContractTests(unittest.TestCase):
             javascript,
         )
         self.assertIn("projectFilter", javascript)
-        self.assertIn("(state.data.projects || []).length", javascript)
+        self.assertIn("const project = state.data.project || {};", javascript)
+        self.assertIn("const counts = {", javascript)
+        self.assertIn("...(project.counts || {})", javascript)
         self.assertIn("请回到 Codex 中继续", javascript)
         for forbidden in (
             "/api/projects/register", "/api/projects/delete", "showDirectoryPicker",
