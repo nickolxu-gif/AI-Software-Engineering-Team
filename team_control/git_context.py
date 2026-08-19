@@ -38,6 +38,21 @@ def system_git_executable():
     return str(SYSTEM_GIT_PATH)
 
 
+def _resolved_git_discovery_path(raw_path, start, allow_relative=False):
+    value = raw_path.strip()
+    if not value:
+        raise GitStateError("git discovery returned an empty path")
+    candidate = Path(value)
+    if not allow_relative and not candidate.is_absolute():
+        raise GitStateError("git discovery returned a relative repository root")
+    if allow_relative and not candidate.is_absolute():
+        candidate = start / candidate
+    try:
+        return candidate.resolve(strict=True)
+    except OSError as error:
+        raise GitStateError("git discovery returned an inaccessible path") from error
+
+
 def validate_component(value, label):
     if not COMPONENT_RE.fullmatch(value) or ".." in value:
         raise BoundaryError("%s must match %s and not contain '..'" % (label, COMPONENT_RE.pattern))
@@ -113,16 +128,15 @@ class RepoContext:
     def discover(cls, candidate):
         start = Path(candidate).resolve(strict=True)
         executable = system_git_executable()
-        top = Path(run_argv(
+        top = _resolved_git_discovery_path(run_argv(
             [executable, *GIT_DISCOVERY_PREFIX, "rev-parse", "--show-toplevel"], start,
             env_overrides=GIT_DISCOVERY_ENV, inherit_env=False,
-        ).stdout.strip()).resolve(strict=True)
-        common_raw = Path(run_argv(
+        ).stdout, start)
+        common = _resolved_git_discovery_path(run_argv(
             [executable, *GIT_DISCOVERY_PREFIX, "rev-parse", "--git-common-dir"], start,
             env_overrides=GIT_DISCOVERY_ENV, inherit_env=False,
-        ).stdout.strip())
-        common = common_raw if common_raw.is_absolute() else start / common_raw
-        return cls(root=top, common_dir=common.resolve(strict=True))
+        ).stdout, start, allow_relative=True)
+        return cls(root=top, common_dir=common)
 
     @property
     def runtime_dir(self):

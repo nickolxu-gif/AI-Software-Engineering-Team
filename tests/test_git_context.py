@@ -7,7 +7,14 @@ from pathlib import Path
 from unittest import mock
 
 from team_control.errors import BoundaryError, GitStateError
-from team_control.git_context import RepoContext, canonical_under, run_argv, validate_component
+from team_control.git_context import (
+    GIT_DISCOVERY_ENV,
+    SYSTEM_GIT_PATH,
+    RepoContext,
+    canonical_under,
+    run_argv,
+    validate_component,
+)
 from tests.helpers import make_repo, run
 
 
@@ -41,13 +48,42 @@ class GitContextTests(unittest.TestCase):
                 RepoContext.discover(root)
 
         for call in run.call_args_list:
-            self.assertTrue(Path(call.args[0][0]).is_absolute())
+            self.assertEqual(call.args[0][0], str(SYSTEM_GIT_PATH))
             self.assertEqual(
                 call.args[0][1:5],
                 ["-c", "core.fsmonitor=false", "-c", "maintenance.auto=false"],
             )
             self.assertFalse(call.kwargs["inherit_env"])
-            self.assertEqual(call.kwargs["env_overrides"]["GIT_TERMINAL_PROMPT"], "0")
+            self.assertEqual(call.kwargs["env_overrides"], GIT_DISCOVERY_ENV)
+
+    def test_discovery_rejects_an_empty_git_path_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            completed = [
+                subprocess.CompletedProcess([], 0, "\n", ""),
+                subprocess.CompletedProcess([], 0, str(root) + "\n", ""),
+            ]
+            with mock.patch(
+                "team_control.git_context.run_argv", side_effect=completed
+            ):
+                with self.assertRaises(GitStateError) as caught:
+                    RepoContext.discover(root)
+
+        self.assertEqual(str(caught.exception), "git discovery returned an empty path")
+
+    def test_discovery_hides_an_inaccessible_git_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            missing = root / "missing-git-path"
+            completed = [subprocess.CompletedProcess([], 0, str(missing) + "\n", "")]
+            with mock.patch(
+                "team_control.git_context.run_argv", side_effect=completed
+            ):
+                with self.assertRaises(GitStateError) as caught:
+                    RepoContext.discover(root)
+
+        self.assertEqual(str(caught.exception), "git discovery returned an inaccessible path")
+        self.assertNotIn(str(missing), str(caught.exception))
 
     def test_discovers_shared_git_common_directory_from_linked_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:
