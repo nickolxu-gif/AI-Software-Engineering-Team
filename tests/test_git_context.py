@@ -11,6 +11,7 @@ from team_control.git_context import (
     GIT_DISCOVERY_ENV,
     SYSTEM_GIT_PATH,
     RepoContext,
+    _resolved_git_discovery_path,
     canonical_under,
     run_argv,
     validate_component,
@@ -84,6 +85,23 @@ class GitContextTests(unittest.TestCase):
 
         self.assertEqual(str(caught.exception), "git discovery returned an inaccessible path")
         self.assertNotIn(str(missing), str(caught.exception))
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+
+    def test_discovery_hides_a_runtime_path_resolution_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(
+                Path,
+                "resolve",
+                side_effect=RuntimeError("symlink loop from %s" % root),
+            ):
+                with self.assertRaises(GitStateError) as caught:
+                    _resolved_git_discovery_path(str(root), root)
+
+        self.assertEqual(str(caught.exception), "git discovery returned an inaccessible path")
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
 
     def test_discovers_shared_git_common_directory_from_linked_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:

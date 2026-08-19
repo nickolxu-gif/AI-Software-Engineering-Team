@@ -48,9 +48,12 @@ def _resolved_git_discovery_path(raw_path, start, allow_relative=False):
     if allow_relative and not candidate.is_absolute():
         candidate = start / candidate
     try:
-        return candidate.resolve(strict=True)
-    except OSError as error:
-        raise GitStateError("git discovery returned an inaccessible path") from error
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        resolved = None
+    if resolved is None:
+        raise GitStateError("git discovery returned an inaccessible path")
+    return resolved
 
 
 def validate_component(value, label):
