@@ -462,7 +462,7 @@ scripts/worktree-doctor repair --dispatch-id ID --agent AGENT --slug SLUG --base
 
 ### 13.1 MVP 3A 中央项目登记册（仅 Codex 操作）
 
-项目登记册是**手工、显式的本地 allowlist**，不是扫描器，也不在浏览器工作台提供登记、退休、删除或修复入口。你只需在 Codex 中明确要求登记或退休；Codex 先完成七问、风险与路径核验，再在中央控制仓库执行下列命令。`--repo PATH` 始终是中央控制仓库，绝不是被登记项目的路径。
+项目登记册是**手工、显式的本地 allowlist**，不是扫描器，也不在浏览器工作台提供登记、退休、删除或修复入口。你只需在 Codex 中明确要求登记或退休；Codex 先完成七问、风险与路径核验，再在中央控制仓库的仓库根目录执行下列命令（使 `team_control` 可被 `python3 -m` 导入）。`--repo PATH` 始终是中央控制仓库，绝不是被登记项目的路径。
 
 ```bash
 python3 -m team_control.cli --repo PATH projects register --display-name NAME --path ABSOLUTE_PATH

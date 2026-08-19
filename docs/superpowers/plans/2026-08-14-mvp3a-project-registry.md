@@ -42,6 +42,8 @@ def test_register_rejects_symlink_and_duplicate_project(self):
         self.registry.register("Two", self.target_repo)
 ```
 
+Use a separate cap test that registers 20 distinct local repositories and asserts the 21st `ACTIVE` registration raises `ContractError`.
+
 Add to `tests/test_store.py` assertions that both `project_registry` and `project_registry_events` are required tables after `initialize()`, so an older central database produces `SCHEMA_MIGRATION_REQUIRED` rather than being silently treated as compatible.
 
 - [ ] **Step 2: Run focused tests to verify RED**
