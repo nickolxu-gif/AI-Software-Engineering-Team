@@ -18,7 +18,7 @@ Codex 会在前台请求中读取项目规则、检查 Git，并使用 MVP 0 已
 
 - Codex 是唯一主入口和工程控制者；MVP 2A 工作台可以提交三类受控意图，MVP 2B 提供逐条门禁队列，MVP 2C 让 Codex 在正常工程请求开始时主动、安全地处理有限批次。
 - `scripts/open-team-dashboard` 是 Codex 使用的一键启动器，你不需要自己运行。
-- GitHub Remote 已配置完成（Private 仓库）；打开本地工作台不会涉及远端推送或发布。
+- GitHub Remote 已配置完成（Public 仓库）；打开本地工作台不会配置 GitHub Remote，也不会涉及远端推送或发布。
 
 MVP 0 稳定控制 CLI 包含 `init`、`start`、针对已知 `dispatch_id` 的 `status`、`transition`、`approvals` 列表和 `doctor inspect/repair`。MVP 2A 的本地工作台能查看全局首屏，并提交暂停、恢复或审批准备意图；MVP 2C 让 Codex 每次正常工程请求最多处理 10 条已提交意图。浏览器不能处理意图、修改 Git、调 Agent、merge、push、发布或消费审批 nonce。
 
