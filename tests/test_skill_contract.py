@@ -75,7 +75,7 @@ class SkillContractTests(unittest.TestCase):
             "Minor",
             "Doctor",
             "不会自动删除",
-            "GitHub Remote 尚未配置",
+            "GitHub Remote 已配置完成",
             "MVP 1",
             "本地只读工作台",
             "threat model",
