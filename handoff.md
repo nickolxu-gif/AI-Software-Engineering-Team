@@ -1,6 +1,6 @@
 # 项目交接状态
 
-> 日期：2026-08-14
+> 日期：2026-08-20
 > 维护者：仅 Codex 主控。其他 Agent 和 Reviewer 只读，可提交修改建议。
 > 生效条件：本文件随本次主线 handoff 提交生效。
 
@@ -12,7 +12,7 @@
 - MVP 0 任务分支已 fast-forward 整合到 `main`；MVP 0 集成 SHA 为 `f4b60ab4a4f3112912641fd8b56667b27d6fb819`。
 - MVP 1 任务分支已通过 no-ff merge 整合到 `main`；MVP 1 集成 SHA 为 `a0d11656b7dd0fbdc2cd6114eed70adc06ebd1b2`。
 - MVP 0 任务 Worktree 已清理；MVP 1 任务 Worktree 只在本 handoff 提交、状态闭环和最终复验完成前保留。
-- 已完成 GitHub Remote：`origin` 已绑定到私有仓库 `https://github.com/nickolxu-gif/AI-Software-Engineering-Team.git`，并已完成首次 `main` 推送。
+- 已完成 GitHub Remote：`origin` 已绑定到 Public 仓库 `https://github.com/nickolxu-gif/AI-Software-Engineering-Team.git`，并已完成 `main` 推送与 PR 合并闭环。
 - `scripts/new-agent-worktree.sh` 与 `scripts/repo-health.sh` 已完成；可复核命令事实见 `GIT_BOOTSTRAP_VERIFICATION.md`。
 - Git bootstrap 验证工件：`GIT_BOOTSTRAP_VERIFICATION.md`、`GIT_BOOTSTRAP_REVIEW_LOG.md`。
 - `REVIEW_ITERATION_2026-08-08.md` 是状态为 `MODIFY` 的审阅证据，不是现行规范。
@@ -23,7 +23,7 @@
 - 控制平面设计：`docs/superpowers/specs/2026-08-08-ai-engineering-team-control-plane-design.md`。
 - MVP 0 实施计划：`docs/superpowers/plans/2026-08-08-mvp0-control-plane.md`。
 - 这里的 `Minor` 指 `git worktree add` 失败后可能残留目录、分支或 Worktree metadata；不是对象存储。Codex 必须先检查实际 Git 状态，再决定安全重建或转为 `BLOCKED`，不得自动强删未知数据。
-- 当前授权阶段：MVP 0、MVP 1、MVP 2A、MVP 2B、MVP 2C、MVP 2D、MVP 3A 已整合；GitHub Remote 已完成配置与推送（私有仓库，分支保护受账号方案限制待补齐）。
+- 当前授权阶段：MVP 0、MVP 1、MVP 2A、MVP 2B、MVP 2C、MVP 2D、MVP 3A 已整合；GitHub Remote、Public 可见性、`main` 分支保护和 Verified 提交签名门禁均已完成。MVP 3B、生产发布和其他权限扩大仍未授权。
 
 ### MVP 0 Control Plane
 
@@ -132,10 +132,10 @@
 **状态：COMPLETED**
 
 - 任务：`20260819-002`；
-- 仓库：`https://github.com/nickolxu-gif/AI-Software-Engineering-Team`（目前 Public）；
+- 仓库：`https://github.com/nickolxu-gif/AI-Software-Engineering-Team`（Public）；
 - 远端：`origin` 已建立并追踪；
-- 首次推送：本地 `main` 已成功推送到 `origin/main`；
-- 保护能力：当前仓库已切换为 Public，可执行分支保护设置；与 rulesets 写权限仍按后续安全策略按需补齐；
+- 首次推送：本地 `main` 已成功推送到 `origin/main`；当前远端和本地主线均为 `77244f2e8b0570bf6f4d4bb120a39784402ce5c9`；
+- 保护能力：当前仓库已切换为 Public；`main` 已启用 Pull Request、required conversation resolution、strict status checks、linear history 和 required signatures 规则；
 - 证据：`artifacts/dispatches/20260819-002/dispatch.md`、`artifacts/dispatches/20260819-002/verification.md`。
 
 ### GitHub 分支保护补齐（20260819-003）
@@ -143,6 +143,18 @@
 - 状态：`COMPLETED`
 - 目标：统一命令补齐 main 分支保护规则；
 - 结果：`scripts/github-branch-protection.sh` 在 Public 仓库下执行成功，已创建 `main` 的 `required_pull_request_reviews` 与 `required_conversation_resolution`，`required_status_checks.strict=true`；并新增 `main-branch-guard` ruleset（含 pull_request、required_linear_history、required_signatures）。
+
+### GitHub PR 合并与签名门禁闭环（20260820-001）
+
+- PR：[#2](https://github.com/nickolxu-gif/AI-Software-Engineering-Team/pull/2)，主题为同步 GitHub Remote 当前事实与操作手册契约。
+- 独立 Review：`dallalahdoreen332-max` 提交 `APPROVED`；主账号不能自审。
+- 候选提交 `02bd36b` 已由主账号的 SSH signing key 签名，并由 GitHub 判定 `verified=true`；随后以 Squash 方式合并。
+- 合并提交：`77244f2e8b0570bf6f4d4bb120a39784402ce5c9`；整合后默认 Python 与 Python 3.14 全量测试各 456 项通过，`git diff --check` 与 `./scripts/repo-health.sh` 均通过。
+- 仓库级 Git 签名配置只写入本地 `.git/config`；私钥留在本机，不写入仓库。远端签名门禁不得通过关闭规则绕过。
+
+### 控制库幂等 schema 补齐（20260820-001 前置事实）
+
+- 新任务登记首次返回 `SCHEMA_MIGRATION_REQUIRED`，随后由稳定 `./scripts/team-control init` 完成幂等初始化；未直接编辑 SQLite，后续任务可继续使用现行项目注册表 schema。
 
 可使用以下命令复核最终 Worktree 和分支状态：
 
