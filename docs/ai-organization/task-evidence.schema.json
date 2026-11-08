@@ -1,0 +1,711 @@
+{
+  "$id": "task-evidence.schema.json",
+  "title": "Minimal task evidence package template v1.4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_kind",
+    "persistence",
+    "live_scheduler_database",
+    "executed",
+    "synthetic_label",
+    "contract_context",
+    "task",
+    "flow",
+    "authorization_check",
+    "facts",
+    "views",
+    "assignments",
+    "outbound_message",
+    "pause_cancel",
+    "replay",
+    "shared_object_rules",
+    "shared_objects",
+    "technical_safeguards",
+    "compound_return",
+    "reporting",
+    "skill",
+    "independence"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.4"
+    },
+    "record_kind": {
+      "const": "minimal_task_evidence_package"
+    },
+    "persistence": {
+      "const": "repository_document_template"
+    },
+    "live_scheduler_database": {
+      "const": false
+    },
+    "executed": {
+      "type": "boolean"
+    },
+    "synthetic_label": {
+      "type": "string"
+    },
+    "contract_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "static_configuration_status",
+        "functional_status",
+        "synthetic_pilot",
+        "bot_instruction_is_security_sandbox",
+        "configuration_passed_functional_tests",
+        "copies_external_profiles",
+        "public_static_counts"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "1.4"
+        },
+        "static_configuration_status": {
+          "const": "role_contracts_applied_and_readback_verified"
+        },
+        "functional_status": {
+          "const": "unverified"
+        },
+        "synthetic_pilot": {
+          "const": "draft_not_started"
+        },
+        "bot_instruction_is_security_sandbox": {
+          "const": false
+        },
+        "configuration_passed_functional_tests": {
+          "const": false
+        },
+        "copies_external_profiles": {
+          "const": false
+        },
+        "public_static_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "existing_bot_description_contracts_updated",
+            "knowledge_life_posts_created",
+            "profile_readbacks_succeeded",
+            "static_configuration_checks_passed"
+          ],
+          "properties": {
+            "existing_bot_description_contracts_updated": {
+              "const": 5
+            },
+            "knowledge_life_posts_created": {
+              "const": 1
+            },
+            "profile_readbacks_succeeded": {
+              "const": 6
+            },
+            "static_configuration_checks_passed": {
+              "const": 13
+            }
+          }
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "title",
+        "objective",
+        "non_goals",
+        "active_slots"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "non_goals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "active_slots": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "entry",
+            "execution",
+            "independent_acceptance"
+          ],
+          "properties": {
+            "entry": {
+              "const": "coordination-entry"
+            },
+            "execution": {
+              "enum": [
+                "engineering",
+                "product-ui",
+                "modeling-data",
+                "multimedia-content",
+                "research-materials",
+                "knowledge-management",
+                "life-records"
+              ]
+            },
+            "independent_acceptance": {
+              "const": "independent-quality"
+            }
+          }
+        }
+      }
+    },
+    "flow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "business_stages",
+        "record_stage",
+        "single_entry_means_serial_execution"
+      ],
+      "properties": {
+        "business_stages": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "prefixItems": [
+            {
+              "const": "demand"
+            },
+            {
+              "const": "plan"
+            },
+            {
+              "const": "independent_review"
+            },
+            {
+              "const": "authorization_check"
+            },
+            {
+              "const": "execute_and_monitor"
+            },
+            {
+              "const": "independent_acceptance"
+            },
+            {
+              "const": "delivery"
+            },
+            {
+              "const": "retrospective"
+            }
+          ]
+        },
+        "record_stage": {
+          "type": "string"
+        },
+        "single_entry_means_serial_execution": {
+          "const": false
+        }
+      }
+    },
+    "authorization_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checks_existing_grant_only",
+        "entry_grants_permission",
+        "mechanical_double_confirmation_required",
+        "reconfirm_on_material_change_of",
+        "independent_records"
+      ],
+      "properties": {
+        "checks_existing_grant_only": {
+          "const": true
+        },
+        "entry_grants_permission": {
+          "const": false
+        },
+        "mechanical_double_confirmation_required": {
+          "const": false
+        },
+        "reconfirm_on_material_change_of": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "const": "scope"
+            },
+            {
+              "const": "permission"
+            },
+            {
+              "const": "residency"
+            },
+            {
+              "const": "cost_ceiling"
+            },
+            {
+              "const": "irreversible_action"
+            }
+          ]
+        },
+        "independent_records": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "technical_acceptance",
+            "user_acceptance",
+            "action_authorization"
+          ],
+          "properties": {
+            "technical_acceptance": {
+              "type": "string"
+            },
+            "user_acceptance": {
+              "type": "string"
+            },
+            "action_authorization": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inputs",
+        "artifacts",
+        "events",
+        "sources"
+      ],
+      "properties": {
+        "inputs": {
+          "type": "array"
+        },
+        "artifacts": {
+          "type": "array"
+        },
+        "events": {
+          "type": "array"
+        },
+        "sources": {
+          "type": "array"
+        }
+      }
+    },
+    "views": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "data",
+        "capability",
+        "judgment"
+      ],
+      "properties": {
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "derived_only_from",
+            "separately_maintained"
+          ],
+          "properties": {
+            "derived_only_from": {
+              "const": "facts"
+            },
+            "separately_maintained": {
+              "const": false
+            }
+          }
+        },
+        "capability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "derived_only_from",
+            "capability_verified",
+            "separately_maintained"
+          ],
+          "properties": {
+            "derived_only_from": {
+              "const": "facts"
+            },
+            "capability_verified": {
+              "type": "boolean"
+            },
+            "separately_maintained": {
+              "const": false
+            }
+          }
+        },
+        "judgment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "derived_only_from",
+            "separately_maintained"
+          ],
+          "properties": {
+            "derived_only_from": {
+              "const": "facts"
+            },
+            "separately_maintained": {
+              "const": false
+            }
+          }
+        }
+      }
+    },
+    "assignments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "budget",
+        "cost_ceiling",
+        "execution_identity",
+        "acceptance_identity",
+        "tool_identity"
+      ],
+      "properties": {
+        "budget": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cost_ceiling": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_identity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "acceptance_identity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool_identity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "outbound_message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "default",
+        "workflow_completion_is_send_permission",
+        "draft_present"
+      ],
+      "properties": {
+        "default": {
+          "const": "user_reviews_draft"
+        },
+        "workflow_completion_is_send_permission": {
+          "const": false
+        },
+        "draft_present": {
+          "type": "boolean"
+        }
+      }
+    },
+    "pause_cancel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "endpoint_receipt",
+        "explicitly_unconfirmed",
+        "completion_rule",
+        "unknown_must_not_be_recorded_as_completed"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "not_requested",
+            "endpoint_receipt_recorded",
+            "explicitly_unconfirmed"
+          ]
+        },
+        "endpoint_receipt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "explicitly_unconfirmed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "completion_rule": {
+          "const": "endpoint_receipt_or_explicitly_unconfirmed"
+        },
+        "unknown_must_not_be_recorded_as_completed": {
+          "const": true
+        }
+      }
+    },
+    "replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome_known",
+        "side_effects_possible",
+        "stop_when_outcome_unknown_and_side_effects_possible",
+        "replay_performed",
+        "technically_enforced"
+      ],
+      "properties": {
+        "outcome_known": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "side_effects_possible": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "stop_when_outcome_unknown_and_side_effects_possible": {
+          "const": true
+        },
+        "replay_performed": {
+          "type": "boolean"
+        },
+        "technically_enforced": {
+          "const": false
+        }
+      }
+    },
+    "shared_object_rules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "single_writer",
+        "version_baseline_must_match",
+        "duplicate_events_must_be_deduplicated",
+        "technically_enforced"
+      ],
+      "properties": {
+        "single_writer": {
+          "const": true
+        },
+        "version_baseline_must_match": {
+          "const": true
+        },
+        "duplicate_events_must_be_deduplicated": {
+          "const": true
+        },
+        "technically_enforced": {
+          "const": false
+        }
+      }
+    },
+    "shared_objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "object_id",
+          "single_writer",
+          "version_baseline",
+          "baseline_matched",
+          "duplicate_events_deduplicated"
+        ],
+        "properties": {
+          "object_id": {
+            "type": "string"
+          },
+          "single_writer": {
+            "const": true
+          },
+          "version_baseline": {
+            "type": "string"
+          },
+          "baseline_matched": {
+            "const": true
+          },
+          "duplicate_events_deduplicated": {
+            "const": true
+          }
+        }
+      }
+    },
+    "technical_safeguards": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claimed"
+      ],
+      "properties": {
+        "claimed": {
+          "const": false
+        }
+      }
+    },
+    "compound_return": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claimed",
+        "insufficient_evidence",
+        "required_future_conditions"
+      ],
+      "properties": {
+        "claimed": {
+          "const": false
+        },
+        "insufficient_evidence": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "const": "content_hash"
+            },
+            {
+              "const": "bot_count"
+            },
+            {
+              "const": "single_success"
+            }
+          ]
+        },
+        "required_future_conditions": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "const": "real_reuse_happened"
+            },
+            {
+              "const": "quality_did_not_drop"
+            },
+            {
+              "const": "user_active_labor_or_rework_decreased"
+            }
+          ]
+        }
+      }
+    },
+    "reporting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cadence",
+        "background_daily_report",
+        "heartbeat",
+        "kpi_okr_order"
+      ],
+      "properties": {
+        "cadence": {
+          "const": "activity_driven_per_task"
+        },
+        "background_daily_report": {
+          "const": false
+        },
+        "heartbeat": {
+          "const": false
+        },
+        "kpi_okr_order": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "const": "quality_evidence"
+            },
+            {
+              "const": "quantity"
+            },
+            {
+              "const": "cost"
+            }
+          ]
+        }
+      }
+    },
+    "skill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "released",
+        "pipeline",
+        "may_change_permission_budget_or_privacy"
+      ],
+      "properties": {
+        "released": {
+          "const": false
+        },
+        "pipeline": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "const": "candidate"
+            },
+            {
+              "const": "multi_scenario_test"
+            },
+            {
+              "const": "independent_reverification"
+            },
+            {
+              "const": "authorized_approval"
+            },
+            {
+              "const": "versioned_release_observation_or_rollback"
+            }
+          ]
+        },
+        "may_change_permission_budget_or_privacy": {
+          "const": false
+        }
+      }
+    },
+    "independence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "implementer_may_review_own_artifact",
+        "different_model_is_sufficient",
+        "same_model_independent_session_is_automatically_invalid"
+      ],
+      "properties": {
+        "implementer_may_review_own_artifact": {
+          "const": false
+        },
+        "different_model_is_sufficient": {
+          "const": false
+        },
+        "same_model_independent_session_is_automatically_invalid": {
+          "const": false
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,165 @@
+{
+  "schema_version": "1.4",
+  "record_kind": "minimal_task_evidence_package",
+  "persistence": "repository_document_template",
+  "live_scheduler_database": false,
+  "executed": false,
+  "synthetic_label": "template_example_not_a_run",
+  "contract_context": {
+    "contract_version": "1.4",
+    "static_configuration_status": "role_contracts_applied_and_readback_verified",
+    "functional_status": "unverified",
+    "synthetic_pilot": "draft_not_started",
+    "bot_instruction_is_security_sandbox": false,
+    "configuration_passed_functional_tests": false,
+    "copies_external_profiles": false,
+    "public_static_counts": {
+      "existing_bot_description_contracts_updated": 5,
+      "knowledge_life_posts_created": 1,
+      "profile_readbacks_succeeded": 6,
+      "static_configuration_checks_passed": 13
+    }
+  },
+  "task": {
+    "task_id": "TEMPLATE-TASK-001",
+    "title": "模板示例：一份尚未执行的公开说明",
+    "objective": "展示最小任务证据包的字段",
+    "non_goals": [
+      "接入真实工具",
+      "读取或迁移真实个人数据",
+      "启动合成试点"
+    ],
+    "active_slots": {
+      "entry": "coordination-entry",
+      "execution": "research-materials",
+      "independent_acceptance": "independent-quality"
+    }
+  },
+  "flow": {
+    "business_stages": [
+      "demand",
+      "plan",
+      "independent_review",
+      "authorization_check",
+      "execute_and_monitor",
+      "independent_acceptance",
+      "delivery",
+      "retrospective"
+    ],
+    "record_stage": "template_not_started",
+    "single_entry_means_serial_execution": false
+  },
+  "authorization_check": {
+    "checks_existing_grant_only": true,
+    "entry_grants_permission": false,
+    "mechanical_double_confirmation_required": false,
+    "reconfirm_on_material_change_of": [
+      "scope",
+      "permission",
+      "residency",
+      "cost_ceiling",
+      "irreversible_action"
+    ],
+    "independent_records": {
+      "technical_acceptance": "unrecorded",
+      "user_acceptance": "unrecorded",
+      "action_authorization": "unrecorded"
+    }
+  },
+  "facts": {
+    "inputs": [],
+    "artifacts": [],
+    "events": [],
+    "sources": []
+  },
+  "views": {
+    "data": {
+      "derived_only_from": "facts",
+      "separately_maintained": false
+    },
+    "capability": {
+      "derived_only_from": "facts",
+      "capability_verified": false,
+      "separately_maintained": false
+    },
+    "judgment": {
+      "derived_only_from": "facts",
+      "separately_maintained": false
+    }
+  },
+  "assignments": {
+    "budget": null,
+    "cost_ceiling": null,
+    "execution_identity": null,
+    "acceptance_identity": null,
+    "tool_identity": null
+  },
+  "outbound_message": {
+    "default": "user_reviews_draft",
+    "workflow_completion_is_send_permission": false,
+    "draft_present": false
+  },
+  "pause_cancel": {
+    "state": "not_requested",
+    "endpoint_receipt": null,
+    "explicitly_unconfirmed": null,
+    "completion_rule": "endpoint_receipt_or_explicitly_unconfirmed",
+    "unknown_must_not_be_recorded_as_completed": true
+  },
+  "replay": {
+    "outcome_known": null,
+    "side_effects_possible": null,
+    "stop_when_outcome_unknown_and_side_effects_possible": true,
+    "replay_performed": false,
+    "technically_enforced": false
+  },
+  "shared_object_rules": {
+    "single_writer": true,
+    "version_baseline_must_match": true,
+    "duplicate_events_must_be_deduplicated": true,
+    "technically_enforced": false
+  },
+  "shared_objects": [],
+  "technical_safeguards": {
+    "claimed": false
+  },
+  "compound_return": {
+    "claimed": false,
+    "insufficient_evidence": [
+      "content_hash",
+      "bot_count",
+      "single_success"
+    ],
+    "required_future_conditions": [
+      "real_reuse_happened",
+      "quality_did_not_drop",
+      "user_active_labor_or_rework_decreased"
+    ]
+  },
+  "reporting": {
+    "cadence": "activity_driven_per_task",
+    "background_daily_report": false,
+    "heartbeat": false,
+    "kpi_okr_order": [
+      "quality_evidence",
+      "quantity",
+      "cost"
+    ]
+  },
+  "skill": {
+    "released": false,
+    "pipeline": [
+      "candidate",
+      "multi_scenario_test",
+      "independent_reverification",
+      "authorized_approval",
+      "versioned_release_observation_or_rollback"
+    ],
+    "may_change_permission_budget_or_privacy": false
+  },
+  "independence": {
+    "implementer_may_review_own_artifact": false,
+    "different_model_is_sufficient": false,
+    "same_model_independent_session_is_automatically_invalid": false
+  }
+}
