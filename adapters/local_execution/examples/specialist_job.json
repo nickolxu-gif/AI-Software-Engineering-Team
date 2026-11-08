@@ -1,0 +1,19 @@
+{
+  "schema_version": "2026-11-08",
+  "task_id": "SYN-READ-01",
+  "preferred_resource": "codex",
+  "prompt": "Summarize the synthetic source. Do not compare the two conditions.",
+  "data_scope": "public_or_synthetic",
+  "private_data": false,
+  "author_role": "reading-arrangement",
+  "review_role": "knowledge-content-acceptance",
+  "review_session": "separate-from-author",
+  "versions": {
+    "task": "v2",
+    "source": "v2",
+    "plan": "v1",
+    "correction_of": "v1",
+    "prior_write_outcome": "known"
+  },
+  "note": "Illustrative specialist job. It is not a live dispatch and contains no approved numeric limits."
+}

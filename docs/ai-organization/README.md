@@ -65,3 +65,7 @@ python3 -m unittest discover -s tests/ai_organization -v
 | `history/v1.4/` | 已被取代的 v1.4 合同 |
 
 校验脚本放在 `tests/ai_organization/`。它们只读本仓库里的合成夹具和 JSON，不接私域，不调用机器人接口，不改权限，也不改既有工程控制平面。
+
+## 执行适配层
+
+`adapters/local_execution/` 是可单独拷贝安装的本地运行器。Codex、Codex2、Kimi、Hermes 只使用已经核对过的帮助参数；DSH 的启动合同仍为空，Cursor 不进本地运行器，OpenClaw 保持暂停，Claude 保持停用且不会被探测。这里的测试使用假可执行文件。它不是已经接通的多模型系统，也不把岗位注册表改成已配置或已运行。

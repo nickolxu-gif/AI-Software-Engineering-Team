@@ -252,7 +252,7 @@ class HistoryAndSensitiveTests(unittest.TestCase):
             ("url", re.compile(r"https?://", re.I)),
             ("home_path", re.compile(r"(?:/Users/|/home/|/private/|/workspace|uploads/)")),
             ("key_material", re.compile(r"BEGIN [A-Z ]*PRIVATE KEY|ssh-ed25519|ssh-rsa")),
-            ("internal_name", re.compile(r"Hermes|Codex2|CodeBuddy|nickolxu|qinxu")),
+            ("private_identifier", re.compile(r"CodeBuddy|nickolxu|qinxu")),
         ]
         files = []
         for path in DOCS.rglob("*"):

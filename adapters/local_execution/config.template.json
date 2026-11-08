@@ -1,0 +1,66 @@
+{
+  "schema_version": "2026-11-08",
+  "private_runtime_enablement": "separate_not_in_this_file",
+  "execution_label": "unverified",
+  "allow_path_lookup": false,
+  "binary_allowlist": [],
+  "resources": {
+    "codex": {
+      "enabled": false,
+      "kind": "codex_exec",
+      "binary": null,
+      "model_alias": null,
+      "codex_home": null,
+      "account_ref": null
+    },
+    "codex2": {
+      "enabled": false,
+      "kind": "codex_exec",
+      "binary": null,
+      "model_alias": null,
+      "codex_home": null,
+      "account_ref": null,
+      "same_argv_contract_as": "codex",
+      "distinct_model_or_account": false
+    },
+    "kimi": {
+      "enabled": false,
+      "kind": "kimi_cli",
+      "binary": null,
+      "model_alias": null,
+      "skills_dir": null,
+      "agent_file": null,
+      "account_ref": null
+    },
+    "hermes": {
+      "enabled": false,
+      "kind": "hermes_chat",
+      "binary": null,
+      "model_alias": null,
+      "account_ref": null
+    },
+    "cursor": {
+      "enabled": false,
+      "kind": "external_orchestrator",
+      "binary": null
+    },
+    "dsh": {
+      "enabled": false,
+      "kind": "unsupported_config_needed",
+      "binary": null,
+      "launch_contract": "not_evidenced"
+    },
+    "openclaw": {
+      "enabled": false,
+      "kind": "paused",
+      "binary": null,
+      "globally_unavailable": false
+    },
+    "claude": {
+      "enabled": false,
+      "kind": "disabled",
+      "binary": null,
+      "probe": false
+    }
+  }
+}

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "execution-adapter"
+version = "0.1.0"
+description = "Local allowlisted CLI runner. Offline fixtures only; not a live multi-model system."
+readme = "README.md"
+requires-python = ">=3.11"
+
+[project.scripts]
+execution-adapter = "execution_adapter.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["execution_adapter*"]

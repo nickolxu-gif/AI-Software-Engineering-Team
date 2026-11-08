@@ -1,0 +1,13 @@
+{
+  "schema_version": "2026-11-08",
+  "recommended": false,
+  "dispatch_approved": false,
+  "autonomous_dispatch": false,
+  "resource_alias": "codex",
+  "reason": "template_config_is_not_enabled",
+  "quota": "UNKNOWN",
+  "per_request_cost": "UNKNOWN",
+  "metering_completeness": "gap",
+  "generation_binding": "help_verified",
+  "note": "A recommendation is not an approval and does not start a process."
+}
