@@ -1,0 +1,289 @@
+{
+  "schema_version": "2026-11-08",
+  "document_kind": "record_schemas",
+  "schemas": {
+    "task_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_kind",
+        "task_id",
+        "synthetic",
+        "fixture_only",
+        "actually_executed_by_bots",
+        "recheck_limit",
+        "versions",
+        "baseline_roles",
+        "roles_impersonated",
+        "problem",
+        "confirmation",
+        "scope",
+        "prohibited",
+        "unknowns_with_impact",
+        "owner_role"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "2026-11-08"
+        },
+        "record_kind": {
+          "const": "task_record"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "synthetic": {
+          "type": "boolean"
+        },
+        "fixture_only": {
+          "type": "boolean"
+        },
+        "actually_executed_by_bots": {
+          "type": "array"
+        },
+        "recheck_limit": {
+          "type": "integer"
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "baseline_roles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "roles_impersonated": {
+          "const": false
+        },
+        "problem": {
+          "type": "string"
+        },
+        "confirmation": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "prohibited": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unknowns_with_impact": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "owner_role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_kind",
+        "task_id",
+        "synthetic",
+        "bot_execution",
+        "version",
+        "from_role",
+        "to_role",
+        "artifact",
+        "handoff_ack",
+        "fault_injection"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "2026-11-08"
+        },
+        "record_kind": {
+          "const": "handoff"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "synthetic": {
+          "type": "boolean"
+        },
+        "bot_execution": {
+          "const": false
+        },
+        "version": {
+          "enum": [
+            "v1",
+            "v2"
+          ]
+        },
+        "from_role": {
+          "type": "string"
+        },
+        "to_role": {
+          "type": "string"
+        },
+        "artifact": {
+          "type": "string"
+        },
+        "handoff_ack": {
+          "const": "unknown"
+        },
+        "fault_injection": {
+          "const": false
+        }
+      }
+    },
+    "acceptance_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_kind",
+        "task_id",
+        "synthetic",
+        "bot_execution",
+        "version",
+        "fault_injection",
+        "checked_version",
+        "recheck_ordinal",
+        "author_role",
+        "author_self_check",
+        "professional_acceptance",
+        "technical_check",
+        "user_acceptance",
+        "action_authorization"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "2026-11-08"
+        },
+        "record_kind": {
+          "const": "acceptance_record"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "synthetic": {
+          "type": "boolean"
+        },
+        "bot_execution": {
+          "const": false
+        },
+        "version": {
+          "enum": [
+            "v1",
+            "v2"
+          ]
+        },
+        "fault_injection": {
+          "const": false
+        },
+        "checked_version": {
+          "enum": [
+            "v1",
+            "v2"
+          ]
+        },
+        "recheck_ordinal": {
+          "type": "integer"
+        },
+        "author_role": {
+          "type": "string"
+        },
+        "author_self_check": {
+          "const": "recorded_not_independent"
+        },
+        "professional_acceptance": {
+          "type": "object"
+        },
+        "technical_check": {
+          "const": "not_recorded"
+        },
+        "user_acceptance": {
+          "const": "not_recorded"
+        },
+        "action_authorization": {
+          "const": "not_recorded"
+        }
+      }
+    },
+    "version_change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_kind",
+        "task_id",
+        "synthetic",
+        "bot_execution",
+        "version",
+        "fault_injection",
+        "from_version",
+        "to_version",
+        "change",
+        "retains_v1",
+        "impact",
+        "unaffected",
+        "recheck_count"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "2026-11-08"
+        },
+        "record_kind": {
+          "const": "version_change"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "synthetic": {
+          "type": "boolean"
+        },
+        "bot_execution": {
+          "const": false
+        },
+        "version": {
+          "const": "v2"
+        },
+        "fault_injection": {
+          "const": false
+        },
+        "from_version": {
+          "const": "v1"
+        },
+        "to_version": {
+          "const": "v2"
+        },
+        "change": {
+          "type": "object"
+        },
+        "retains_v1": {
+          "const": true
+        },
+        "impact": {
+          "type": "array"
+        },
+        "unaffected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recheck_count": {
+          "const": 1
+        }
+      }
+    }
+  }
+}

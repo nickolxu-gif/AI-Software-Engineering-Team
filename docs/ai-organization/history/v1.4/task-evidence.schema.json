@@ -4,6 +4,10 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
+    "historical_commit",
+    "superseded_by_schema_version",
+    "target_organization",
+    "document_status",
     "schema_version",
     "record_kind",
     "persistence",
@@ -706,6 +710,21 @@
           "const": false
         }
       }
+    },
+    "document_status": {
+      "const": "superseded_historical"
+    },
+    "target_organization": {
+      "const": false
+    },
+    "superseded_by_schema_version": {
+      "const": "2026-11-08"
+    },
+    "historical_commit": {
+      "const": "a97ce946c46d47026d10edc445cec8dc58bbcc32"
     }
-  }
+  },
+  "historical_document_status": "superseded_historical",
+  "target_organization": false,
+  "superseded_by_schema_version": "2026-11-08"
 }

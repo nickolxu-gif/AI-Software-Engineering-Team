@@ -1,59 +1,67 @@
-# 公开 AI 组织职责与基础工作流
+# 专岗协作组织
 
-合同版本：1.4
+当前规范版本：`2026-11-08`
 
-本目录只版本化职责与工作流的公开合同。它不替换本仓库既有工程控制平面，不删除、不迁移、不停用已有入口，也不由本目录创建 Bot、账号、连接或例行任务。
+本目录现在以 2026-11-08 公开实施基线为当前目标组织。旧合同 v1.4 仍留在 `history/v1.4/`，只作为可追踪历史。旧的「6 入口 + 14 逻辑岗」不再是目标组织。
 
-## 公开状态
+本仓库没有创建、配置或运行这些岗位的机器人。首批五个长期专岗要由父级工具正式创建；这里只提供可用的配置模板和合成文件校验。文件校验通过不是知识内容验收通过。
 
-公开状态码 `role_contracts_applied_and_readback_verified`：外部界面已更新 5 个既有 Bot 的 description 岗位合同，并创建 1 个知识生活岗位；6 份 profile 回读成功；13 项静态配置核验通过。原专业描述保留，并与统一协调、路由建议、PM 跟踪、限定执行和私域未获数据访问权限相一致。功能状态 `unverified`。这次静态回读不是技术 ACL、独立审查账号接入、端到端调度、模型执行、自动化、CLI、私域连接或驻留隔离的功能验证。实际 Bot 指令不自动等同角色安全沙箱。合成试点状态 `draft_not_started`。不记载「配置已通过测试」。本仓库只版本化公开合同，不收录身份 ID、原描述或私人路径，也没有在本目录复读外部 profile。
+## 状态轴
 
-若阅读到「正在外部应用」，以公开状态码 `role_contracts_applied_and_readback_verified` 为准。它只覆盖静态 description 与 profile 回读，功能状态仍是 `unverified`。
+这四轴分开记录，不能收成一个「状态」：
 
-5 + 1 与 6 份 profile 回读的公开计数一致。这是计数核对，不是身份名单。逻辑职责仍是 14 个。这 6 份 profile 不增加职责，也不与职责、工具、模型、身份或安全边界一一对应。新建的知识生活岗位不授予私域数据访问。
-
-## 设计、静态配置与功能实测
-
-| 层面 | 本目录如何记录 | 边界 |
+| 轴 | 取值 | 本仓库现状 |
 |---|---|---|
-| 设计 | 三层 14 个逻辑职责、基础工作流、证据模板、v1.4 调整、合成试点草案 | 设计文本不是运行中的调度器 |
-| 静态配置 | `role_contracts_applied_and_readback_verified`；13 项静态配置核验通过 | 只记录获准公开的计数和一致点。不保存 profile 或 description 原文 |
-| 功能实测 | `unverified` | 未验证技术 ACL、独立审查账号接入、端到端调度、模型执行、自动化、CLI、私域连接、驻留隔离 |
-| 合成试点 | `draft_not_started` | 未生成数据，未启动 |
+| 分工 | `selected` / `tendency` / `candidate` / `undecided` | 按基线写入 `role-registry.json` |
+| 配置 | `not_configured` / `configured` | 全部 `not_configured`。没有新的回读证据 |
+| 运行 | `not_run` / `running` / `ran` | 全部 `not_run` |
+| 验收 | `not_accepted` / `accepted` / `unverified` | 全部 `not_accepted` |
 
-静态配置核验通过，只说明上表里的 description / profile 回读。功能测试没有做。
+`configured` 必须有回读证据。`ran` 必须有运行证据。`accepted` 必须有独立验收证据，而且验收者不是作者。三层是幕僚判断、专业执行、个人生活与知识的职责域，不是审批链，也不是技术隔离证明。
 
-## 不同对象
+## 历史 v1.4
 
-职责、Bot、工具、模型、身份、安全边界是不同对象。它们不一一对应。本目录不建立这些对象的笛卡尔积。实际 Bot 指令不自动等同角色安全沙箱。工具和环境可以替换；一项能力要在验证之后才记为可用。静态回读没有完成能力验证。
+提交 `a97ce946c46d47026d10edc445cec8dc58bbcc32` 记录过静态状态 `role_contracts_applied_and_readback_verified`：外部界面更新 5 个既有 Bot 的 description 岗位合同，创建 1 个知识生活岗位，6 份 profile 回读成功，13 项静态配置核验通过。功能状态当时就是 `unverified`，合成试点 `draft_not_started`。实际 Bot 指令不自动等同角色安全沙箱。
 
-## 首轮轻量激活
+这段历史不配置当前注册表，也不再描述目标组织。正文里的「当前」「仍是」只对 v1.4 当时成立。
 
-职责地图保留全部 14 个职责。每个任务只激活三个槽：协调入口、一个执行职责、独立验收。战略计划、资源成本顾问和项目经理留在地图上，首轮不单独激活，也不能第二派单。健康记录和私人通信在权限隔离与驻留隔离都得到证实之前不可激活。云端入口不是本地隔离。任何职责都不读取、不迁移真实个人数据。
+## 首批模板
 
-静态描述中的「限定执行」与这三个槽的合同一致。该一致停留在描述层，功能强制仍是 `unverified`。
+已选、但尚未在本仓库创建的五个模板：
+
+- 任务规划 `task-planning`
+- 方案审查 `plan-review`
+- 阅读整理 `reading-arrangement`
+- 知识分析 `knowledge-analysis`
+- 知识内容验收 `knowledge-content-acceptance`
+
+模板正文在 `first-batch-role-templates.json`。`deployed`、`configured`、`created_in_this_repository` 都是 false。
+
+## 合成校验 SYN-READ-01
+
+`tests/ai_organization/fixtures/syn-read-01/` 是固定合成材料，不是实测报告。
+
+- v1：固定设备 X、室温、10 个样本、平均 12 秒；能源未记录；跨设备检查未做。设备 Y、低温、8 个样本、平均 15 秒。一次失败，原因未知，没有重复。评论者认为甲可能更快并希望长期批处理，没有新测量，也不是使用者承诺。成本、能源、长期稳定、用户偏好都没有数据。
+- v2：只把记录 A 的平均用时从 12 秒更正为 14 秒，保留 v1，并写明受影响产物。复验记录只有一次。
+- `fault/error-copy.json`：标明故意错误副本。校验脚本必须报出直接比较、把缺失当成零或已知、评论当成承诺、失败原因被填上、作者自验收等缺陷。
+
+```bash
+python3 tests/ai_organization/check_syn_read.py
+python3 -m unittest discover -s tests/ai_organization -v
+```
+
+脚本打印 `file_check=PASS` 时，同时打印 `professional_acceptance=not_performed`。前者只说明文件和负例符合校验规则。
 
 ## 文件
 
-| 文件 | 内容 |
+| 路径 | 作用 |
 |---|---|
-| `README.md` | 状态，以及设计、静态配置、功能实测的读法 |
-| `responsibility-map.md` | 三层 14 岗职责地图与岗位卡 |
-| `roles.template.json` | 岗位卡模板。职责定义和激活配置分开 |
-| `workflow.md` | 基础工作流 |
-| `task-evidence.schema.json` | 最小任务证据包 schema |
-| `task-evidence.example.json` | 可解析的模板实例。它不是一次运行 |
-| `adjustments-v1.3-to-v1.4.md` | v1.3 到 v1.4 的调整记录 |
-| `synthetic-pilot-draft.md` | 合成试点草案。只计划，不启动 |
+| `baseline-2026-11-08.md` | 当前规范正文 |
+| `role-registry.json` | 机器可读岗位注册表 |
+| `schemas/role-registry.schema.json` | 注册表 schema，版本 `2026-11-08` |
+| `first-batch-role-templates.json` | 五个首批岗位的配置模板 |
+| `schemas/record-schemas.json` | 任务、交接、验收、版本变更 schema |
+| `templates/` | 未填任务标识的记录模板 |
+| `history/v1.4/` | 已被取代的 v1.4 合同 |
 
-## 证据、报告与 skill
-
-三账是同一份最小任务证据包的数据视图、能力视图和判断视图，不分开维护三套事实。复利要等三件事同时出现：未来发生真实复用、质量不下降、用户的主动劳动或返工减少。内容哈希、Bot 数量和一次成功都不能证明复利。
-
-日报和周报按已经发生的任务汇总，属于活动驱动。不建后台日报，不建心跳。KPI 与 OKR 若被检查，先看质量证据，再看数量和成本。本目录不设数值门槛。
-
-skill 只沿这条路径前进：候选、多场景测试、独立复验、授权批准、带观察或回滚的版本发布。skill 不自行改变权限、预算或隐私。评分、全量入口和 skill 发布都延后。本目录不发布 skill。
-
-## 未声称的技术保障
-
-单写者、版本基线匹配、重复事件去重、结果未知且可能有副作用时停止重放、暂停或取消必须有端回执或明确未确认，都是合同要求。本目录不把它们写成已经存在的技术保障。
+校验脚本放在 `tests/ai_organization/`。它们只读本仓库里的合成夹具和 JSON，不接私域，不调用机器人接口，不改权限，也不改既有工程控制平面。

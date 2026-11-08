@@ -1,3 +1,5 @@
+> 历史冻结，不是当前目标。正文属于合同 v1.4，提交 `a97ce946c46d47026d10edc445cec8dc58bbcc32`。2026-11-08 实施基线已取代该合同。旧的「6 入口 + 14 逻辑岗」不再是目标组织。当前规范是 `docs/ai-organization/baseline-2026-11-08.md` 与 `docs/ai-organization/role-registry.json`。正文中的「当前」「仍是」只描述 v1.4 当时的记录，不覆盖新基线。
+
 # 合成试点草案
 
 合同版本：1.4

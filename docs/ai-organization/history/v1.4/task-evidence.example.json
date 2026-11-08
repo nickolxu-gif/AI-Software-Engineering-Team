@@ -1,4 +1,8 @@
 {
+  "document_status": "superseded_historical",
+  "target_organization": false,
+  "superseded_by_schema_version": "2026-11-08",
+  "historical_commit": "a97ce946c46d47026d10edc445cec8dc58bbcc32",
   "schema_version": "1.4",
   "record_kind": "minimal_task_evidence_package",
   "persistence": "repository_document_template",

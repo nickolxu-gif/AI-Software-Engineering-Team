@@ -1,0 +1,41 @@
+{
+  "schema_version": "2026-11-08",
+  "record_kind": "version_change",
+  "task_id": "UNFILLED",
+  "synthetic": true,
+  "fault_injection": false,
+  "bot_execution": false,
+  "version": "v2",
+  "from_version": "v1",
+  "to_version": "v2",
+  "change": {
+    "field": "A.mean_seconds",
+    "from": 12,
+    "to": 14
+  },
+  "retains_v1": true,
+  "impact": [
+    {
+      "artifact": "arrangement-v1",
+      "status": "needs_update"
+    },
+    {
+      "artifact": "analysis-v1",
+      "status": "pending_recheck"
+    },
+    {
+      "artifact": "acceptance-v1",
+      "status": "not_valid_for_v2"
+    }
+  ],
+  "unaffected": [
+    "device",
+    "temperature",
+    "sample_count",
+    "direct_comparison_prohibited",
+    "absences",
+    "failure",
+    "comment"
+  ],
+  "recheck_count": 1
+}
