@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -35,7 +38,10 @@ def write_fake(path: Path, side: Path, mode_path: Path) -> None:
                 f"side = Path({str(side)!r})",
                 f"mode = json.loads(Path({str(mode_path)!r}).read_text())",
                 "prev = json.loads(side.read_text()) if side.exists() else []",
-                "prev.append({'argv': sys.argv, 'stdin': sys.stdin.read(), 'home': os.environ.get('CODEX_HOME'), 'pid': os.getpid()})",
+                "record = {'argv': sys.argv, 'stdin': None, 'home': os.environ.get('CODEX_HOME'), 'pid': os.getpid()}",
+                "prev.append(record)",
+                "side.write_text(json.dumps(prev))",
+                "record['stdin'] = sys.stdin.read()",
                 "side.write_text(json.dumps(prev))",
                 "action = mode.get('action')",
                 "if action == 'sleep':",
@@ -49,6 +55,10 @@ def write_fake(path: Path, side: Path, mode_path: Path) -> None:
         encoding="utf-8",
     )
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def canon(path) -> str:
+    return os.path.realpath(path)
 
 
 def config_for(binary: str, home: str | None = None) -> dict:
@@ -117,6 +127,20 @@ class AdapterTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def assert_not_running(self, pid: int):
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.02)
+        try:
+            state = subprocess.check_output(["ps", "-p", str(pid), "-o", "state="], text=True).strip()
+        except subprocess.CalledProcessError:
+            return
+        self.assertTrue(state.startswith("Z"), f"pid {pid} still running: {state}")
 
     def calls(self):
         if not self.side.exists():
@@ -191,7 +215,7 @@ class AdapterTests(unittest.TestCase):
         argv = self.calls()[0]["argv"]
         self.assertEqual(argv[argv.index("-p") + 1], prompt)
         self.assertNotIn("/tmp/evil", argv)
-        self.assertEqual(receipt["argv"][0], str(self.binary))
+        self.assertEqual(receipt["argv"][0], canon(self.binary))
 
     def test_codex_and_codex2_argv_and_home_separation(self):
         _, receipt = self.dispatch_alias("codex")
@@ -199,7 +223,7 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(
             call["argv"],
             [
-                str(self.binary),
+                canon(self.binary),
                 "-c",
                 "check_for_update_on_startup=false",
                 "exec",
@@ -210,7 +234,7 @@ class AdapterTests(unittest.TestCase):
                 "-s",
                 "read-only",
                 "-C",
-                str(self.workspace),
+                canon(self.workspace),
                 "-",
             ],
         )
@@ -229,7 +253,7 @@ class AdapterTests(unittest.TestCase):
         _, second = self.dispatch_alias("codex2")
         other = self.calls()[1]
         self.assertEqual(other["argv"], call["argv"])
-        self.assertEqual(other["home"], str(self.home_b))
+        self.assertEqual(other["home"], canon(self.home_b))
         self.assertFalse((self.home_b / "auth.json").exists())
         self.assertFalse(second["distinct_model_or_account"])
         self.assertFalse(second["separate_configuration_home_is_account_isolation"])
@@ -258,7 +282,7 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(
             argv,
             [
-                str(self.binary),
+                canon(self.binary),
                 "-p",
                 "fixture-profile",
                 "chat",
@@ -272,7 +296,7 @@ class AdapterTests(unittest.TestCase):
                 "--format",
                 "stream-json",
                 "--in",
-                str(self.workspace),
+                canon(self.workspace),
                 "--max-turns",
                 "2",
                 "--run-budget",
@@ -292,7 +316,7 @@ class AdapterTests(unittest.TestCase):
         argv = self.calls()[0]["argv"]
         self.assertEqual(
             argv,
-            [str(self.binary), "-m", "fixture-alias", "-p", "Summarize the synthetic note.", "--output-format", "stream-json"],
+            [canon(self.binary), "-m", "fixture-alias", "-p", "Summarize the synthetic note.", "--output-format", "stream-json"],
         )
         self.assertEqual(self.calls()[0]["stdin"], "")
         self.assertEqual(receipt["observed_model"], "UNKNOWN")
@@ -314,21 +338,81 @@ class AdapterTests(unittest.TestCase):
         self.assertIn("run_not_clean", receipt["unfinished"])
 
     def test_timeout_kills_child_and_blocks_replay(self):
-        self.mode.write_text(json.dumps({"action": "sleep", "seconds": 5, "stdout": "", "code": 0}), encoding="utf-8")
-        _, receipt = self.dispatch_alias("codex", approval_extra={"process_timeout_seconds": 1})
+        group = self.root / "group-client"
+        record = self.root / "group-record.json"
+        group.write_text(
+            "\n".join(
+                [
+                    "#!/bin/sh",
+                    "sleep 30 &",
+                    "child=$!",
+                    f"printf '%s\\n' \"$$ $child\" > {shlex.quote(str(record))}",
+                    "wait",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        group.chmod(group.stat().st_mode | stat.S_IXUSR)
+        config = config_for(str(group), str(self.home_b))
+        holder = {}
+
+        def invoke():
+            try:
+                holder["value"] = self.dispatch_alias(
+                    "codex",
+                    config=config,
+                    approval_extra={"process_timeout_seconds": 1},
+                )
+            except Exception as exc:
+                holder["error"] = exc
+
+        thread = threading.Thread(target=invoke)
+        thread.start()
+        deadline = time.monotonic() + 5
+        text = ""
+        while time.monotonic() < deadline:
+            if record.exists() and record.stat().st_size:
+                text = record.read_text(encoding="utf-8").strip()
+                if text:
+                    break
+            time.sleep(0.02)
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertNotIn("error", holder)
+        self.assertTrue(text, "pid record did not appear within the finite wait")
+        parent_text, child_text = text.split()
+        parent_pid = int(parent_text)
+        child_pid = int(child_text)
+        _recommendation, receipt = holder["value"]
         self.assertEqual(receipt["child_termination"], "timed_out_killed")
         self.assertEqual(receipt["write_outcome"], "unknown")
         self.assertFalse(receipt["timeout_proves_remote_billing_stopped"])
-        pid = self.calls()[0]["pid"]
-        with self.assertRaises(ProcessLookupError):
-            os.kill(pid, 0)
+        self.assertEqual(receipt["spawned_pid"], parent_pid)
+        self.assertEqual(receipt["cleanup"]["alive_after_cleanup"], [])
+        self.assertIn(child_pid, receipt["cleanup"]["descendants_before_kill"])
+        for pid in (parent_pid, child_pid):
+            self.assert_not_running(pid)
         follow = make_task("codex")
         follow["versions"]["correction_of"] = "v1"
         follow["versions"]["prior_write_outcome"] = "unknown"
         with self.assertRaises(BindingError) as caught:
-            dispatch(follow, recommend(follow, self.config), make_approval(follow, "codex", str(self.workspace)), self.config)
+            dispatch(follow, recommend(follow, config), make_approval(follow, "codex", str(self.workspace)), config)
         self.assertEqual(caught.exception.code, "unknown_write_outcome_not_replayed")
-        self.assertEqual(len(self.calls()), 1)
+        self.assertFalse(record.with_name("group-record-replay.json").exists())
+        self.assertEqual(text, record.read_text(encoding="utf-8").strip())
+
+    def test_symlink_workspace_is_compared_by_realpath(self):
+        link = self.root / "linked-work"
+        os.symlink(self.workspace, link, target_is_directory=True)
+        _recommendation, receipt = self.dispatch_alias("codex")
+        linked = make_task("codex")
+        linked["task_id"] = "SYN-READ-LINK"
+        approval = make_approval(linked, "codex", str(link))
+        second = dispatch(linked, recommend(linked, self.config), approval, self.config)
+        self.assertEqual(receipt["argv"][receipt["argv"].index("-C") + 1], canon(self.workspace))
+        self.assertEqual(second["argv"][second["argv"].index("-C") + 1], canon(link))
+        self.assertEqual(canon(link), canon(self.workspace))
 
     def test_redaction_and_author_review_separation(self):
         secret_mail = "person" + "@" + "example.com"

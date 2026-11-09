@@ -163,7 +163,7 @@ def _resolve_binary(resource: dict, config: dict) -> str:
     if os.path.isabs(binary):
         if not os.path.isfile(binary) or not os.access(binary, os.X_OK):
             raise BindingError("binary_not_allowlisted", "not_executable")
-        return binary
+        return os.path.realpath(binary)
     if "/" in binary or binary.startswith("."):
         raise BindingError("binary_not_allowlisted", "relative_binary")
     if not config.get("allow_path_lookup"):
@@ -173,7 +173,7 @@ def _resolve_binary(resource: dict, config: dict) -> str:
     found = shutil.which(binary)
     if not found:
         raise BindingError("binary_not_allowlisted", "not_found")
-    return found
+    return os.path.realpath(found)
 
 
 def _artifact_path(approval: dict, key: str) -> str | None:
@@ -203,11 +203,11 @@ def _env_for(alias: str, resource: dict) -> dict:
     if alias == "codex2":
         if not isinstance(home, str) or not os.path.isabs(home) or not os.path.isdir(home):
             raise BindingError("configuration_home_required", "codex2")
-        env["CODEX_HOME"] = home
+        env["CODEX_HOME"] = os.path.realpath(home)
     elif alias == "codex" and home:
         if not isinstance(home, str) or not os.path.isabs(home) or not os.path.isdir(home):
             raise BindingError("configuration_home_required", "codex")
-        env["CODEX_HOME"] = home
+        env["CODEX_HOME"] = os.path.realpath(home)
     return env
 
 

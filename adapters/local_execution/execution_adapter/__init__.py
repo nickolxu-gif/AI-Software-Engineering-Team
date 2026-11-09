@@ -9,4 +9,4 @@ from execution_adapter.package_hash import source_hash
 from execution_adapter.runner import dispatch
 
 __all__ = ["BindingError", "dispatch", "recommend", "source_hash"]
-__version__ = "0.1.0"
+__version__ = "0.1.1"

@@ -49,6 +49,81 @@ def _bounded(text: str, limit: int | None) -> tuple[str, bool]:
     return raw.decode("utf-8", errors="ignore"), True
 
 
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        state = subprocess.check_output(["ps", "-p", str(pid), "-o", "state="], text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return True
+    return not state.startswith("Z")
+
+
+def _descendants(pid: int) -> list[int] | str:
+    try:
+        listing = subprocess.check_output(["ps", "-ax", "-o", "pid=,ppid="], text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return "UNKNOWN"
+    children: dict[int, list[int]] = {}
+    for line in listing.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            child, parent = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        children.setdefault(parent, []).append(child)
+    found = []
+    seen = {pid}
+    stack = [pid]
+    while stack:
+        current = stack.pop()
+        for child in children.get(current, []):
+            if child in seen:
+                continue
+            seen.add(child)
+            found.append(child)
+            stack.append(child)
+    return found
+
+
+def _reap_group(pgid: int) -> list[int]:
+    reaped = []
+    while True:
+        try:
+            waited, _status = os.waitpid(-pgid, os.WNOHANG)
+        except ChildProcessError:
+            break
+        if waited == 0:
+            break
+        reaped.append(waited)
+    return reaped
+
+
+def _kill_process_group(pid: int) -> dict:
+    descendants = _descendants(pid)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    reaped = _reap_group(pid)
+    known = [pid] if isinstance(descendants, list) else []
+    if isinstance(descendants, list):
+        known.extend(descendants)
+    alive = [item for item in known if _alive(item)]
+    return {
+        "spawned_pid": pid,
+        "descendants_before_kill": descendants,
+        "reaped_pids": reaped,
+        "alive_after_cleanup": alive,
+    }
+
+
 def _run_process(invocation: dict) -> dict:
     timeout = invocation["timeout_seconds"]
     try:
@@ -71,20 +146,35 @@ def _run_process(invocation: dict) -> dict:
             "stdout_truncated": False,
             "stderr_truncated": False,
             "child_termination": "spawn_failed",
+            "spawned_pid": None,
+            "cleanup": {
+                "spawned_pid": None,
+                "descendants_before_kill": [],
+                "reaped_pids": [],
+                "alive_after_cleanup": [],
+            },
             "write_outcome": "known",
             "duration_observed": "UNKNOWN",
         }
+    spawned_pid = proc.pid
     stdin = invocation["stdin"].encode("utf-8")
     try:
         stdout_b, stderr_b = proc.communicate(input=stdin, timeout=timeout)
         termination = "exited"
         write_outcome = "known"
+        cleanup = {
+            "spawned_pid": spawned_pid,
+            "descendants_before_kill": [],
+            "reaped_pids": [spawned_pid],
+            "alive_after_cleanup": [],
+        }
     except subprocess.TimeoutExpired:
+        cleanup = _kill_process_group(spawned_pid)
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        stdout_b, stderr_b = proc.communicate()
+            stdout_b, stderr_b = proc.communicate()
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout_b, stderr_b = proc.communicate()
         termination = "timed_out_killed"
         write_outcome = "unknown"
     stdout, out_cut = _bounded(stdout_b.decode("utf-8", errors="replace"), invocation["max_output_bytes"])
@@ -97,6 +187,8 @@ def _run_process(invocation: dict) -> dict:
         "stdout_truncated": out_cut,
         "stderr_truncated": err_cut,
         "child_termination": termination,
+        "spawned_pid": spawned_pid,
+        "cleanup": cleanup,
         "write_outcome": write_outcome,
         "duration_observed": "UNKNOWN",
     }
@@ -148,6 +240,8 @@ def dispatch(task: dict, recommendation: dict, approval: dict | None, config: di
         "exit_code": observed_process["exit_code"],
         "functional_state": observed_process["functional_state"],
         "child_termination": observed_process["child_termination"],
+        "spawned_pid": observed_process["spawned_pid"],
+        "cleanup": observed_process["cleanup"],
         "write_outcome": observed_process["write_outcome"],
         "duration_observed": "UNKNOWN",
         "allowed_data_scope": task["data_scope"],

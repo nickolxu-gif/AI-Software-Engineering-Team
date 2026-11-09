@@ -17,17 +17,23 @@ Read-only mode limits model-generated shell writes. It is not full filesystem or
 
 Missing model, usage, and price fields stay `UNKNOWN`. They are not inferred from an alias or a banner. A metering gap does not by itself forbid a run. Missing approved iteration or time values are not invented; Hermes generation stays unbound until an approval package supplies them.
 
+Package version: `0.1.1`.
+
 ## Install without cloning this repository
 
-Copy this directory to the machine that is separately authorized to configure it. From that copy:
+Copy this directory, or the versioned zip, to the machine that is separately authorized to configure it. Python 3.14 does not need setuptools and this install does not download anything:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install .
+site=$(.venv/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
+printf '%s\n' "$PWD" > "$site/execution-adapter.pth"
+install -m 0755 bin/execution-adapter .venv/bin/execution-adapter
 .venv/bin/execution-adapter hash
 .venv/bin/python -m unittest discover -s tests -q
 .venv/bin/execution-adapter smoke
 ```
+
+If that Python already has setuptools, `.venv/bin/python -m pip install .` remains optional. Do not modify an older installed copy; install this version beside it.
 
 `hash` prints the source hash recorded in `SOURCE_HASH.txt`. `smoke` and the unit tests do not call a model.
 
