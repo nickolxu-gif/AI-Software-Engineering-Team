@@ -301,7 +301,8 @@ def build_invocation(alias: str, config: dict, approval: dict, prompt: str) -> d
     workspace = _workspace(approval)
     child_env, injected_keys = _env_for(alias, resource)
     skills_path, skills_empty = _skills_directory(resource, config)
-    argv = _argv_for(alias, executable, resource, approval, prompt, workspace, skills_path)
+    skip_git_repo_check = _skip_git_repo_check(alias, resource)
+    argv = _argv_for(alias, executable, resource, approval, prompt, workspace, skills_path, skip_git_repo_check)
     return {
         "alias": alias,
         "argv": argv,
@@ -309,6 +310,7 @@ def build_invocation(alias: str, config: dict, approval: dict, prompt: str) -> d
         "env": child_env,
         "injected_env_keys": injected_keys,
         "skills_dir_empty": skills_empty,
+        "skip_git_repo_check": skip_git_repo_check,
         "cwd": workspace,
         "timeout_seconds": _optional_timeout(approval),
         "max_output_bytes": _optional_output_cap(approval),
@@ -329,6 +331,17 @@ def _optional_output_cap(approval: dict):
     return int(_positive_int(approval.get("max_output_bytes"), "max_output_bytes"))
 
 
+def _skip_git_repo_check(alias: str, resource: dict) -> bool:
+    raw = resource.get("skip_git_repo_check", False)
+    if raw is None:
+        raw = False
+    if type(raw) is not bool:
+        raise BindingError("skip_git_repo_check_invalid", alias)
+    if raw and alias not in {"codex", "codex2"}:
+        raise BindingError("skip_git_repo_check_unsupported", alias)
+    return raw
+
+
 def _argv_for(
     alias: str,
     executable: str,
@@ -337,9 +350,10 @@ def _argv_for(
     prompt: str,
     workspace: str,
     skills_path: str | None,
+    skip_git_repo_check: bool,
 ) -> list[str]:
     if alias in {"codex", "codex2"}:
-        return _codex_argv(executable, approval, workspace)
+        return _codex_argv(executable, approval, workspace, skip_git_repo_check)
     if alias == "hermes":
         return _hermes_argv(executable, approval, workspace)
     if alias == "kimi":
@@ -347,7 +361,7 @@ def _argv_for(
     raise BindingError("generation_binding_null", alias)
 
 
-def _codex_argv(executable: str, approval: dict, workspace: str) -> list[str]:
+def _codex_argv(executable: str, approval: dict, workspace: str, skip_git_repo_check: bool) -> list[str]:
     argv = [
         executable,
         "-c",
@@ -371,6 +385,8 @@ def _codex_argv(executable: str, approval: dict, workspace: str) -> list[str]:
         argv.extend(["-o", final_message])
     if schema:
         argv.extend(["--output-schema", schema])
+    if skip_git_repo_check:
+        argv.append("--skip-git-repo-check")
     argv.append("-")
     return argv
 

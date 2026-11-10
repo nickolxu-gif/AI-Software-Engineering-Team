@@ -13,7 +13,8 @@
       "model_alias": null,
       "codex_home": null,
       "account_ref": null,
-      "env": {}
+      "env": {},
+      "skip_git_repo_check": false
     },
     "codex2": {
       "enabled": false,
@@ -23,6 +24,7 @@
       "codex_home": null,
       "account_ref": null,
       "env": {},
+      "skip_git_repo_check": false,
       "same_argv_contract_as": "codex",
       "distinct_model_or_account": false
     },

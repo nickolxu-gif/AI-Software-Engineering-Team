@@ -549,6 +549,32 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "skills_dir_invalid")
         self.assertEqual(len(self.calls()), accepted_calls)
 
+    def test_skip_git_repo_check_is_opt_in_for_codex_only(self):
+        _recommendation, receipt = self.dispatch_alias("codex")
+        self.assertNotIn("--skip-git-repo-check", receipt["argv"])
+        self.assertFalse(receipt["skip_git_repo_check"])
+        config = config_for(str(self.binary), str(self.home_b))
+        config["resources"]["codex"]["skip_git_repo_check"] = True
+        config["resources"]["codex2"]["skip_git_repo_check"] = True
+        task = make_task("codex")
+        task["task_id"] = "SYN-SKIP-GIT"
+        opted = dispatch(task, recommend(task, config), make_approval(task, "codex", str(self.workspace)), config)
+        self.assertEqual(opted["argv"][-2], "--skip-git-repo-check")
+        self.assertEqual(opted["argv"][-1], "-")
+        self.assertTrue(opted["skip_git_repo_check"])
+        config["resources"]["kimi"]["skip_git_repo_check"] = True
+        kimi = make_task("kimi")
+        before = len(self.calls())
+        with self.assertRaises(BindingError) as caught:
+            dispatch(
+                kimi,
+                recommend(kimi, config),
+                make_approval(kimi, "kimi", str(self.workspace), authorize_model_alias=True, model_alias="fixture-alias"),
+                config,
+            )
+        self.assertEqual(caught.exception.code, "skip_git_repo_check_unsupported")
+        self.assertEqual(len(self.calls()), before)
+
     def test_smoke_and_source_hash(self):
         result = run_offline_smoke()
         self.assertEqual(result["aliases"], ["codex", "codex2", "kimi", "hermes"])

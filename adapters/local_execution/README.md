@@ -17,9 +17,13 @@ Read-only mode limits model-generated shell writes. It is not full filesystem or
 
 Missing model, usage, and price fields stay `UNKNOWN`. They are not inferred from an alias or a banner. A metering gap does not by itself forbid a run. Missing approved iteration or time values are not invented; Hermes generation stays unbound until an approval package supplies them.
 
-Package version: `0.1.2`.
+Package version: `0.1.3`.
 
 ## Changelog
+
+### 0.1.3
+
+- Codex and Codex2 entries may set `skip_git_repo_check` to true. Only then is `--skip-git-repo-check` added. The default is false, so the flag stays off. The receipt records that boolean. Other entries cannot opt into this flag.
 
 ### 0.1.2
 

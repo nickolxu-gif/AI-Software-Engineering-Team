@@ -264,6 +264,7 @@ def dispatch(task: dict, recommendation: dict, approval: dict | None, config: di
         "empty_workspace_is_sandbox": False,
         "injected_env_keys": list(invocation["injected_env_keys"]),
         "skills_dir_empty": invocation["skills_dir_empty"],
+        "skip_git_repo_check": invocation["skip_git_repo_check"],
         "skills_dir_is_sandbox": False,
         "separate_configuration_home_is_account_isolation": False,
         "separate_configuration_home_is_model_heterogeneity": False,
