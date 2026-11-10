@@ -1,0 +1,62 @@
+{
+  "schema_version": "2026-11-08",
+  "record_kind": "knowledge_analysis",
+  "task_id": "SYN-READ-01",
+  "synthetic": true,
+  "fault_injection": false,
+  "bot_execution": false,
+  "version": "v1",
+  "author_role": "knowledge-analysis",
+  "based_on": "reading_arrangement/v1",
+  "statements": [
+    {
+      "id": "A",
+      "class": "fact",
+      "mean_seconds": 12,
+      "device": "X",
+      "temperature": "room",
+      "sample_count": 10
+    },
+    {
+      "id": "B",
+      "class": "fact",
+      "mean_seconds": 15,
+      "device": "Y",
+      "temperature": "low",
+      "sample_count": 8
+    },
+    {
+      "id": "no-compare",
+      "class": "interpretation",
+      "text": "记录 A 与记录 B 的设备和温度不同，不能直接比较优劣。"
+    },
+    {
+      "id": "C",
+      "class": "hypothesis",
+      "text": "评论者认为甲可能更快，并希望做长期批处理。",
+      "new_measurement": false,
+      "user_commitment": false
+    },
+    {
+      "id": "failure",
+      "class": "fact",
+      "cause": "unknown",
+      "repeated": false,
+      "count": 1
+    },
+    {
+      "id": "cross",
+      "class": "fact",
+      "cross_device_check": "not_done"
+    },
+    {
+      "id": "absences",
+      "class": "absence",
+      "cost": "no_data",
+      "energy": "no_data",
+      "long_term_stability": "no_data",
+      "user_preference": "no_data"
+    }
+  ],
+  "direct_comparison": null
+}

@@ -1,0 +1,22 @@
+{
+  "schema_version": "2026-11-08",
+  "record_kind": "acceptance_record",
+  "task_id": "SYN-READ-01",
+  "synthetic": true,
+  "fault_injection": false,
+  "bot_execution": false,
+  "version": "v2",
+  "checked_version": "v2",
+  "recheck_ordinal": 1,
+  "author_role": "knowledge-analysis",
+  "author_self_check": "recorded_not_independent",
+  "professional_acceptance": {
+    "role": "knowledge-content-acceptance",
+    "status": "not_performed",
+    "performed_by_author": false,
+    "script_pass_counts_as_acceptance": false
+  },
+  "technical_check": "not_recorded",
+  "user_acceptance": "not_recorded",
+  "action_authorization": "not_recorded"
+}

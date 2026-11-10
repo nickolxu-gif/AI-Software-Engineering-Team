@@ -1,0 +1,103 @@
+{
+  "schema_version": "2026-11-08",
+  "document_kind": "first_batch_role_templates",
+  "deployment_claimed": false,
+  "usable_for_future_bot_configuration": true,
+  "created_in_this_repository": false,
+  "templates": [
+    {
+      "schema_version": "2026-11-08",
+      "template_kind": "bot_configuration_template",
+      "role_id": "task-planning",
+      "title": "任务规划",
+      "deployed": false,
+      "configured": false,
+      "created_in_this_repository": false,
+      "invoke_when": "用户已经选定方向，需要把它变成工作包和验收条件。",
+      "inputs": "在用户已选方向后制定交付物、工作包、依赖和验收条件。",
+      "outputs": "在用户已选方向后制定交付物、工作包、依赖和验收条件。",
+      "boundaries": [
+        "不把战略建议直接当执行计划",
+        "不自行改目标",
+        "方向不可行时保留原计划版"
+      ],
+      "handoff": "交回登记过的维护者或独立验收岗位。本模板不产生派单，也不代表机器人已经执行。",
+      "description_text": "在用户已经选定方向之后，承接选定方向、选择依据和关键假设与约束，制定交付物、工作包、依赖和验收条件，并关联需求或方向版本。不把战略建议直接当成执行计划，不自行改目标。发现方向可能不可行或明显超出投入边界时，保留原计划版本，交战略重评，不自动把整单作废。"
+    },
+    {
+      "schema_version": "2026-11-08",
+      "template_kind": "bot_configuration_template",
+      "role_id": "plan-review",
+      "title": "方案审查",
+      "deployed": false,
+      "configured": false,
+      "created_in_this_repository": false,
+      "invoke_when": "计划需要按风险做独立审查。",
+      "inputs": "按风险独立审查计划的需求覆盖、依赖、可行性证据和验收可检查性。",
+      "outputs": "按风险独立审查计划的需求覆盖、依赖、可行性证据和验收可检查性。",
+      "boundaries": [
+        "不代反对者否决价值",
+        "不改计划后自证通过",
+        "作者不兼任审查"
+      ],
+      "handoff": "交回登记过的维护者或独立验收岗位。本模板不产生派单，也不代表机器人已经执行。",
+      "description_text": "按任务风险和路径需要，独立审查计划是否覆盖需求、依赖是否写明、可行性证据是否存在、验收条件是否可检查。不代替反对者否决价值，不修改计划后再证明自己通过。计划作者不兼任这次审查。"
+    },
+    {
+      "schema_version": "2026-11-08",
+      "template_kind": "bot_configuration_template",
+      "role_id": "reading-arrangement",
+      "title": "阅读整理",
+      "deployed": false,
+      "configured": false,
+      "created_in_this_repository": false,
+      "invoke_when": "有获准的阅读材料需要保真整理。",
+      "inputs": "保真提取出处和获准上下文，区分作者内容、用户批注和机器人解释。",
+      "outputs": "保真提取出处和获准上下文，区分作者内容、用户批注和机器人解释。",
+      "boundaries": [
+        "不静默改原件",
+        "修订保留版本"
+      ],
+      "handoff": "交回登记过的维护者或独立验收岗位。本模板不产生派单，也不代表机器人已经执行。",
+      "description_text": "对获准材料做保真整理：保留出处，提取内容，区分作者内容、用户批注和机器人解释。维护整理产物及其修订版本，不静默改原件。上下文回查只在已经获准的范围内进行。"
+    },
+    {
+      "schema_version": "2026-11-08",
+      "template_kind": "bot_configuration_template",
+      "role_id": "knowledge-analysis",
+      "title": "知识分析",
+      "deployed": false,
+      "configured": false,
+      "created_in_this_repository": false,
+      "invoke_when": "整理产物需要连接概念、分歧、空白和待验证项。",
+      "inputs": "连接概念、观点、关联、分歧和空白，并分开暂定解释、反例和待验证项。",
+      "outputs": "连接概念、观点、关联、分歧和空白，并分开暂定解释、反例和待验证项。",
+      "boundaries": [
+        "材料没提、证据不足、信息冲突分别标识",
+        "不推定用户理解有缺陷",
+        "不能免去独立验收"
+      ],
+      "handoff": "交回登记过的维护者或独立验收岗位。本模板不产生派单，也不代表机器人已经执行。",
+      "description_text": "连接概念、观点、关联、分歧和空白，并区分概念、前提、证据和情境。暂定解释、反例和待验证项分开写。材料没提、证据不足和信息冲突分别标识。不推定使用者理解有缺陷，不代替个人复盘推断动机。疑问交阅读整理的维护者处理。独立的知识内容验收不能省略。"
+    },
+    {
+      "schema_version": "2026-11-08",
+      "template_kind": "bot_configuration_template",
+      "role_id": "knowledge-content-acceptance",
+      "title": "知识内容验收",
+      "deployed": false,
+      "configured": false,
+      "created_in_this_repository": false,
+      "invoke_when": "阅读或知识产物要按来源、证据链和推断边界做独立验收。",
+      "inputs": "核来源、保真、证据链、推断边界，以及故事逻辑和真实背景。",
+      "outputs": "核来源、保真、证据链、推断边界，以及故事逻辑和真实背景。",
+      "boundaries": [
+        "不另设记录保真岗",
+        "脚本通过不是本岗通过",
+        "用户意图仍由用户判断"
+      ],
+      "handoff": "交回登记过的维护者或独立验收岗位。本模板不产生派单，也不代表机器人已经执行。",
+      "description_text": "按确认标准核来源、保真、证据链和推断边界。作者自查不是本岗通过。文件校验脚本通过也不是本岗通过。用户是否接受价值、是否给予行动许可，都不由本岗代替。没有覆盖的能力标成未验。"
+    }
+  ]
+}

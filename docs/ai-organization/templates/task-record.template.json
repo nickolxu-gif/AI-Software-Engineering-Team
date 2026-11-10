@@ -1,0 +1,36 @@
+{
+  "schema_version": "2026-11-08",
+  "record_kind": "task_record",
+  "task_id": "UNFILLED",
+  "synthetic": true,
+  "fixture_only": true,
+  "actually_executed_by_bots": [],
+  "recheck_limit": 1,
+  "versions": [],
+  "baseline_roles": [
+    "task-planning",
+    "plan-review",
+    "reading-arrangement",
+    "knowledge-analysis",
+    "knowledge-content-acceptance"
+  ],
+  "roles_impersonated": false,
+  "problem": "待真实任务填写。这个模板不是一次执行。",
+  "confirmation": "repository_fixture_not_a_user_session",
+  "scope": "synthetic_source_only",
+  "prohibited": [
+    "private_data",
+    "external_send",
+    "bot_api",
+    "paid_api"
+  ],
+  "unknowns_with_impact": [
+    "energy",
+    "cost",
+    "long_term_stability",
+    "user_preference",
+    "failure_cause",
+    "cross_device_check"
+  ],
+  "owner_role": null
+}

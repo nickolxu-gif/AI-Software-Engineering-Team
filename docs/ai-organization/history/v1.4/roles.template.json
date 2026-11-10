@@ -1,0 +1,623 @@
+{
+  "document_status": "superseded_historical",
+  "target_organization": false,
+  "superseded_by_schema_version": "2026-11-08",
+  "historical_commit": "a97ce946c46d47026d10edc445cec8dc58bbcc32",
+  "contract_version": "1.4",
+  "document_kind": "role_card_template",
+  "repository_role": "versions_the_public_contract_only",
+  "status": {
+    "static_configuration_status": "role_contracts_applied_and_readback_verified",
+    "functional_status": "unverified",
+    "synthetic_pilot": "draft_not_started",
+    "configuration_passed_functional_tests": false,
+    "bot_instruction_is_security_sandbox": false,
+    "profiles_reread_by_this_repository": false,
+    "stores_identity_ids_original_descriptions_or_private_paths": false,
+    "public_static_counts": {
+      "existing_bot_description_contracts_updated": 5,
+      "knowledge_life_posts_created": 1,
+      "profile_readbacks_succeeded": 6,
+      "static_configuration_checks_passed": 13
+    },
+    "public_static_consistency": [
+      "original_professional_descriptions_retained",
+      "unified_coordination",
+      "routing_suggestion",
+      "pm_tracking",
+      "limited_execution",
+      "private_domain_data_access_not_granted"
+    ],
+    "functional_verification_not_included": [
+      "technical_acl",
+      "independent_review_account_integration",
+      "end_to_end_scheduling",
+      "model_execution",
+      "automation",
+      "cli",
+      "private_domain_connection",
+      "residency_isolation"
+    ]
+  },
+  "non_equivalence": {
+    "distinct_objects": [
+      "duty",
+      "bot",
+      "tool",
+      "model",
+      "identity",
+      "security_boundary"
+    ],
+    "one_to_one_mapping": false,
+    "cartesian_product": false,
+    "bot_instruction_equals_security_sandbox": false,
+    "tools_and_environments_replaceable": true,
+    "capabilities_require_verification": true,
+    "capability_verification_status": "unverified"
+  },
+  "lightweight_round": {
+    "map_retains_all_duties": true,
+    "duty_count": 14,
+    "per_task_slots": [
+      "coordination-entry",
+      "one_executing_duty",
+      "independent-quality"
+    ],
+    "existing_entries": "not_deleted_not_migrated_not_retired",
+    "single_entry_means_serial_execution": false,
+    "cloud_entry_is_local_isolation": false,
+    "real_personal_data": "do_not_read_or_migrate"
+  },
+  "routing_advisor": {
+    "object_kind": "function_inside_entry",
+    "not_a_duty": true,
+    "not_a_second_dispatcher": true,
+    "recommends": [
+      "execution",
+      "independent_reverification",
+      "backup"
+    ],
+    "recommendation_is_dispatch": false
+  },
+  "vocabulary": {
+    "layers": [
+      "L1",
+      "L2",
+      "L3"
+    ],
+    "layer_names": [
+      "幕僚治理",
+      "专业执行",
+      "个人知识生活服务"
+    ],
+    "business_stages": [
+      "demand",
+      "plan",
+      "independent_review",
+      "authorization_check",
+      "execute_and_monitor",
+      "independent_acceptance",
+      "delivery",
+      "retrospective"
+    ],
+    "skill_pipeline": [
+      "candidate",
+      "multi_scenario_test",
+      "independent_reverification",
+      "authorized_approval",
+      "versioned_release_observation_or_rollback"
+    ],
+    "reconfirm_on_material_change_of": [
+      "scope",
+      "permission",
+      "residency",
+      "cost_ceiling",
+      "irreversible_action"
+    ],
+    "independent_records": [
+      "technical_acceptance",
+      "user_acceptance",
+      "action_authorization"
+    ],
+    "evidence_views": [
+      "data",
+      "capability",
+      "judgment"
+    ],
+    "mechanical_double_confirmation_required": false
+  },
+  "duties": [
+    {
+      "object_kind": "duty",
+      "duty_id": "coordination-entry",
+      "layer": "L1",
+      "layer_name": "幕僚治理",
+      "title": "协调入口",
+      "lightweight_activation": "per_task_entry_slot",
+      "responsibility_definition": {
+        "summary": "默认的统一用户入口，也就是主入口。核对并汇总用户已经授予的授权，再编排这一次任务。不颁发权限。执行者无法完成或需要协作时回到主入口。路由建议在这里汇合，建议本身不是派单。",
+        "grants_permission": false,
+        "may_issue_second_dispatch": false
+      },
+      "activation_config": {
+        "state": "template_unassigned",
+        "tool_identity": null,
+        "model_identity": null,
+        "account_identity": null,
+        "read_boundary": "该任务已有的授权摘要、计划和不含真实个人数据的证据状态",
+        "write_boundary": "编排记录、授权核对记录、回交记录",
+        "budget": null,
+        "stop_conditions": [
+          "authorization_not_covering_action",
+          "material_change_not_reconfirmed",
+          "return_to_entry_when_collaboration_needed",
+          "pause_or_cancel_without_receipt_stays_unconfirmed",
+          "stop_replay_when_outcome_unknown_and_side_effects_possible",
+          "shared_object_baseline_mismatch_or_duplicate_event",
+          "do_not_read_or_migrate_real_personal_data",
+          "outbound_remains_a_draft"
+        ],
+        "artifact_acceptance": "编排记录进入同一份证据包；计划的独立审查不由编写者兼任",
+        "activatable": true,
+        "activation_block_reason": null
+      }
+    },
+    {
+      "object_kind": "duty",
+      "duty_id": "strategic-planning",
+      "layer": "L1",
+      "layer_name": "幕僚治理",
+      "title": "战略计划",
+      "lightweight_activation": "map_only",
+      "responsibility_definition": {
+        "summary": "把目标整理成范围、非目标、完成标准和取舍建议。首轮只保留定义，不单独激活。不派单，不颁发权限。",
+        "grants_permission": false,
+        "may_issue_second_dispatch": false
+      },
+      "activation_config": {
+        "state": "template_unassigned",
+        "tool_identity": null,
+        "model_identity": null,
+        "account_identity": null,
+        "read_boundary": "任务目标与约束的公开说明",
+        "write_boundary": "无。首轮不激活",
+        "budget": null,
+        "stop_conditions": [
+          "authorization_not_covering_action",
+          "material_change_not_reconfirmed",
+          "return_to_entry_when_collaboration_needed",
+          "pause_or_cancel_without_receipt_stays_unconfirmed",
+          "stop_replay_when_outcome_unknown_and_side_effects_possible",
+          "shared_object_baseline_mismatch_or_duplicate_event",
+          "do_not_read_or_migrate_real_personal_data",
+          "outbound_remains_a_draft"
+        ],
+        "artifact_acceptance": "定义上的产物是计划建议，不是派单",
+        "activatable": true,
+        "activation_block_reason": null
+      }
+    },
+    {
+      "object_kind": "duty",
+      "duty_id": "resource-cost-advisor",
+      "layer": "L1",
+      "layer_name": "幕僚治理",
+      "title": "资源成本顾问",
+      "lightweight_activation": "map_only",
+      "responsibility_definition": {
+        "summary": "对资源、费用上限和替代路径提出建议。路由建议可以引用本定义来推荐执行职责、独立复验和备用。建议不是派单，也不是费用批准。",
+        "grants_permission": false,
+        "may_issue_second_dispatch": false
+      },
+      "activation_config": {
+        "state": "template_unassigned",
+        "tool_identity": null,
+        "model_identity": null,
+        "account_identity": null,
+        "read_boundary": "任务范围，以及仍为空的费用栏",
+        "write_boundary": "无。首轮不激活",
+        "budget": null,
+        "stop_conditions": [
+          "authorization_not_covering_action",
+          "material_change_not_reconfirmed",
+          "return_to_entry_when_collaboration_needed",
+          "pause_or_cancel_without_receipt_stays_unconfirmed",
+          "stop_replay_when_outcome_unknown_and_side_effects_possible",
+          "shared_object_baseline_mismatch_or_duplicate_event",
+          "do_not_read_or_migrate_real_personal_data",
+          "outbound_remains_a_draft"
+        ],
+        "artifact_acceptance": "建议要能追溯到任务范围；空白费用栏保持空白",
+        "activatable": true,
+        "activation_block_reason": null
+      }
+    },
+    {
+      "object_kind": "duty",
+      "duty_id": "project-manager",
+      "layer": "L1",
+      "layer_name": "幕僚治理",
+      "title": "项目经理",
+      "lightweight_activation": "map_only",
+      "responsibility_definition": {
+        "summary": "整理进度、依赖、风险，并提出账本更新建议。建议写回同一份最小任务证据包。不能第二派单。",
+        "grants_permission": false,
+        "may_issue_second_dispatch": false
+      },
+      "activation_config": {
+        "state": "template_unassigned",
+        "tool_identity": null,
+        "model_identity": null,
+        "account_identity": null,
+        "read_boundary": "同一证据包中的进度事实",
+        "write_boundary": "无。首轮不激活",
+        "budget": null,
+        "stop_conditions": [
+          "authorization_not_covering_action",
+          "material_change_not_reconfirmed",
+          "return_to_entry_when_collaboration_needed",
+          "pause_or_cancel_without_receipt_stays_unconfirmed",
+          "stop_replay_when_outcome_unknown_and_side_effects_possible",
+          "shared_object_baseline_mismatch_or_duplicate_event",
+          "do_not_read_or_migrate_real_personal_data",
+          "outbound_remains_a_draft"
+        ],
+        "artifact_acceptance": "定义上的产物是进度、依赖、风险和账本更新建议",
+        "activatable": true,
+        "activation_block_reason": null
+      }
+    },
+    {
+      "object_kind": "duty",
+      "duty_id": "independent-quality",
+      "layer": "L1",
+      "layer_name": "幕僚治理",
+      "title": "反调独立质检",
+      "lightweight_activation": "per_task_independent_acceptance_slot",
+      "responsibility_definition": {
+        "summary": "对计划做独立审查，对结果做独立验收。同一产物的实现者不兼任。换模型不是充分保证。同模型的独立会话不自动无效。",
+        "grants_permission": false,
+        "may_issue_second_dispatch": false
+      },
+      "activation_config": {
+        "state": "template_unassigned",
+        "tool_identity": null,
+        "model_identity": null,
+        "account_identity": null,
+        "read_boundary": "计划、产物和证据包",
+        "write_boundary": "独立审查记录和独立验收记录",
+        "budget": null,
+        "stop_conditions": [
+          "authorization_not_covering_action",
+          "material_change_not_reconfirmed",
+          "return_to_entry_when_collaboration_needed",
+          "pause_or_cancel_without_receipt_stays_unconfirmed",
+          "stop_replay_when_outcome_unknown_and_side_effects_possible",
+          "shared_object_baseline_mismatch_or_duplicate_event",
+          "do_not_read_or_migrate_real_personal_data",
+          "outbound_remains_a_draft"
+        ],
+        "artifact_acceptance": "审查者与实现者在记录上分开；不改写实现产物",
+        "activatable": true,
+        "activation_block_reason": null
+      }
+    },
+    {
+      "object_kind": "duty",
+      "duty_id": "engineering",
+      "layer": "L2",
+      "layer_name": "专业执行",
+      "title": "工程研发",
+      "lightweight_activation": "per_task_execution_slot_when_selected",
+      "responsibility_definition": {
+        "summary": "在任务写边界内完成工程产物，并留下可复核记录。只有被选为该任务的唯一执行槽时才激活。",
+        "grants_permission": false,
+        "may_issue_second_dispatch": false
+      },
+      "activation_config": {
+        "state": "template_unassigned",
+        "tool_identity": null,
+        "model_identity": null,
+        "account_identity": null,
+        "read_boundary": "该任务明确给出、且不含真实个人数据的输入",
+        "write_boundary": "该任务指定的工程产物",
+        "budget": null,
+        "stop_conditions": [
+          "authorization_not_covering_action",
+          "material_change_not_reconfirmed",
+          "return_to_entry_when_collaboration_needed",
+          "pause_or_cancel_without_receipt_stays_unconfirmed",
+          "stop_replay_when_outcome_unknown_and_side_effects_possible",
+          "shared_object_baseline_mismatch_or_duplicate_event",
+          "do_not_read_or_migrate_real_personal_data",
+          "outbound_remains_a_draft"
+        ],
+        "artifact_acceptance": "使用共同产物验收",
+        "activatable": true,
+        "activation_block_reason": null
+      }
+    },
+    {
+      "object_kind": "duty",
+      "duty_id": "product-ui",
+      "layer": "L2",
+      "layer_name": "专业执行",
+      "title": "产品 UI",
+      "lightweight_activation": "per_task_execution_slot_when_selected",
+      "responsibility_definition": {
+        "summary": "负责产品界面与交互产物。只有被选为该任务的唯一执行槽时才激活。",
+        "grants_permission": false,
+        "may_issue_second_dispatch": false
+      },
+      "activation_config": {
+        "state": "template_unassigned",
+        "tool_identity": null,
+        "model_identity": null,
+        "account_identity": null,
+        "read_boundary": "该任务明确给出、且不含真实个人数据的输入",
+        "write_boundary": "该任务指定的界面产物",
+        "budget": null,
+        "stop_conditions": [
+          "authorization_not_covering_action",
+          "material_change_not_reconfirmed",
+          "return_to_entry_when_collaboration_needed",
+          "pause_or_cancel_without_receipt_stays_unconfirmed",
+          "stop_replay_when_outcome_unknown_and_side_effects_possible",
+          "shared_object_baseline_mismatch_or_duplicate_event",
+          "do_not_read_or_migrate_real_personal_data",
+          "outbound_remains_a_draft"
+        ],
+        "artifact_acceptance": "使用共同产物验收",
+        "activatable": true,
+        "activation_block_reason": null
+      }
+    },
+    {
+      "object_kind": "duty",
+      "duty_id": "modeling-data",
+      "layer": "L2",
+      "layer_name": "专业执行",
+      "title": "建模数据",
+      "lightweight_activation": "per_task_execution_slot_when_selected",
+      "responsibility_definition": {
+        "summary": "负责建模和数据产物。不记录真实模型、数据集或账号。能力未验证前不算可用。",
+        "grants_permission": false,
+        "may_issue_second_dispatch": false
+      },
+      "activation_config": {
+        "state": "template_unassigned",
+        "tool_identity": null,
+        "model_identity": null,
+        "account_identity": null,
+        "read_boundary": "该任务明确给出、且不含真实个人数据的输入",
+        "write_boundary": "该任务指定的建模或数据产物",
+        "budget": null,
+        "stop_conditions": [
+          "authorization_not_covering_action",
+          "material_change_not_reconfirmed",
+          "return_to_entry_when_collaboration_needed",
+          "pause_or_cancel_without_receipt_stays_unconfirmed",
+          "stop_replay_when_outcome_unknown_and_side_effects_possible",
+          "shared_object_baseline_mismatch_or_duplicate_event",
+          "do_not_read_or_migrate_real_personal_data",
+          "outbound_remains_a_draft"
+        ],
+        "artifact_acceptance": "使用共同产物验收；未验证的能力保持未验证",
+        "activatable": true,
+        "activation_block_reason": null
+      }
+    },
+    {
+      "object_kind": "duty",
+      "duty_id": "multimedia-content",
+      "layer": "L2",
+      "layer_name": "专业执行",
+      "title": "多媒介内容",
+      "lightweight_activation": "per_task_execution_slot_when_selected",
+      "responsibility_definition": {
+        "summary": "负责多媒介内容产物。对外内容默认是待用户审阅的草稿。",
+        "grants_permission": false,
+        "may_issue_second_dispatch": false
+      },
+      "activation_config": {
+        "state": "template_unassigned",
+        "tool_identity": null,
+        "model_identity": null,
+        "account_identity": null,
+        "read_boundary": "该任务明确给出、且不含真实个人数据的输入",
+        "write_boundary": "该任务指定的内容产物",
+        "budget": null,
+        "stop_conditions": [
+          "authorization_not_covering_action",
+          "material_change_not_reconfirmed",
+          "return_to_entry_when_collaboration_needed",
+          "pause_or_cancel_without_receipt_stays_unconfirmed",
+          "stop_replay_when_outcome_unknown_and_side_effects_possible",
+          "shared_object_baseline_mismatch_or_duplicate_event",
+          "do_not_read_or_migrate_real_personal_data",
+          "outbound_remains_a_draft"
+        ],
+        "artifact_acceptance": "使用共同产物验收；外发停留在草稿",
+        "activatable": true,
+        "activation_block_reason": null
+      }
+    },
+    {
+      "object_kind": "duty",
+      "duty_id": "research-materials",
+      "layer": "L2",
+      "layer_name": "专业执行",
+      "title": "研究资料",
+      "lightweight_activation": "per_task_execution_slot_when_selected",
+      "responsibility_definition": {
+        "summary": "整理研究资料。关键数字带来源。",
+        "grants_permission": false,
+        "may_issue_second_dispatch": false
+      },
+      "activation_config": {
+        "state": "template_unassigned",
+        "tool_identity": null,
+        "model_identity": null,
+        "account_identity": null,
+        "read_boundary": "该任务明确给出、且不含真实个人数据的输入",
+        "write_boundary": "该任务指定的资料产物",
+        "budget": null,
+        "stop_conditions": [
+          "authorization_not_covering_action",
+          "material_change_not_reconfirmed",
+          "return_to_entry_when_collaboration_needed",
+          "pause_or_cancel_without_receipt_stays_unconfirmed",
+          "stop_replay_when_outcome_unknown_and_side_effects_possible",
+          "shared_object_baseline_mismatch_or_duplicate_event",
+          "do_not_read_or_migrate_real_personal_data",
+          "outbound_remains_a_draft"
+        ],
+        "artifact_acceptance": "使用共同产物验收；关键数字有来源",
+        "activatable": true,
+        "activation_block_reason": null
+      }
+    },
+    {
+      "object_kind": "duty",
+      "duty_id": "knowledge-management",
+      "layer": "L3",
+      "layer_name": "个人知识生活服务",
+      "title": "知识管理",
+      "lightweight_activation": "per_task_execution_slot_when_selected",
+      "responsibility_definition": {
+        "summary": "管理知识候选。外部新建的知识生活岗位不与本职责一一对应。静态回读没有授予私域数据访问。",
+        "grants_permission": false,
+        "may_issue_second_dispatch": false
+      },
+      "activation_config": {
+        "state": "template_unassigned",
+        "tool_identity": null,
+        "model_identity": null,
+        "account_identity": null,
+        "read_boundary": "该任务明确给出、且不含真实个人数据的输入",
+        "write_boundary": "该任务指定的知识候选",
+        "budget": null,
+        "stop_conditions": [
+          "authorization_not_covering_action",
+          "material_change_not_reconfirmed",
+          "return_to_entry_when_collaboration_needed",
+          "pause_or_cancel_without_receipt_stays_unconfirmed",
+          "stop_replay_when_outcome_unknown_and_side_effects_possible",
+          "shared_object_baseline_mismatch_or_duplicate_event",
+          "do_not_read_or_migrate_real_personal_data",
+          "outbound_remains_a_draft"
+        ],
+        "artifact_acceptance": "使用共同产物验收；不读取、不迁移真实个人数据",
+        "activatable": true,
+        "activation_block_reason": null
+      }
+    },
+    {
+      "object_kind": "duty",
+      "duty_id": "life-records",
+      "layer": "L3",
+      "layer_name": "个人知识生活服务",
+      "title": "生活记录",
+      "lightweight_activation": "per_task_execution_slot_when_selected",
+      "responsibility_definition": {
+        "summary": "生活记录的公开职责定义。本目录没有真实生活记录。私域数据访问未被授予。",
+        "grants_permission": false,
+        "may_issue_second_dispatch": false
+      },
+      "activation_config": {
+        "state": "template_unassigned",
+        "tool_identity": null,
+        "model_identity": null,
+        "account_identity": null,
+        "read_boundary": "该任务明确给出、且不含真实个人数据的输入",
+        "write_boundary": "该任务指定的生活记录模板产物",
+        "budget": null,
+        "stop_conditions": [
+          "authorization_not_covering_action",
+          "material_change_not_reconfirmed",
+          "return_to_entry_when_collaboration_needed",
+          "pause_or_cancel_without_receipt_stays_unconfirmed",
+          "stop_replay_when_outcome_unknown_and_side_effects_possible",
+          "shared_object_baseline_mismatch_or_duplicate_event",
+          "do_not_read_or_migrate_real_personal_data",
+          "outbound_remains_a_draft"
+        ],
+        "artifact_acceptance": "使用共同产物验收；不读取、不迁移真实个人数据",
+        "activatable": true,
+        "activation_block_reason": null
+      }
+    },
+    {
+      "object_kind": "duty",
+      "duty_id": "health-records",
+      "layer": "L3",
+      "layer_name": "个人知识生活服务",
+      "title": "健康记录",
+      "lightweight_activation": "blocked_until_isolation_proven",
+      "responsibility_definition": {
+        "summary": "地图保留。权限隔离与驻留隔离证实前不可激活。静态回读未授予私域数据访问，这不是技术 ACL 或驻留隔离的功能验证。",
+        "grants_permission": false,
+        "may_issue_second_dispatch": false
+      },
+      "activation_config": {
+        "state": "template_unassigned",
+        "tool_identity": null,
+        "model_identity": null,
+        "account_identity": null,
+        "read_boundary": "无",
+        "write_boundary": "无",
+        "budget": null,
+        "stop_conditions": [
+          "authorization_not_covering_action",
+          "material_change_not_reconfirmed",
+          "return_to_entry_when_collaboration_needed",
+          "pause_or_cancel_without_receipt_stays_unconfirmed",
+          "stop_replay_when_outcome_unknown_and_side_effects_possible",
+          "shared_object_baseline_mismatch_or_duplicate_event",
+          "do_not_read_or_migrate_real_personal_data",
+          "outbound_remains_a_draft",
+          "blocked_until_permission_and_residency_isolation_proven"
+        ],
+        "artifact_acceptance": "不可激活，因此没有产物",
+        "activatable": false,
+        "activation_block_reason": "permission_and_residency_isolation_not_proven"
+      }
+    },
+    {
+      "object_kind": "duty",
+      "duty_id": "private-communications",
+      "layer": "L3",
+      "layer_name": "个人知识生活服务",
+      "title": "私人通信",
+      "lightweight_activation": "blocked_until_isolation_proven",
+      "responsibility_definition": {
+        "summary": "地图保留。不可激活条件与健康记录相同。外发默认是用户审阅草稿。不读取、不迁移真实通信。",
+        "grants_permission": false,
+        "may_issue_second_dispatch": false
+      },
+      "activation_config": {
+        "state": "template_unassigned",
+        "tool_identity": null,
+        "model_identity": null,
+        "account_identity": null,
+        "read_boundary": "无",
+        "write_boundary": "无",
+        "budget": null,
+        "stop_conditions": [
+          "authorization_not_covering_action",
+          "material_change_not_reconfirmed",
+          "return_to_entry_when_collaboration_needed",
+          "pause_or_cancel_without_receipt_stays_unconfirmed",
+          "stop_replay_when_outcome_unknown_and_side_effects_possible",
+          "shared_object_baseline_mismatch_or_duplicate_event",
+          "do_not_read_or_migrate_real_personal_data",
+          "outbound_remains_a_draft",
+          "blocked_until_permission_and_residency_isolation_proven"
+        ],
+        "artifact_acceptance": "不可激活，因此没有产物",
+        "activatable": false,
+        "activation_block_reason": "permission_and_residency_isolation_not_proven"
+      }
+    }
+  ]
+}

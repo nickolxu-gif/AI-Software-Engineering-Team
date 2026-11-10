@@ -1,0 +1,13 @@
+{
+  "schema_version": "2026-11-08",
+  "record_kind": "handoff",
+  "task_id": "UNFILLED",
+  "synthetic": true,
+  "fault_injection": false,
+  "bot_execution": false,
+  "version": "v1",
+  "from_role": "UNFILLED",
+  "to_role": "UNFILLED",
+  "artifact": "UNFILLED",
+  "handoff_ack": "unknown"
+}

@@ -1,0 +1,72 @@
+{
+  "schema_version": "2026-11-08",
+  "record_kind": "reading_arrangement",
+  "task_id": "SYN-READ-01",
+  "synthetic": true,
+  "fault_injection": false,
+  "bot_execution": false,
+  "version": "v1",
+  "source_version": "v1",
+  "author_role": "reading-arrangement",
+  "claims": [
+    {
+      "id": "A",
+      "class": "fact",
+      "source_quote": "固定设备 X，室温。样本 10 个。平均用时 12 秒。",
+      "device": "X",
+      "temperature": "room",
+      "sample_count": 10,
+      "mean_seconds": 12,
+      "energy": "not_recorded",
+      "cross_device_check": "not_done"
+    },
+    {
+      "id": "B",
+      "class": "fact",
+      "source_quote": "设备 Y，低温。样本 8 个。平均用时 15 秒。",
+      "device": "Y",
+      "temperature": "low",
+      "sample_count": 8,
+      "mean_seconds": 15
+    },
+    {
+      "id": "failure",
+      "class": "fact",
+      "source_quote": "发生一次失败。原因未知。没有重复。",
+      "count": 1,
+      "cause": "unknown",
+      "repeated": false
+    },
+    {
+      "id": "C",
+      "class": "comment",
+      "source_quote": "评论者认为甲可能更快，并希望做长期批处理。",
+      "new_measurement": false,
+      "user_commitment": false,
+      "hope": "long_term_batch"
+    }
+  ],
+  "absences": [
+    {
+      "item": "cost",
+      "value": "no_data",
+      "source_quote": "成本没有数据。"
+    },
+    {
+      "item": "energy",
+      "value": "no_data",
+      "source_quote": "能源没有数据。"
+    },
+    {
+      "item": "long_term_stability",
+      "value": "no_data",
+      "source_quote": "长期稳定没有数据。"
+    },
+    {
+      "item": "user_preference",
+      "value": "no_data",
+      "source_quote": "用户偏好没有数据。"
+    }
+  ],
+  "direct_comparison": null
+}

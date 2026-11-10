@@ -1,0 +1,186 @@
+{
+  "$id": "role-registry.schema.json",
+  "schema_version": "2026-11-08",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "document_kind",
+    "target_organization",
+    "deployment_claimed",
+    "baseline_date",
+    "state_axes_are_independent",
+    "domain_rules",
+    "historical_v14",
+    "roles",
+    "undecided_items",
+    "explicit_non_roles"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2026-11-08"
+    },
+    "document_kind": {
+      "const": "role_registry"
+    },
+    "target_organization": {
+      "const": true
+    },
+    "deployment_claimed": {
+      "const": false
+    },
+    "baseline_date": {
+      "const": "2026-11-08"
+    },
+    "state_axes_are_independent": {
+      "const": true
+    },
+    "domain_rules": {
+      "type": "object"
+    },
+    "historical_v14": {
+      "type": "object"
+    },
+    "roles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role_id",
+          "title",
+          "domain",
+          "duty_kind",
+          "selection_status",
+          "configuration_status",
+          "runtime_status",
+          "acceptance_status",
+          "configuration_evidence",
+          "runtime_evidence",
+          "acceptance_evidence",
+          "first_batch_template",
+          "created_in_this_repository",
+          "may_cross_layers",
+          "intended_form",
+          "responsibility_rules",
+          "migration_note",
+          "summary",
+          "boundaries"
+        ],
+        "properties": {
+          "role_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "domain": {
+            "enum": [
+              "staff_judgment",
+              "professional_execution",
+              "personal_life_and_knowledge"
+            ]
+          },
+          "duty_kind": {
+            "enum": [
+              "judgment",
+              "planning",
+              "coordination",
+              "execution",
+              "acceptance",
+              "maintenance"
+            ]
+          },
+          "selection_status": {
+            "enum": [
+              "selected",
+              "tendency",
+              "candidate",
+              "undecided"
+            ]
+          },
+          "configuration_status": {
+            "enum": [
+              "not_configured",
+              "configured"
+            ]
+          },
+          "runtime_status": {
+            "enum": [
+              "not_run",
+              "running",
+              "ran"
+            ]
+          },
+          "acceptance_status": {
+            "enum": [
+              "not_accepted",
+              "accepted",
+              "unverified"
+            ]
+          },
+          "configuration_evidence": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "runtime_evidence": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "acceptance_evidence": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "first_batch_template": {
+            "type": "boolean"
+          },
+          "created_in_this_repository": {
+            "const": false
+          },
+          "may_cross_layers": {
+            "type": "boolean"
+          },
+          "intended_form": {
+            "enum": [
+              "long_term_independent",
+              "undecided"
+            ]
+          },
+          "responsibility_rules": {
+            "enum": [
+              "selected",
+              "undecided"
+            ]
+          },
+          "migration_note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "boundaries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "undecided_items": {
+      "type": "array"
+    },
+    "explicit_non_roles": {
+      "type": "array"
+    }
+  }
+}

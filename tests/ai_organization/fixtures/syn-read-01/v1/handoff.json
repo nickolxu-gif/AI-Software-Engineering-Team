@@ -1,0 +1,13 @@
+{
+  "schema_version": "2026-11-08",
+  "record_kind": "handoff",
+  "task_id": "SYN-READ-01",
+  "synthetic": true,
+  "fault_injection": false,
+  "bot_execution": false,
+  "version": "v1",
+  "from_role": "reading-arrangement",
+  "to_role": "knowledge-analysis",
+  "artifact": "arrangement-v1",
+  "handoff_ack": "unknown"
+}

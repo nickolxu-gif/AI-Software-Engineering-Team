@@ -1,0 +1,15 @@
+{
+  "schema_version": "2026-11-08",
+  "task_id": "SYN-READ-01",
+  "resource_alias": "codex",
+  "approved": false,
+  "authority_ref": null,
+  "covers_private_data": false,
+  "prompt_sha256": null,
+  "workspace": null,
+  "max_turns": null,
+  "process_timeout_seconds": null,
+  "model_alias": null,
+  "profile": null,
+  "note": "Numeric limits and paths stay null until a separately authorized private package supplies them. Hermes approvals must omit run_budget_seconds. A present key is rejected and is not written into a client config."
+}
