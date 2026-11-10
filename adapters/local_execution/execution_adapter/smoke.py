@@ -78,7 +78,6 @@ def _approval(task: dict, alias: str, workspace: str) -> dict:
     }
     if alias == "hermes":
         body["max_turns"] = 1
-        body["run_budget_seconds"] = 1
     if alias == "kimi":
         body["authorize_model_alias"] = True
         body["model_alias"] = "fixture-alias"

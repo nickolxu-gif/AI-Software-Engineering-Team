@@ -8,9 +8,8 @@
   "prompt_sha256": null,
   "workspace": null,
   "max_turns": null,
-  "run_budget_seconds": null,
   "process_timeout_seconds": null,
   "model_alias": null,
   "profile": null,
-  "note": "Numeric limits and paths stay null until a separately authorized private package supplies them."
+  "note": "Numeric limits and paths stay null until a separately authorized private package supplies them. Hermes approvals must omit run_budget_seconds. A present key is rejected and is not written into a client config."
 }

@@ -15,7 +15,7 @@ from execution_adapter.bindings import (
     build_invocation,
     sha256_text,
 )
-from execution_adapter.catalog import RESOURCES
+from execution_adapter.catalog import ADAPTER_VERSION, RESOURCES
 from execution_adapter.redact import redact
 
 
@@ -169,6 +169,8 @@ def _run_process(invocation: dict) -> dict:
             "alive_after_cleanup": [],
         }
     except subprocess.TimeoutExpired:
+        # process_timeout_seconds bounds only this client process. Killing the
+        # process group does not prove a Hermes gateway-side turn has stopped.
         cleanup = _kill_process_group(spawned_pid)
         try:
             stdout_b, stderr_b = proc.communicate()
@@ -205,7 +207,7 @@ def dispatch(task: dict, recommendation: dict, approval: dict | None, config: di
     declared = RESOURCES[alias]
     resource = config["resources"][alias]
     versions = task["versions"]
-    return {
+    receipt = {
         "schema_version": SCHEMA_VERSION,
         "live_integration_claimed": False,
         "execution_label": config.get("execution_label", "unverified"),
@@ -279,9 +281,20 @@ def dispatch(task: dict, recommendation: dict, approval: dict | None, config: di
             "correction_of": versions.get("correction_of"),
         },
         "generation_binding": declared.get("generation_binding"),
+        "adapter_version": ADAPTER_VERSION,
+        "process_timeout_seconds": invocation["timeout_seconds"],
+        "process_timeout_scope": "client_process",
         "argv": invocation["argv"],
         "unfinished": [] if observed_process["exit_code"] == 0 and observed_process["write_outcome"] == "known" else ["run_not_clean"],
     }
+    if alias == "hermes":
+        # Client close and the client-process deadline are not evidence that
+        # the gateway-side turn, remote work, or billing has stopped.
+        receipt["client_close_proves_gateway_turn_stopped"] = False
+        receipt["gateway_termination_semantics"] = "incomplete"
+        receipt["hermes_run_budget_accepted"] = False
+        receipt["binding_basis"] = declared.get("binding_basis")
+    return receipt
 
 
 def refusal(error: BindingError) -> dict[str, Any]:

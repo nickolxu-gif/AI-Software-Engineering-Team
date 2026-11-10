@@ -2,24 +2,35 @@
 
 This directory is an installable runner for bounded specialist tasks. Its tests use fake executables. It is not a working live multi-model system, and installing it does not call a model or change an existing client configuration.
 
-Help-verified generation bindings:
+Generation bindings:
 
-| Alias | Declared help version | Binding |
+| Alias | Binding basis | Command |
 |---|---|---|
-| `codex` | 0.164.0 | `exec --json --color never --ephemeral -s read-only -C WORKSPACE -`, with stdin and `-c check_for_update_on_startup=false` |
-| `codex2` | 0.164.0 | Same argv as `codex`. A separate `CODEX_HOME` comes only from private config. That does not prove a different model or account. |
-| `kimi` | 2.5.2 | `-m` alias when authorized, `-p` prompt, `--output-format stream-json` |
-| `hermes` | 0.22.7 | `chat --query-file - --oneshot --format stream-json --in WORKSPACE`, plus approved `--max-turns` and `--run-budget` |
+| `codex` | Help text for 0.164.0 | `exec --json --color never --ephemeral -s read-only -C WORKSPACE -`, with stdin and `-c check_for_update_on_startup=false` |
+| `codex2` | Same help text as `codex` | Same argv as `codex`. A separate `CODEX_HOME` comes only from private config. That does not prove a different model or account. |
+| `kimi` | Help text for 2.5.2 | `-m` alias when authorized, `-p` prompt, `--output-format stream-json` |
+| `hermes` | Gateway allow/deny checked against Hermes Agent v0.23.0 | `chat --query-file - --oneshot --format stream-json --in WORKSPACE --max-turns LIMIT` |
 
 `cursor` stays outside this runner. `dsh` has no evidenced launch contract, so its argv is null. `openclaw` is paused, not globally unavailable. `claude` is disabled and is not probed.
 
-Read-only mode limits model-generated shell writes. It is not full filesystem or network isolation. Ephemeral mode avoids session-file persistence and does not prove that logs or network activity are absent. A killed client does not prove server-side billing stopped. Hermes `--run-budget` is wall-clock handling, not a cost ceiling. The runner does not use Hermes top-level single-query bypass mode or its usage-file option.
+The Hermes command above is the default route. It does not add `-m`, `--provider`, `-p`, `-z`, or `--usage-file`. Those first three selectors are added only when the approval explicitly authorizes them. `--oneshot` stays on `chat` and is not replaced by top-level `-z`. `chat --help` can still list `--run-budget` while the gateway client rejects it, so help text alone is not the executable contract. This package records v0.23.0 as the client version that binding was checked against. It does not probe the installed CLI, and a receipt leaves the observed client version `UNKNOWN`.
 
-Missing model, usage, and price fields stay `UNKNOWN`. They are not inferred from an alias or a banner. A metering gap does not by itself forbid a run. Missing approved iteration or time values are not invented; Hermes generation stays unbound until an approval package supplies them.
+`--run-budget` is not sent. An approval that still contains `run_budget_seconds` is rejected with `hermes_run_budget_contract_retired` and does not start a process. The field is not ignored, and it is not written into the user's Hermes configuration.
 
-Package version: `0.1.3`.
+Read-only mode limits model-generated shell writes. It is not full filesystem or network isolation. Ephemeral mode avoids session-file persistence and does not prove that logs or network activity are absent. `process_timeout_seconds` is only a client-process deadline. Killing or closing the Hermes CLI does not prove the gateway-side turn has stopped, and it does not prove that remote work or billing has stopped. Hermes receipts mark that termination semantic as `incomplete`. The runner does not use Hermes top-level single-query bypass mode or its usage-file option.
+
+Missing model, usage, and price fields stay `UNKNOWN`. They are not inferred from an alias or a banner. A metering gap does not by itself forbid a run. Missing approved iteration values are not invented. Hermes generation stays unbound until an approval supplies `max_turns` and omits `run_budget_seconds`.
+
+Package version: `0.1.4`. This package is not a live Hermes pathway result and not an independent acceptance.
 
 ## Changelog
+
+### 0.1.4
+
+- Hermes argv no longer includes `--run-budget`. The default route is `hermes chat --query-file - --oneshot --format stream-json --in WORKSPACE --max-turns LIMIT`.
+- Approvals that still include `run_budget_seconds` are refused, so a package written for the previous Hermes contract cannot be replayed as unchanged. The adapter does not edit the user's Hermes configuration.
+- The Hermes binding follows gateway allow/deny behavior checked against client v0.23.0. Help text that still lists `--run-budget` is not treated as the current contract.
+- `process_timeout_seconds` remains a client-process deadline only. Closing or killing that process does not prove the gateway-side turn has stopped.
 
 ### 0.1.3
 
@@ -68,7 +79,7 @@ The job cannot change the binary, config path, or permissions. A recommendation 
 1. Stop invoking `execution-adapter`.
 2. Remove the virtualenv and the copied directory.
 3. Leave or delete the private config outside this package. This package does not contain it and does not restore or overwrite client settings.
-4. Do not treat a stopped local process as proof that a remote charge ended. A Hermes chat process can detach from a gateway turn.
+4. Do not treat a stopped local process as proof that a remote charge ended. `process_timeout_seconds` only stops the client process. Killing or closing the Hermes CLI does not prove the gateway-side turn has stopped.
 5. This package does not change paused local inference configuration.
 
 ## Verify the archive

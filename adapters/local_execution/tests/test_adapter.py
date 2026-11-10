@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 from execution_adapter.bindings import BindingError, build_invocation, recommend, sha256_text
 from execution_adapter.catalog import (
+    ADAPTER_VERSION,
     CODEX_FORBIDDEN_FLAGS,
     HERMES_FORBIDDEN_FLAGS,
     RESOURCES,
@@ -153,7 +154,6 @@ class AdapterTests(unittest.TestCase):
         extra = {} if approval_extra is None else approval_extra
         if alias == "hermes":
             extra.setdefault("max_turns", 2)
-            extra.setdefault("run_budget_seconds", 3)
         if alias == "kimi":
             extra.setdefault("authorize_model_alias", True)
             extra.setdefault("model_alias", "fixture-alias")
@@ -274,13 +274,54 @@ class AdapterTests(unittest.TestCase):
             dispatch(task, recommendation, make_approval(task, "hermes", str(self.workspace)), self.config)
         self.assertEqual(caught.exception.code, "approved_limits_missing")
         self.assertEqual(self.calls(), [])
-        _, receipt = self.dispatch_alias(
-            "hermes",
-            approval_extra={"authorize_profile": True, "profile": "fixture-profile", "authorize_provider": True, "provider": "fixture-provider", "authorize_model_alias": True, "model_alias": "fixture-alias"},
-        )
+        _, receipt = self.dispatch_alias("hermes", approval_extra={"process_timeout_seconds": 5})
         argv = self.calls()[0]["argv"]
         self.assertEqual(
             argv,
+            [
+                canon(self.binary),
+                "chat",
+                "--query-file",
+                "-",
+                "--oneshot",
+                "--format",
+                "stream-json",
+                "--in",
+                canon(self.workspace),
+                "--max-turns",
+                "2",
+            ],
+        )
+        for flag in ("-m", "--provider", "-p", "-z", "--usage-file", "--run-budget"):
+            self.assertNotIn(flag, argv)
+        for flag in HERMES_FORBIDDEN_FLAGS:
+            self.assertNotIn(flag, argv)
+        self.assertNotIn("--run-budget", RESOURCES["hermes"]["argv_template"])
+        self.assertIn("--max-turns", RESOURCES["hermes"]["argv_template"])
+        self.assertEqual(self.calls()[0]["stdin"], task["prompt"])
+        self.assertFalse(receipt["approval_bypass_used"])
+        self.assertEqual(receipt["approval_detected"], "UNKNOWN")
+        self.assertEqual(receipt["client_version_declared"], "0.23.0")
+        self.assertEqual(receipt["client_version_observed"], "UNKNOWN")
+        self.assertEqual(receipt["generation_binding"], "gateway_allow_deny_checked")
+        self.assertEqual(receipt["binding_basis"], "gateway_allow_deny")
+        self.assertFalse(RESOURCES["hermes"]["help_text_is_executable_contract"])
+        self.assertFalse(RESOURCES["hermes"]["writes_user_config"])
+        self.assertEqual(receipt["adapter_version"], ADAPTER_VERSION)
+        self.assertEqual(ADAPTER_VERSION, "0.1.4")
+        self.assertEqual(receipt["process_timeout_seconds"], 5)
+        self.assertEqual(receipt["process_timeout_scope"], "client_process")
+        self.assertFalse(receipt["client_close_proves_gateway_turn_stopped"])
+        self.assertEqual(receipt["gateway_termination_semantics"], "incomplete")
+        self.assertFalse(receipt["hermes_run_budget_accepted"])
+        self.assertFalse(receipt["timeout_proves_remote_billing_stopped"])
+        _, authorized = self.dispatch_alias(
+            "hermes",
+            approval_extra={"authorize_profile": True, "profile": "fixture-profile", "authorize_provider": True, "provider": "fixture-provider", "authorize_model_alias": True, "model_alias": "fixture-alias"},
+        )
+        selected = self.calls()[1]["argv"]
+        self.assertEqual(
+            selected,
             [
                 canon(self.binary),
                 "-p",
@@ -299,17 +340,27 @@ class AdapterTests(unittest.TestCase):
                 canon(self.workspace),
                 "--max-turns",
                 "2",
-                "--run-budget",
-                "3",
             ],
         )
-        self.assertEqual(self.calls()[0]["stdin"], task["prompt"])
-        for flag in HERMES_FORBIDDEN_FLAGS:
-            self.assertNotIn(flag, argv)
-        self.assertFalse(receipt["approval_bypass_used"])
-        self.assertEqual(receipt["approval_detected"], "UNKNOWN")
-        self.assertEqual(receipt["client_version_declared"], "0.22.7")
-        self.assertEqual(receipt["client_version_observed"], "UNKNOWN")
+        self.assertNotIn("--run-budget", selected)
+        self.assertFalse(authorized["hermes_run_budget_accepted"])
+
+    def test_retired_hermes_run_budget_approval_is_refused(self):
+        task = make_task("hermes")
+        recommendation = recommend(task, self.config)
+        for extra in (
+            {"run_budget_seconds": 3},
+            {"max_turns": 2, "run_budget_seconds": 3},
+            {"max_turns": 2, "run_budget_seconds": None},
+        ):
+            with self.assertRaises(BindingError) as caught:
+                dispatch(task, recommendation, make_approval(task, "hermes", str(self.workspace), **extra), self.config)
+            self.assertEqual(caught.exception.code, "hermes_run_budget_contract_retired")
+            self.assertEqual(caught.exception.detail, "omit_run_budget_seconds")
+        self.assertEqual(self.calls(), [])
+        _, receipt = self.dispatch_alias("codex", approval_extra={"run_budget_seconds": 3})
+        self.assertNotIn("--run-budget", receipt["argv"])
+        self.assertNotIn("hermes_run_budget_accepted", receipt)
 
     def test_kimi_stream_json_contract(self):
         _, receipt = self.dispatch_alias("kimi")
@@ -582,6 +633,8 @@ class AdapterTests(unittest.TestCase):
         recorded = (ROOT / "SOURCE_HASH.txt").read_text(encoding="utf-8").strip()
         self.assertEqual(result["source_hash"], source_hash())
         self.assertEqual(recorded, source_hash())
+        self.assertEqual(__import__("execution_adapter").__version__, ADAPTER_VERSION)
+        self.assertIn('version = "0.1.4"', (ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

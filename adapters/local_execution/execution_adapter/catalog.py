@@ -1,6 +1,12 @@
-"""Resource catalog. Generation argv is null unless a help contract evidences it."""
+"""Resource catalog. Generation argv stays null unless a binding evidences it.
+
+Codex and Kimi bindings were checked against help text. The Hermes binding
+was checked against gateway-client allow/deny behavior. Help text alone is
+not treated as the Hermes executable contract.
+"""
 
 SCHEMA_VERSION = "2026-11-08"
+ADAPTER_VERSION = "0.1.4"
 
 # Help-verified coding-client template, version 0.164.0.
 # Optional selectors are added only when an approval explicitly authorizes them.
@@ -29,8 +35,13 @@ CODEX_FORBIDDEN_FLAGS = (
     "--approve-for-me",
 )
 
-# Help-verified multiprovider chat contract, version 0.22.7.
-# Numeric limits stay placeholders until an approved package supplies them.
+# Gateway-client binding checked against Hermes Agent v0.23.0.
+# `chat --help` can still list `--run-budget` while the gateway client rejects
+# that option. `--max-turns` remains an accepted creation-time option.
+# `--oneshot` stays on `chat` and is not replaced by top-level `-z`.
+# This package does not write the user's Hermes configuration.
+# `process_timeout_seconds` is only a client-process deadline. Killing or
+# closing the CLI does not prove the gateway-side turn has stopped.
 HERMES_ARGV_TEMPLATE = [
     "{executable}",
     "chat",
@@ -43,12 +54,10 @@ HERMES_ARGV_TEMPLATE = [
     "{approved_workspace}",
     "--max-turns",
     "{approved_iteration_limit}",
-    "--run-budget",
-    "{approved_seconds}",
 ]
-HERMES_VERSION = "0.22.7"
+HERMES_VERSION = "0.23.0"
 HERMES_OPTIONAL_FLAGS = ("-p", "--profile", "-m", "--provider")
-HERMES_FORBIDDEN_FLAGS = ("-z", "--usage-file", "--yolo")
+HERMES_FORBIDDEN_FLAGS = ("-z", "--usage-file", "--run-budget", "--yolo")
 
 # User-supplied help for the long-context client, version 2.5.2.
 KIMI_ARGV_TEMPLATE = [
@@ -97,10 +106,14 @@ RESOURCES = {
     "hermes": {
         "kind": "hermes_chat",
         "supported_version_declared": HERMES_VERSION,
-        "generation_binding": "help_verified",
+        "generation_binding": "gateway_allow_deny_checked",
+        "binding_basis": "gateway_allow_deny",
+        "binding_checked_against_version": HERMES_VERSION,
+        "help_text_is_executable_contract": False,
         "argv_template": HERMES_ARGV_TEMPLATE,
         "stdin": "approved_prompt",
         "configuration_home_env": None,
+        "writes_user_config": False,
         "local_runner": True,
     },
     "cursor": {

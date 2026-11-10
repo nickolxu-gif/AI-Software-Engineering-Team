@@ -68,4 +68,4 @@ python3 -m unittest discover -s tests/ai_organization -v
 
 ## 执行适配层
 
-`adapters/local_execution/` 是可单独拷贝安装的本地运行器。Codex、Codex2、Kimi、Hermes 只使用已经核对过的帮助参数；DSH 的启动合同仍为空，Cursor 不进本地运行器，OpenClaw 保持暂停，Claude 保持停用且不会被探测。这里的测试使用假可执行文件。它不是已经接通的多模型系统，也不把岗位注册表改成已配置或已运行。
+`adapters/local_execution/` 是可单独拷贝安装的本地运行器，当前包版本 `0.1.4`。Codex、Codex2、Kimi 仍使用已经核对过的帮助参数。Hermes 默认路由是 `chat --query-file - --oneshot --format stream-json --in WORKSPACE --max-turns LIMIT`，不带 `-m`、`--provider`、`-p`、`-z` 或 `--usage-file`。这条绑定依据网关客户端对参数的接受与拒绝，对照过 Hermes Agent v0.23.0；`chat --help` 仍可能列出 `--run-budget`，但该参数不再写入 argv，帮助文本单独不足以作为可执行合同。旧批准若带 `run_budget_seconds`，会被拒绝，不能按原合同静默重放，也不会写入用户的 Hermes 配置。`process_timeout_seconds` 只作为客户端进程期限。关掉或杀掉 CLI 不能证明网关侧回合已经停止，也不能证明远端工作或计费已经结束。DSH 的启动合同仍为空，Cursor 不进本地运行器，OpenClaw 保持暂停，Claude 保持停用且不会被探测。这里的测试使用假可执行文件。它不是已经接通的多模型系统，也不把岗位注册表改成已配置或已运行。本版本不是一次成功的 Hermes 通路测试，也不是独立验收。

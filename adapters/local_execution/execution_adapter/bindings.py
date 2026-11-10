@@ -1,7 +1,8 @@
-"""Recommendation, authorization, and help-verified argv construction.
+"""Recommendation, authorization, and argv construction.
 
 A recommendation never dispatches. Numeric limits are taken only from the
 approval package. Missing limits stay unbound instead of becoming defaults.
+Hermes argv follows the gateway-client allow/deny binding, not help text alone.
 """
 
 from __future__ import annotations
@@ -295,7 +296,7 @@ def build_invocation(alias: str, config: dict, approval: dict, prompt: str) -> d
         raise BindingError("external_to_local_runner", alias)
     if not resource.get("enabled"):
         raise BindingError("not_enabled", alias)
-    if declared.get("generation_binding") != "help_verified":
+    if declared.get("generation_binding") not in {"help_verified", "gateway_allow_deny_checked"}:
         raise BindingError("generation_binding_null", alias)
     executable = _resolve_binary(resource, config)
     workspace = _workspace(approval)
@@ -320,6 +321,8 @@ def build_invocation(alias: str, config: dict, approval: dict, prompt: str) -> d
 
 
 def _optional_timeout(approval: dict):
+    # This value is only the local client-process deadline. For Hermes, killing
+    # or closing that process does not prove the gateway-side turn has stopped.
     if "process_timeout_seconds" not in approval or approval.get("process_timeout_seconds") is None:
         return None
     return int(_positive_int(approval.get("process_timeout_seconds"), "process_timeout_seconds"))
@@ -392,8 +395,19 @@ def _codex_argv(executable: str, approval: dict, workspace: str, skip_git_repo_c
 
 
 def _hermes_argv(executable: str, approval: dict, workspace: str) -> list[str]:
+    """Build the default Hermes gateway-client command, plus explicit selectors.
+
+    Default route, before any explicitly authorized selector:
+    chat --query-file - --oneshot --format stream-json --in WORKSPACE --max-turns LIMIT
+
+    `--run-budget` is not appended. An approval that still carries
+    `run_budget_seconds` is refused, so a package that required that flag
+    cannot be replayed as if this contract were unchanged. The value is not
+    written into the user's Hermes configuration.
+    """
+    if "run_budget_seconds" in approval:
+        raise BindingError("hermes_run_budget_contract_retired", "omit_run_budget_seconds")
     turns = _positive_int(approval.get("max_turns"), "approved_limits_missing")
-    budget = _positive_int(approval.get("run_budget_seconds"), "approved_limits_missing")
     argv = [executable]
     if approval.get("authorize_profile"):
         profile = _optional_name(approval.get("profile"), "profile")
@@ -422,8 +436,6 @@ def _hermes_argv(executable: str, approval: dict, workspace: str) -> list[str]:
             workspace,
             "--max-turns",
             turns,
-            "--run-budget",
-            budget,
         ]
     )
     return argv
