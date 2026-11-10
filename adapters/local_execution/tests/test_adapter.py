@@ -38,7 +38,7 @@ def write_fake(path: Path, side: Path, mode_path: Path) -> None:
                 f"side = Path({str(side)!r})",
                 f"mode = json.loads(Path({str(mode_path)!r}).read_text())",
                 "prev = json.loads(side.read_text()) if side.exists() else []",
-                "record = {'argv': sys.argv, 'stdin': None, 'home': os.environ.get('CODEX_HOME'), 'pid': os.getpid()}",
+                "record = {'argv': sys.argv, 'stdin': None, 'home': os.environ.get('CODEX_HOME'), 'pid': os.getpid(), 'seen': {name: os.environ.get(name) for name in ('DISABLE_AUTO_UPDATE', 'FIXTURE_PARENT_ONLY', 'MARKED_SECRET')}}",
                 "prev.append(record)",
                 "side.write_text(json.dumps(prev))",
                 "record['stdin'] = sys.stdin.read()",
@@ -481,6 +481,73 @@ class AdapterTests(unittest.TestCase):
         self.dispatch_alias("codex", approval_extra={"artifact_root": str(self.workspace), "final_message_path": str(inside)})
         self.assertIn("-o", self.calls()[0]["argv"])
         self.assertEqual(self.calls()[0]["argv"][-1], "-")
+
+    def test_env_allowlist_merges_declared_keys_only(self):
+        previous_parent = os.environ.get("FIXTURE_PARENT_ONLY")
+        previous_update = os.environ.get("DISABLE_AUTO_UPDATE")
+        os.environ["FIXTURE_PARENT_ONLY"] = "parent-only-value"
+        os.environ["DISABLE_AUTO_UPDATE"] = "parent-value"
+        try:
+            config = config_for(str(self.binary), str(self.home_b))
+            config["resources"]["kimi"]["env"] = {
+                "DISABLE_AUTO_UPDATE": "from-entry",
+                "MARKED_SECRET": {"value": "fixture-marked-value", "secret": True},
+            }
+            _recommendation, receipt = self.dispatch_alias("kimi", config=config)
+        finally:
+            if previous_parent is None:
+                os.environ.pop("FIXTURE_PARENT_ONLY", None)
+            else:
+                os.environ["FIXTURE_PARENT_ONLY"] = previous_parent
+            if previous_update is None:
+                os.environ.pop("DISABLE_AUTO_UPDATE", None)
+            else:
+                os.environ["DISABLE_AUTO_UPDATE"] = previous_update
+        seen = self.calls()[0]["seen"]
+        self.assertEqual(seen["DISABLE_AUTO_UPDATE"], "from-entry")
+        self.assertEqual(seen["MARKED_SECRET"], "fixture-marked-value")
+        self.assertIsNone(seen["FIXTURE_PARENT_ONLY"])
+        self.assertEqual(receipt["injected_env_keys"], ["DISABLE_AUTO_UPDATE", "MARKED_SECRET"])
+        encoded = json.dumps(receipt)
+        self.assertNotIn("from-entry", encoded)
+        self.assertNotIn("fixture-marked-value", encoded)
+        self.assertNotIn("parent-only-value", encoded)
+
+    def test_unmarked_secret_env_key_is_rejected(self):
+        config = config_for(str(self.binary), str(self.home_b))
+        config["resources"]["codex"]["env"] = {"API_TOKEN": "not-injected"}
+        task = make_task("codex")
+        with self.assertRaises(BindingError) as caught:
+            dispatch(task, recommend(task, config), make_approval(task, "codex", str(self.workspace)), config)
+        self.assertEqual(caught.exception.code, "env_secret_unmarked")
+        self.assertEqual(self.calls(), [])
+
+    def test_empty_skills_dir_is_accepted_and_file_is_rejected(self):
+        instance = self.root / "instance"
+        skills = instance / "skills"
+        skills.mkdir(parents=True)
+        config = config_for(str(self.binary), str(self.home_b))
+        config["instance_root"] = str(instance)
+        config["resources"]["kimi"]["skills_dir"] = str(skills)
+        _recommendation, receipt = self.dispatch_alias("kimi", config=config)
+        self.assertEqual(receipt["skills_dir_empty"], True)
+        self.assertFalse(receipt["skills_dir_is_sandbox"])
+        self.assertIn(canon(skills), self.calls()[0]["argv"])
+        accepted_calls = len(self.calls())
+        outside = self.root / "outside-skills"
+        outside.mkdir()
+        config["resources"]["kimi"]["skills_dir"] = str(outside)
+        task = make_task("kimi")
+        with self.assertRaises(BindingError) as caught:
+            dispatch(task, recommend(task, config), make_approval(task, "kimi", str(self.workspace), authorize_model_alias=True, model_alias="fixture-alias"), config)
+        self.assertEqual(caught.exception.code, "skills_dir_outside_root")
+        skill_file = instance / "not-a-directory"
+        skill_file.write_text("x", encoding="utf-8")
+        config["resources"]["kimi"]["skills_dir"] = str(skill_file)
+        with self.assertRaises(BindingError) as caught:
+            dispatch(task, recommend(task, config), make_approval(task, "kimi", str(self.workspace), authorize_model_alias=True, model_alias="fixture-alias"), config)
+        self.assertEqual(caught.exception.code, "skills_dir_invalid")
+        self.assertEqual(len(self.calls()), accepted_calls)
 
     def test_smoke_and_source_hash(self):
         result = run_offline_smoke()

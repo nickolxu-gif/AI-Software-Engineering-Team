@@ -17,7 +17,19 @@ Read-only mode limits model-generated shell writes. It is not full filesystem or
 
 Missing model, usage, and price fields stay `UNKNOWN`. They are not inferred from an alias or a banner. A metering gap does not by itself forbid a run. Missing approved iteration or time values are not invented; Hermes generation stays unbound until an approval package supplies them.
 
-Package version: `0.1.1`.
+Package version: `0.1.2`.
+
+## Changelog
+
+### 0.1.2
+
+- Each enabled entry may declare an `env` map. The child receives `PATH` plus those keys only, never the full parent environment. Keys that look like secrets are rejected unless the value is explicitly marked `secret`. The receipt lists injected key names and not their values.
+- `skills_dir` must be an existing directory after `realpath`, inside the configured `instance_root`. An empty directory is accepted. The receipt records `skills_dir_empty`. An empty skills directory is still not a sandbox.
+
+### 0.1.1
+
+- Timeout cleanup records the spawned pid, kills the process group, and blocks replay when the write outcome is unknown.
+- Workspace, binary, and configuration-home paths are compared with `realpath`.
 
 ## Install without cloning this repository
 

@@ -4,6 +4,7 @@
   "execution_label": "unverified",
   "allow_path_lookup": false,
   "binary_allowlist": [],
+  "instance_root": null,
   "resources": {
     "codex": {
       "enabled": false,
@@ -11,7 +12,8 @@
       "binary": null,
       "model_alias": null,
       "codex_home": null,
-      "account_ref": null
+      "account_ref": null,
+      "env": {}
     },
     "codex2": {
       "enabled": false,
@@ -20,6 +22,7 @@
       "model_alias": null,
       "codex_home": null,
       "account_ref": null,
+      "env": {},
       "same_argv_contract_as": "codex",
       "distinct_model_or_account": false
     },
@@ -30,14 +33,16 @@
       "model_alias": null,
       "skills_dir": null,
       "agent_file": null,
-      "account_ref": null
+      "account_ref": null,
+      "env": {}
     },
     "hermes": {
       "enabled": false,
       "kind": "hermes_chat",
       "binary": null,
       "model_alias": null,
-      "account_ref": null
+      "account_ref": null,
+      "env": {}
     },
     "cursor": {
       "enabled": false,

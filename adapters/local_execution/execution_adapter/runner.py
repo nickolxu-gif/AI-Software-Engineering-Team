@@ -262,6 +262,8 @@ def dispatch(task: dict, recommendation: dict, approval: dict | None, config: di
         "codex_read_only_is_full_isolation": False,
         "ephemeral_proves_no_logs_or_network": False,
         "empty_workspace_is_sandbox": False,
+        "injected_env_keys": list(invocation["injected_env_keys"]),
+        "skills_dir_empty": invocation["skills_dir_empty"],
         "skills_dir_is_sandbox": False,
         "separate_configuration_home_is_account_isolation": False,
         "separate_configuration_home_is_model_heterogeneity": False,

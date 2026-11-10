@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "execution-adapter"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local allowlisted CLI runner. Offline fixtures only; not a live multi-model system."
 readme = "README.md"
 requires-python = ">=3.11"

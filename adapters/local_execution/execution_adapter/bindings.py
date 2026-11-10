@@ -11,6 +11,13 @@ import os
 import re
 from typing import Any
 
+_SECRET_KEY = re.compile(
+    r"(secret|token|password|passwd|credential|cookie|session|api[_-]?key|private[_-]?key|access[_-]?key|authorization)",
+    re.IGNORECASE,
+)
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RESERVED_ENV = {"PATH"}
+
 from execution_adapter.catalog import RESOURCES
 
 SCHEMA_VERSION = "2026-11-08"
@@ -194,21 +201,81 @@ def _artifact_path(approval: dict, key: str) -> str | None:
     return path
 
 
-def _env_for(alias: str, resource: dict) -> dict:
+def _looks_like_secret(key: str) -> bool:
+    return _SECRET_KEY.search(key) is not None
+
+
+def _declared_env(resource: dict) -> tuple[dict, list[str]]:
+    declared = resource.get("env") or {}
+    if not isinstance(declared, dict):
+        raise BindingError("env_invalid", "env")
+    extra = {}
+    for key, raw in declared.items():
+        if not isinstance(key, str) or not _ENV_NAME.fullmatch(key) or key in _RESERVED_ENV:
+            raise BindingError("env_key_rejected", str(key))
+        marked_secret = False
+        if isinstance(raw, dict):
+            if set(raw) != {"value", "secret"} or raw.get("secret") is not True:
+                raise BindingError("env_secret_unmarked", key)
+            marked_secret = True
+            value = raw.get("value")
+        else:
+            value = raw
+        if not isinstance(value, str) or value == "" or "\n" in value or "\x00" in value:
+            raise BindingError("env_value_rejected", key)
+        if _looks_like_secret(key) and not marked_secret:
+            raise BindingError("env_secret_unmarked", key)
+        extra[key] = value
+    return extra, sorted(extra)
+
+
+def _env_for(alias: str, resource: dict) -> tuple[dict, list[str]]:
     env = {}
     path = os.environ.get("PATH")
     if path:
         env["PATH"] = path
+    injected = []
     home = resource.get("codex_home")
     if alias == "codex2":
         if not isinstance(home, str) or not os.path.isabs(home) or not os.path.isdir(home):
             raise BindingError("configuration_home_required", "codex2")
         env["CODEX_HOME"] = os.path.realpath(home)
+        injected.append("CODEX_HOME")
     elif alias == "codex" and home:
         if not isinstance(home, str) or not os.path.isabs(home) or not os.path.isdir(home):
             raise BindingError("configuration_home_required", "codex")
         env["CODEX_HOME"] = os.path.realpath(home)
-    return env
+        injected.append("CODEX_HOME")
+    extra, names = _declared_env(resource)
+    overlap = sorted(set(extra).intersection(env))
+    if overlap:
+        raise BindingError("env_key_rejected", ",".join(overlap))
+    env.update(extra)
+    injected.extend(names)
+    return env, injected
+
+
+def _skills_directory(resource: dict, config: dict) -> tuple[str | None, bool | None]:
+    raw = resource.get("skills_dir")
+    if raw in (None, ""):
+        return None, None
+    if not isinstance(raw, str) or not os.path.isabs(raw):
+        raise BindingError("skills_dir_invalid", "skills_dir")
+    root = config.get("instance_root")
+    if not isinstance(root, str) or not os.path.isabs(root) or not os.path.isdir(root):
+        raise BindingError("instance_root_required", "instance_root")
+    path = os.path.realpath(raw)
+    base = os.path.realpath(root)
+    if not os.path.isdir(path):
+        raise BindingError("skills_dir_invalid", "not_a_directory")
+    try:
+        inside = os.path.commonpath([path, base]) == base
+    except ValueError:
+        inside = False
+    if not inside:
+        raise BindingError("skills_dir_outside_root", "skills_dir")
+    empty = next(os.scandir(path), None) is None
+    return path, empty
 
 
 def build_invocation(alias: str, config: dict, approval: dict, prompt: str) -> dict:
@@ -232,12 +299,16 @@ def build_invocation(alias: str, config: dict, approval: dict, prompt: str) -> d
         raise BindingError("generation_binding_null", alias)
     executable = _resolve_binary(resource, config)
     workspace = _workspace(approval)
-    argv = _argv_for(alias, executable, resource, approval, prompt, workspace)
+    child_env, injected_keys = _env_for(alias, resource)
+    skills_path, skills_empty = _skills_directory(resource, config)
+    argv = _argv_for(alias, executable, resource, approval, prompt, workspace, skills_path)
     return {
         "alias": alias,
         "argv": argv,
         "stdin": prompt if declared.get("stdin") == "approved_prompt" else "",
-        "env": _env_for(alias, resource),
+        "env": child_env,
+        "injected_env_keys": injected_keys,
+        "skills_dir_empty": skills_empty,
         "cwd": workspace,
         "timeout_seconds": _optional_timeout(approval),
         "max_output_bytes": _optional_output_cap(approval),
@@ -258,13 +329,21 @@ def _optional_output_cap(approval: dict):
     return int(_positive_int(approval.get("max_output_bytes"), "max_output_bytes"))
 
 
-def _argv_for(alias: str, executable: str, resource: dict, approval: dict, prompt: str, workspace: str) -> list[str]:
+def _argv_for(
+    alias: str,
+    executable: str,
+    resource: dict,
+    approval: dict,
+    prompt: str,
+    workspace: str,
+    skills_path: str | None,
+) -> list[str]:
     if alias in {"codex", "codex2"}:
         return _codex_argv(executable, approval, workspace)
     if alias == "hermes":
         return _hermes_argv(executable, approval, workspace)
     if alias == "kimi":
-        return _kimi_argv(executable, resource, approval, prompt)
+        return _kimi_argv(executable, resource, approval, prompt, skills_path)
     raise BindingError("generation_binding_null", alias)
 
 
@@ -334,7 +413,7 @@ def _hermes_argv(executable: str, approval: dict, workspace: str) -> list[str]:
     return argv
 
 
-def _kimi_argv(executable: str, resource: dict, approval: dict, prompt: str) -> list[str]:
+def _kimi_argv(executable: str, resource: dict, approval: dict, prompt: str, skills_path: str | None) -> list[str]:
     argv = [executable]
     if approval.get("authorize_model_alias"):
         model = _optional_name(approval.get("model_alias"), "model_alias")
@@ -342,11 +421,11 @@ def _kimi_argv(executable: str, resource: dict, approval: dict, prompt: str) -> 
             raise BindingError("model_alias_missing", "model_alias")
         argv.extend(["-m", model])
     argv.extend(["-p", prompt, "--output-format", "stream-json"])
-    for key, flag in (("skills_dir", "--skills-dir"), ("agent_file", "--agent-file")):
-        raw = resource.get(key)
-        if raw in (None, ""):
-            continue
+    if skills_path:
+        argv.extend(["--skills-dir", skills_path])
+    raw = resource.get("agent_file")
+    if raw not in (None, ""):
         if not isinstance(raw, str) or not os.path.isabs(raw) or not os.path.isfile(raw):
-            raise BindingError("kimi_profile_path_invalid", key)
-        argv.extend([flag, os.path.realpath(raw)])
+            raise BindingError("kimi_profile_path_invalid", "agent_file")
+        argv.extend(["--agent-file", os.path.realpath(raw)])
     return argv
